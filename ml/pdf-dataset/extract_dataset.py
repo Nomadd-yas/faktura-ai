@@ -44,6 +44,7 @@ DEVICE_TYPES = ["cell", "minimodule", "module"]
 ARCHITECTURES = ["n-i-p", "p-i-n", "substrate", "superstrate"]
 SUBSTRATE_TYPES = ["rigid", "flexible"]
 AREA_DEFINITIONS = ["designated illumination", "aperture", "total"]
+AREA_UNITS = ["cm2"]
 LAYER_FUNCTIONS = ["front_contact", "ETL", "absorber", "passivation", "HTL",
                    "interlayer", "recombination", "back_contact"]
 MEASUREMENT_TYPES = ["J-V", "MPP tracking", "EQE", "stability"]
@@ -52,6 +53,13 @@ STABILITY_PROTOCOLS = ["ISOS-D", "ISOS-L", "ISOS-T", "other"]
 AGGREGATIONS = ["champion", "mean", "median"]
 RESULT_ORIGINS = ["primary", "cited"]
 EXTRACTION_STATUS = ["extracted", "present_not_extractable", "absent"]
+# [faktura-patch] check_name из README (раздел issues) + виды замечаний из эталона dev_gold/issues.csv
+CHECK_NAMES = ["jv_consistency", "voc_limit", "range", "eqe_consistency", "champion_vs_mean",
+               "hysteresis_index", "contradiction", "unit_inconsistency", "possible_swap",
+               "figure_mismatch", "figure_only", "cited_in_table", "dedup_trap", "rounding",
+               "rounding_inconsistency", "plausibility", "missing_conditions",
+               "measurement_conditions", "comparability", "ambiguity", "derived_values",
+               "typo", "text_mix", "voc_deficit_consistency"]
 KNOWN_METRICS = {"PCE", "Voc", "Jsc", "FF", "Rs", "Rsh", "HI", "Jsc_EQE",
                  "stabilized_PCE", "T80", "retained_PCE"}
 
@@ -75,6 +83,15 @@ def B():
     return {"type": "boolean"}
 
 
+def BN():
+    return {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+
+
+def NS():
+    # [faktura-patch] число ИЛИ текст (диапазон «63-68») — README допускает диапазон толщины
+    return {"anyOf": [{"type": "number"}, {"type": "string"}, {"type": "null"}]}
+
+
 def STR():
     return {"type": "string"}
 
@@ -86,6 +103,7 @@ def obj(props):
             "additionalProperties": False}
 
 
+# [faktura-patch] Колонки и порядок — 1:1 с submission_template/README.md (и backend TABLES).
 PUB = obj({
     "publication_id": STR(),
     "title": S(),
@@ -99,26 +117,30 @@ PUB = obj({
 MATERIAL = obj({
     "publication_id": STR(),
     "material_id": STR(),
+    "material_name_raw": S(),
+    "formula_normalized": S(),
     "material_class": S(MATERIAL_CLASSES),
     "dimensionality": S(DIMENSIONALITY),
-    "bandgap_method": S(BANDGAP_METHODS),
+    "additives": S(),                     # через «; »
     "bandgap_value": N(),
     "bandgap_unit": S(BANDGAP_UNITS),
-    "formula_normalized": S(),
+    "bandgap_method": S(BANDGAP_METHODS),
     "note": S(),
 })
 
 DEVICE = obj({
     "publication_id": STR(),
     "device_id": STR(),
+    "absorber_material_id": S(),
+    "device_label": S(),
     "device_role": S(DEVICE_ROLES),
     "device_type": S(DEVICE_TYPES),
     "architecture": S(ARCHITECTURES),
     "substrate_type": S(SUBSTRATE_TYPES),
+    "active_area": N(),
+    "area_unit": S(AREA_UNITS),
     "area_definition": S(AREA_DEFINITIONS),
-    "area_value": N(),
-    "area_unit": S(),
-    "absorber_material_id": S(),
+    "encapsulation": S(),
     "note": S(),
 })
 
@@ -128,26 +150,35 @@ LAYER = obj({
     "device_id": STR(),
     "layer_order": I(),
     "layer_function": S(LAYER_FUNCTIONS),
-    "thickness_value": N(),
+    "layer_material": S(),
+    "layer_thickness": NS(),              # число или диапазон-текст «63-68»
     "thickness_unit": S(["nm"]),
-    "temperature_c": N(),
-    "time_value": S(),
+    "deposition_method": S(),
+    "annealing_temperature": S(),         # текст с единицей: «500 °C»
+    "annealing_time": S(),                # текст с единицей: «10 min»
+    "atmosphere": S(),
     "note": S(),
 })
 
 MEASUREMENT = obj({
     "publication_id": STR(),
     "measurement_id": STR(),
-    "device_id": STR(),                   # измерения всегда про прибор
+    "device_id": STR(),                   # один device_id или несколько через «;» (одни условия)
     "measurement_type": S(MEASUREMENT_TYPES),
-    "scan_direction": S(SCAN_DIRECTIONS),
-    "stability_protocol": S(STABILITY_PROTOCOLS),
-    "stress_conditions": S(),
     "spectrum": S(),
     "light_intensity": N(),
     "intensity_unit": S(),
+    "scan_direction": S(SCAN_DIRECTIONS),
+    "scan_rate": S(),
+    "mask_used": BN(),
+    "certified": BN(),
+    "certification_lab": S(),
+    "temperature": S(),
+    "stability_protocol": S(STABILITY_PROTOCOLS),
+    "stress_conditions": S(),
     "note": S(),
 })
+
 RESULT = obj({
     "publication_id": STR(),
     "result_id": STR(),
@@ -155,33 +186,34 @@ RESULT = obj({
     "measurement_id": S(),                # null для cited
     "material_id": S(),
     "metric_name": STR(),
-    "raw_value": {"anyOf": [{"type": "number"}, {"type": "string"}, {"type": "null"}]},
-    "raw_unit": S(),
-    "normalized_value": N(),
-    "normalized_unit": S(),
     "metric_value": N(),                  # == normalized_value
     "metric_unit": S(),                   # == normalized_unit
     "aggregation": S(AGGREGATIONS),
     "spread_value": N(),
-    "n_devices": N(),
+    "n_devices": I(),
     "time_point": N(),
     "time_unit": S(),
+    "raw_value": {"anyOf": [{"type": "number"}, {"type": "string"}, {"type": "null"}]},
+    "raw_unit": S(),
+    "normalized_value": N(),
+    "normalized_unit": S(),
     "result_origin": S(RESULT_ORIGINS),
     "cited_publication_id": S(),
-    "extraction_status": S(EXTRACTION_STATUS),
-    "duplicate_of": S(),                  # result_id основной записи
     "source_page": I(),
     "source_section": S(),
     "source_table": S(),
     "source_figure": S(),
     "source_fragment": S(),
+    "extraction_status": S(EXTRACTION_STATUS),
+    "duplicate_of": S(),                  # result_id основной записи
+    "note": S(),
 })
 
 ISSUE = obj({
     "publication_id": STR(),
     "issue_id": STR(),
     "record_ids": S(),
-    "check_name": S(),
+    "check_name": S(),  # [faktura-patch] открытый список (README: «например»); CHECK_NAMES — подсказки в промпте
     "description": S(),
     "source_page": I(),
     "source_fragment": S(),
@@ -210,82 +242,154 @@ COMMON_RULES = """Ты — экстрактор данных из научных
 - Верхний ключ JSON — ТОЛЬКО указанный в задании. Значение — массив объектов.
 - publication_id везде равен заданному в задании.
 - Пустая ячейка = null (не "", не "N/A", не "-").
+- СТРОГО: ячейка заполняется, только если значение ЯВНО указано в тексте именно для этой
+  записи; иначе null. Не выводи значения из «типичной практики», не подставляй значения по
+  умолчанию, не копируй значение с одного прибора на другой, если в статье это не сказано.
+  Лучше пустая ячейка, чем догадка.
 - ID (material_id, device_id, layer_id, measurement_id, result_id, issue_id) —
   короткие (M1, DV1, L1, MS1, R001, I1...), уникальные внутри публикации.
   Если передаётся «Уже извлечено» — используй те же id, не переименовывай.
-- Числа — JSON-числа, без единиц и множителей.
+- Числа — JSON-числа, без единиц и множителей (исключение — поля, где явно сказано «текст с единицей»).
+- Страницы: в тексте статьи перед содержимым каждой PDF-страницы стоит маркер
+  <!-- page N -->. source_page = N ближайшего ПРЕДШЕСТВУЮЩЕГО маркера (страница PDF, с 1;
+  не номер страницы журнала). source_fragment — короткая (до ~120 симв.) ДОСЛОВНАЯ
+  цитата из текста этой страницы: символ в символ, без перефразирования, без
+  переформатирования LaTeX/единиц; не склеивай разные места. Для значения из таблицы
+  достаточно source_table и метки строки (в source_fragment можно ту же метку).
 - Выводи ТОЛЬКО JSON-объект, без пояснений и markdown-ограждений.
 """
 
 STEP_PROMPTS = {
     "publications": """Заполни таблицу publications РОВНО ОДНОЙ записью:
-- title, year, DOI, authors (через ;);
-- in_scope: относится ли статья к тонкоплёночным солнечным элементам
-  (поглотитель — perovskite/CIGS/CdTe/kesterite/Sb2Se3/thin-film Si или их аналоги;
-  НЕ in_scope: классический кремний, органика и всё, что не про тонкоплёночные фотоэлементы);
-- exclusion_reason: почему исключена (только если in_scope=false).""",
+- title, year, DOI, authors (через «; »);
+- in_scope (true/false) — относится ли статья к предметной области «тонкоплёночные
+  солнечные элементы». in_scope=true ТОЛЬКО если одновременно:
+  (а) поглотитель — тонкоплёночный: perovskite, CIGS, CdTe, kesterite (CZTS), Sb2Se3, thin-film Si (a-Si:H и т.п.);
+  (б) в работе ИЗГОТОВЛЕНЫ приборы (ячейки/мини-модули/модули) и ИЗМЕРЕНЫ их характеристики
+      (ВАХ, EQE, стабильность) — собственные экспериментальные результаты авторов.
+  in_scope=false, если: чисто расчётная/симуляционная/модельная работа (DFT, ab initio, молекулярная
+  динамика, SCAPS/численное моделирование, оптические расчёты) без изготовленных приборов
+  и измеренных характеристик; обзор без собственного эксперимента; классический объёмный
+  кремний; органические/DSSC/квантово-точечные и прочие не тонкоплёночные технологии;
+  работа не про фотоэлементы. Мерило — не наличие слова «solar cell» в названии,
+  а наличие экспериментального прибора с измерениями.
+- exclusion_reason — только при in_scope=false (иначе null). Одно–два предложения по-русски
+  в таком стиле: «Только численное моделирование (одномерная диффузионная модель в MATLAB и Maple);
+  изготовленных образцов и измеренных характеристик нет. По разделу 3.1 расчётные работы без
+  изготовленных образцов к предметной области не относятся.» или «Только расчёт: ab initio
+  неадиабатическая молекулярная динамика и TDDFT для α-CsPbI3; изготовленных приборов и измеренных
+  характеристик нет.» Назови, что именно сделано в работе, и почему это не подходит.""",
 
-    "materials": """Заполни materials — материалы-поглотители из статьи (обычно один):
+    "materials": """Заполни materials — материалы-поглотители из статьи (по одному на каждый
+различающийся состав поглотителя: контроль, легированный и т.д.):
+- material_name_raw — как материал назван в статье («0.001 M SrCl2–doped CsPbI2Br»);
+- formula_normalized — для перовскита вид A-B-X с раскрытыми MA/FA/Cs (например FA0.95Cs0.05PbI3),
+  для прочих — формула как в статье, если дана;
 - material_class ∈ perovskite, CIGS, CdTe, kesterite, Sb2Se3, thin-film Si, other;
-- dimensionality: для перовскита 3D/2D/2D-3D, для прочих — 3D;
-- bandgap_value/bandgap_method: только если прямо указано в статье
-  (Tauc — из UV-Vis/Tauс-plot, EQE — из края EQE, PL — из ФЛ, cited — из литературы);
-- formula_normalized: для перовскита A-B-X с раскрытыми MA/FA/Cs (например FA0.95Cs0.05PbI3);
-- note — исходная формулировка, если не укладывается в словарь.""",
+- dimensionality ∈ 3D, 2D, 2D-3D — ТОЛЬКО если размерность названа/очевидна из текста
+  (2D/3D гетероструктура, 2D-перовскит); иначе null;
+- additives — добавки/допанты/модификаторы поглотителя с концентрацией, через «; » (иначе null);
+- bandgap_value (число) + bandgap_unit (eV) + bandgap_method: только если ширина зоны прямо
+  указана. Tauc — из Tauc-plot/UV-Vis, EQE — из края EQE, PL — из ФЛ, cited — значение
+  взято из литературы. Если метод не ясен — bandgap_method null;
+- note — исходная формулировка, если она не укладывается в словарь.""",
 
     "devices": """Заполни devices — все приборы, отличные друг от друга
-(состав абсорбера, архитектура, подложка, площадь, режим):
-- device_role: control/target/record (record — лучший достигнутый);
-- device_type: cell/minimodule/module; architecture: n-i-p/p-i-n/substrate/superstrate;
-- substrate_type: rigid/flexible; area_definition: designated illumination/aperture/total;
-- area_value + area_unit (обычно cm2) — площадь активной области, если указана;
+(состав абсорбера, архитектура, подложка, площадь, режим). Каждый прибор — своя строка:
+- device_label — метка прибора как в статье («pristine», «B4», «0.005 M SrCl2»);
+- device_role: control (контрольный/референс), target (целевой/модифицированный), record
+  (рекордный) — только если роль ясна из текста;
+- device_type: cell/minimodule/module; architecture: n-i-p/p-i-n/substrate/superstrate —
+  только если указано или прямо следует из описанной структуры (порядок слоёв);
+  нестандартную формулировку — в note, в поле ближайшее допустимое значение или null;
+- substrate_type: rigid/flexible — только если назван (стекло — rigid, фольга/PET — flexible);
+- active_area (число) + area_unit (cm2) — площадь, если указана; area_definition:
+  designated illumination (площадь освещения, заданная маской/апертурой для измерения ВАХ),
+  aperture (апертурная площадь), total (полная площадь) — только если
+  статья говорит, какая это площадь;
+- encapsulation — способ инкапсуляции, если описан;
 - absorber_material_id — material_id из «Уже извлечено».""",
 
     "layers": """Заполни layers — слои каждого прибора ОТ ПОДЛОЖКИ (1 — контакт на подложке;
-подложку (стекло/фольгу) НЕ записывать):
-- device_id — из «Уже извлечено» (у каждого прибора свой набор слоёв);
+подложку (стекло/фольгу) НЕ записывать). Слои только из текста о структуре/изготовлении:
+- device_id — из «Уже извлечено» (у каждого прибора свой набор слоёв; если слои общие
+  для приборов и в статье описаны один раз — запиши набор слоёв для каждого такого прибора);
 - layer_order: 1, 2, ...
 - layer_function ∈ front_contact, ETL, absorber, passivation, HTL, interlayer,
   recombination, back_contact. Неизвестное приводи к ближайшему: CdS и аналогичные
   n-слои -> ETL; металлическая сетка -> front_contact; просветляющее и прочие
   промежуточные -> interlayer. Исходное название — в note;
-- thickness_value только если указана, В НМ (мкм × 1000);
-- temperature_c — температура в °C, если указана; time_value — время с единицей («10 min»).""",
+- layer_material — материал слоя как в статье («compact TiO2», «Spiro-OMeTAD», «Au»);
+- layer_thickness — только если указана, В НМ (мкм × 1000); число, либо текст-диапазон «63-68»;
+  thickness_unit = nm, если толщина указана;
+- deposition_method — метод нанесения («spin-coating», «thermal evaporation», «sputtering»), если описан;
+- annealing_temperature — текст с единицей в °C («500 °C»); annealing_time — текст с единицей
+  («10 min»); только если отжиг/обработка слоя описаны;
+- atmosphere — атмосфера процесса («N2 glovebox», «air»), если указана.""",
 
     "measurements": """Заполни measurements — условия измерений:
 - Отдельная запись на КАЖДОЕ направление развёртки (reverse/forward/average)
-  и на КАЖДОЕ условие стресса для измерений стабильности;
-- measurement_type ∈ J-V, MPP tracking, EQE, stability;
-- scan_direction для J-V; spectrum (например AM1.5G) и light_intensity + intensity_unit
-  (например 100 и mW/cm2), если указаны;
-- stability_protocol ∈ ISOS-D, ISOS-L, ISOS-T, other; если протокол не назван — other,
-  условия — в stress_conditions;
+  и на КАЖДОЕ условие стресса для измерений стабильности. Одинаковые условия для
+  нескольких приборов — ОДНА запись, device_id перечисляет приборы через «;»;
+- measurement_type ∈ J-V, MPP tracking, EQE, stability (тёмная ВАХ — J-V, пометка в note);
+- scan_direction — только если направление названо; scan_rate — скорость развёртки текстом
+  с единицей («0.15 V/s»), если указана;
+- spectrum (например AM1.5G) и light_intensity + intensity_unit (100 и mW/cm2), только если указаны;
+- mask_used (true/false) — только если в статье сказано про маску/апертуру; certified
+  — true, если сказано о независимой сертификации, иначе false (как в эталоне); certification_lab — лаборатория, если названа;
+- temperature — температура измерения текстом с единицей, если указана;
+- stability_protocol ∈ ISOS-D, ISOS-L, ISOS-T, other — ТОЛЬКО для измерений стабильности
+  (measurement_type=stability): по README, если протокол ISOS в статье не назван, ставится other,
+  а условия описываются в stress_conditions; для J-V/MPP/EQE — null;
 - device_id — из «Уже извлечено».""",
 
     "results": """Заполни results — одно значение одного показателя для одного прибора
 при одних условиях (включая направление развёртки) = одна строка:
 - Champion и средние по партии — ОТДЕЛЬНЫЕ строки; aggregation ∈ champion/mean/median
-  (если в статье не сказано — null).
+  (если в статье не сказано, лучший это прибор или среднее — null).
 - result_origin: primary (собственные результаты авторов) / cited (из другой работы);
   для cited — device_id и measurement_id = null, cited_publication_id как в статье («[12]»).
 - Повтор того же значения из другого места статьи (аннотация vs текст vs таблица) —
   ОТДЕЛЬНАЯ строка со своим source_*; в duplicate_of — result_id основной записи.
 - extraction_status ∈ extracted, present_not_extractable (например, только на графике
   или только в supplementary), absent.
+- raw_value/raw_unit — значение и единица ДОСЛОВНО как в статье.
 - Единицы: PCE, FF, HI, retained_PCE → %; Voc → V; Jsc, Jsc_EQE → mA/cm2;
   Rs, Rsh → Ohm*cm2; T80 → h. metric_value = normalized_value; metric_unit = normalized_unit.
   Внимание на конвертации: мВ→В (÷1000), доля→% (×100), мкА/см2→мА/см2 (÷1000).
+- spread_value (± или стандартное отклонение) и n_devices — только если указаны.
+- time_point + time_unit — момент измерения для стабильности.
 - metric_name: PCE, Voc, Jsc, FF, Rs, Rsh, HI, Jsc_EQE, stabilized_PCE, T80, retained_PCE
-  (или понятное название, если показателя нет в списке).
-- source_page — страница PDF с 1; source_section/source_table/source_figure — где найдено
-  (например 3.4 / Table 4 / Figure 10); source_fragment — короткая дословная цитата.""",
+  (или понятное название, если показателя нет в списке: Voc_deficit, Jmpp, Vmpp, AVT...).
+- source_page — страница PDF по маркеру <!-- page N -->; source_section/source_table/source_figure —
+  где найдено (например 3.4 / Table 4 / Figure 10); source_fragment — короткая дословная цитата.
+- note — только если формулировка в статье нестандартна.""",
 
-    "issues": """Проверь ГОТОВЫЙ датасет (JSON) — найди ТОЛЬКО реальные проблемы:
-jv_consistency (PCE ≠ Voc×Jsc×FF/100, >10 %), voc_limit/range (невозможные значения),
-champion_vs_mean (лучший хуже среднего), contradiction (одно значение расходится по местам
-статьи: например, Table 4: 3.85 % против текста: 5.25 %), eqe_consistency (Jsc против Jsc_EQE).
-Каждая запись — ОДНА строка в description: числа с обеих сторон; record_ids — result_id через ;.
-Если проблем нет — {"issues": []}. Максимум 10, лучше меньше.""",
+    "issues": """Проверь ГОТОВЫЙ датасет (JSON) — найди ТОЛЬКО реальные проблемы, видимые в данных/тексте.
+check_name — ровно одно из:
+- jv_consistency — PCE не согласуется с Voc×Jsc×FF/Pin (расхождение >10 %);
+- voc_limit — Voc выше Eg/q; range — значение вне физических пределов;
+- eqe_consistency — Jsc по ВАХ и по EQE расходятся (>5 %);
+- champion_vs_mean — среднее больше лучшего значения;
+- hysteresis_index — аномальный индекс гистерезиса;
+- contradiction — одно значение в разных местах статьи расходится (Table 4: 3.85 % против текста: 5.25 %);
+- unit_inconsistency — единица не согласуется со значением (FF «0.71%» при доле);
+- possible_swap — значения, вероятно, перепутаны местами;
+- figure_mismatch — рисунок не совпадает с таблицей; figure_only — результаты только на графиках;
+- cited_in_table — чужие результаты стоят в таблице собственных;
+- dedup_trap — два разных прибора с одинаковым значением, объединять нельзя;
+- rounding / rounding_inconsistency — расхождение из-за округления;
+- plausibility — значение правдоподобно с трудом (FF 87 % при Voc 0.98 В);
+- missing_conditions — не указаны условия измерения (площадь, спектр, развёртка);
+- measurement_conditions — нестандартные условия измерения (не AM1.5G, предобработка светом);
+- comparability — результат несопоставим с остальными (модуль vs ячейка, нестандартное освещение);
+- ambiguity — неоднозначность в тексте; derived_values — «производные» числа в тексте (разности, относительный прирост);
+- typo — опечатка в статье; text_mix — фраза объединяет максимумы разных приборов;
+- voc_deficit_consistency — дефицит Voc не равен Eg/q − Voc.
+Каждая запись — ОДНА строка в description: числа с обеих сторон; record_ids — result_id через ;
+(можно null, если замечание не про конкретные результаты); source_page — страница по маркеру
+<!-- page N --> (если есть текст статьи) и дословный source_fragment.
+Если проблем нет — {"issues": []}. Максимум 20; только реальные проблемы, не выдумывай.""",
 }
 
 STEP_ORDER = ["publications", "materials", "devices", "layers", "measurements", "results"]
@@ -344,7 +448,7 @@ def check_dataset(d: dict) -> list[str]:
                       ("bandgap_method", BANDGAP_METHODS), ("bandgap_unit", BANDGAP_UNITS)],
         "devices": [("device_role", DEVICE_ROLES), ("device_type", DEVICE_TYPES),
                     ("architecture", ARCHITECTURES), ("substrate_type", SUBSTRATE_TYPES),
-                    ("area_definition", AREA_DEFINITIONS)],
+                    ("area_definition", AREA_DEFINITIONS), ("area_unit", AREA_UNITS)],
         "layers": [("layer_function", LAYER_FUNCTIONS), ("thickness_unit", ["nm"])],
         "measurements": [("measurement_type", MEASUREMENT_TYPES), ("scan_direction", SCAN_DIRECTIONS),
                          ("stability_protocol", STABILITY_PROTOCOLS)],
@@ -375,10 +479,13 @@ def check_dataset(d: dict) -> list[str]:
         ref = r.get("absorber_material_id")
         if ref is not None and ref not in ids.get("materials", set()):
             problems.append(f"devices: absorber_material_id={ref!r} нет в materials")
+    # [faktura-patch] у measurements device_id может быть списком через «;»
     for t in ("layers", "measurements"):
         for r in tabs[t]:
-            if r.get("device_id") not in ids.get("devices", set()):
-                problems.append(f"{t}: device_id={r.get('device_id')!r} нет в devices")
+            dv = r.get("device_id")
+            parts = [x.strip() for x in str(dv).split(";") if x.strip()] if dv is not None else []
+            if not parts or any(x not in ids.get("devices", set()) for x in parts):
+                problems.append(f"{t}: device_id={dv!r} нет в devices")
     for r in tabs["results"]:
         rid = r.get("result_id")
         if r.get("result_origin") == "cited":
@@ -393,6 +500,10 @@ def check_dataset(d: dict) -> list[str]:
             problems.append(f"results {rid}: material_id={r['material_id']!r} нет в materials")
         if r.get("duplicate_of") is not None and r["duplicate_of"] not in ids.get("results", set()):
             problems.append(f"results {rid}: duplicate_of={r['duplicate_of']!r} не существует")
+    for r in tabs["results"]:
+        sp = r.get("source_page")
+        if sp is not None and (not isinstance(sp, int) or isinstance(sp, bool) or sp < 1):
+            problems.append(f"results {r.get('result_id')}: source_page={sp!r} должен быть целым >= 1")
     for r in tabs["issues"]:
         for rid in (r.get("record_ids") or "").split(";"):
             rid = rid.strip()

@@ -17,12 +17,14 @@ import threading
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 
 BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from pipeline import run_pipeline
+from pipeline import (PipelineError, config_path, model_version, ocr_reachable,
+                      run_pipeline)
 
 app = FastAPI(title="pdf-dataset", version="1.0",
               description="PDF -> markdown (glmocr) -> dataset.json. Синхронный API без авторизации.")
@@ -33,9 +35,27 @@ OUT_DIR = Path(os.environ.get("OUT_DIR", "/out"))
 _PIPELINE_LOCK = threading.Lock()
 
 
+def _error(status, code, message, *, retryable=False, headers=None):
+    """[faktura-patch] Единый формат ошибки; detail = message — для совместимости со старыми клиентами."""
+    return JSONResponse(status_code=status, headers=headers,
+                        content={"code": code, "message": message, "retryable": retryable,
+                                 "detail": message})
+
+
+@app.exception_handler(HTTPException)
+async def _http_exc(request, exc):
+    msg = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    return _error(exc.status_code, "bad_request" if exc.status_code < 500 else "ml_error", msg)
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # [faktura-patch] status=down, если нет ключа RouterAI или недоступен OCR-сервер
+    key = bool(os.environ.get("ROUTERAI_API_KEY"))
+    ocr = ocr_reachable(config_path(), timeout=2.0)
+    body = {"status": "ok" if key and ocr else "down", "model_version": model_version(),
+            "ocr": "ok" if ocr else "down", "router_key": key}
+    return JSONResponse(status_code=200, content=body)
 
 
 @app.post("/extract")
@@ -64,11 +84,17 @@ def extract_pdf(file: UploadFile = File(...),
         with _PIPELINE_LOCK:
             result = run_pipeline(pdf_path, out_dir=out_dir,
                                   publication_id=pub_id, no_strip=no_strip)
+    except PipelineError as e:
+        headers = {"Retry-After": "60"} if e.code == "ocr_unavailable" else None
+        return _error(e.status, e.code, e.message, retryable=e.retryable, headers=headers)
     except (FileNotFoundError, RuntimeError) as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        return _error(500, "ml_error", str(e))
+    except Exception as e:  # noqa: BLE001 - любой другой сбой -> 500 ml_error
+        return _error(500, "ml_error", f"{type(e).__name__}: {e}")
 
     return {
         "ok": result["ok"],
+        "model_version": result.get("model_version") or model_version(),
         "publication_id": result["publication_id"],
         "extract_error": result["extract_error"],
         "failed_tables": result["failed_tables"],

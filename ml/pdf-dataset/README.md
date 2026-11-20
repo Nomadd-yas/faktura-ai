@@ -61,11 +61,30 @@ docker run --rm -p 8080:8080 \
 
 Эндпоинты:
 
-- `GET /health` → `{"status": "ok"}`
+- `GET /health` → `{"status": "ok"|"down", "model_version", "ocr": "ok"|"down", "router_key": true|false}`
+  ([faktura-patch] `down`, если нет `ROUTERAI_API_KEY` или не отвечает OCR-сервер из `glmocr.config.yaml`, проверка TCP ~2 с).
 - `POST /extract` — multipart: файл `file` (PDF) + опционально `publication_id`, `no_strip`.
   Отвечает после завершения конвейера (минуты!) JSON-объектом:
   `{ok, publication_id, extract_error, failed_tables, counts, dataset, meta, out_dir}`.
+  В ответ добавлено `model_version` = `pdf-dataset/<model>`.
   Файлы остаются и в `/out/<stem>/`. Повторная загрузка того же имени файла перезаписывает результат.
+
+Ошибки ([faktura-patch]) — JSON `{"code", "message", "retryable", "detail"}` (`detail` = `message`):
+
+| HTTP | code | когда |
+|------|------|-------|
+| 422 | `pdf_broken` | PDF не читается / 0 страниц (проверка pymupdf до OCR) |
+| 422 | `pdf_encrypted` | PDF зашифрован |
+| 503 | `ocr_unavailable` | OCR-сервер недоступен; `retryable: true`, заголовок `Retry-After: 60` |
+| 503 | `not_configured` | нет `ROUTERAI_API_KEY` (или конфига glmocr); `retryable: false` |
+| 500 | `ml_error` | прочие сбои |
+
+Страницы: markdown для LLM строится постранично из `result.json_result` с маркерами
+`<!-- page N -->` (N — страница PDF с 1; блоки image пропускаются). Модель берёт `source_page`
+из ближайшего предшествующего маркера. Если формат `json_result` неожиданный, берётся
+`markdown_result` без маркеров (в логе и `meta.page_markers=false`). `strip_tail` маркеры сохраняет и
+режет только по заголовкам в последних 40% текста. Схемы 7 таблиц — 1:1 с колонками шаблона сдачи;
+пустое = `null`, значения без явного указания в тексте не заполняются.
 
 curl:
 

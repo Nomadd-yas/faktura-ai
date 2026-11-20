@@ -40,8 +40,11 @@ def pdf_dataset_to_contract(body: dict, publication_id: str) -> dict:
     pubs = ds.get("publications")
     pub = dict(pubs[0]) if isinstance(pubs, list) and pubs and isinstance(pubs[0], dict) else {}
     pub["publication_id"] = publication_id
+    top = body.get("model_version")  # сервис отдаёт готовое «pdf-dataset/<model>»
+    mv = top if isinstance(top, str) and top else (
+        "pdf-dataset/" + model if isinstance(model, str) and model else "pdf-dataset")
     out: dict[str, Any] = {
-        "model_version": "pdf-dataset/" + model if isinstance(model, str) and model else "pdf-dataset",
+        "model_version": mv,
         "publication": pub}
     for t in TABLES:
         rows = ds.get(t)

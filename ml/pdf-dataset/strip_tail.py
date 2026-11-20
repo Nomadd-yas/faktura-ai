@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Обрезать "хвостовые" разделы (список литературы, благодарности и т.п.) из .md:
-# удаляется всё от первого найденного заголовка такого рода до конца файла.
+# удаляется всё от найденного заголовка такого рода до конца файла
+# (только если он в последних 40% текста; настоящие заголовки предпочтительнее).
 #
 # Примеры:
 #   python strip_tail.py D001_new.md                  # -> D001_new.clean.md (рядом)
@@ -52,14 +53,45 @@ HEADING_LINE = re.compile(
 )
 
 
+# [faktura-patch] Минимальная доля текста, после которой допускается точка обрезки:
+# заголовок вроде «Funding»/«Appendix» в первых 60% — скорее всего, часть тела статьи.
+MIN_CUT_FRACTION = 0.60
+_PAGE_MARKER_TAIL = re.compile(r"(?:\n*<!--\s*page\s+\d+\s*-->\s*)+\Z")
+
+
+def _is_strong(line: str) -> bool:
+    """Настоящий заголовок: markdown «#...» или отдельная строка в **жирном**."""
+    t = line.strip()
+    return t.startswith("#") or (t.startswith("**") and t.rstrip(":. ").endswith("**"))
+
+
 def strip_trailing_sections(md_text: str):
-    """Вернуть (очищенный_текст, info). info=None, если хвостовой раздел не найден."""
-    m = HEADING_LINE.search(md_text)
+    """Вернуть (очищенный_текст, info). info=None, если хвостовой раздел не найден.
+
+    [faktura-patch] Берутся только совпадения из последних 40% текста; среди них
+    предпочитается настоящий заголовок (# или **жирный**), иначе — первое слабое.
+    Маркеры страниц <!-- page N --> в сохранённой части не трогаются.
+    """
+    limit = len(md_text) * MIN_CUT_FRACTION
+    strong, weak = None, None
+    for m in HEADING_LINE.finditer(md_text):
+        # m.start() может захватить пустые строки перед заголовком — берём начало самой строки заголовка
+        hs = m.start() + (len(m.group(0)) - len(m.group(0).lstrip()))
+        if hs < limit:
+            continue
+        line = md_text[md_text.rfind("\n", 0, hs) + 1:m.end()]
+        if _is_strong(line):
+            strong = m
+            break
+        if weak is None:
+            weak = m
+    m = strong or weak
     if not m:
         return md_text, None
     line_no = md_text.count("\n", 0, m.start()) + 1
     heading = md_text[m.start():m.end()].strip()
-    cleaned = md_text[:m.start()].rstrip() + "\n"
+    cleaned = md_text[:m.start()].rstrip()
+    cleaned = _PAGE_MARKER_TAIL.sub("", cleaned).rstrip() + "\n"  # висящий маркер без текста страницы
     return cleaned, {
         "line": line_no,
         "heading": heading,

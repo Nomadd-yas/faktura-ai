@@ -72,6 +72,34 @@ def test_500_no_retry(extract_req):
     assert len(calls) == 1
 
 
+def test_422_pdf_broken_and_encrypted(extract_req):
+    for code in ("pdf_broken", "pdf_encrypted"):
+        ext, calls = make(lambda r, c=code: httpx.Response(
+            422, json={"code": c, "message": "bad", "retryable": False, "detail": "bad"}))
+        with pytest.raises(ExtractError) as e:
+            ext.extract(extract_req())
+        assert e.value.code == code and not e.value.retryable and len(calls) == 1
+
+
+def test_503_retries_with_retry_after(extract_req):
+    n = {"i": 0}
+
+    def h(r):
+        n["i"] += 1
+        if n["i"] == 1:
+            return httpx.Response(503, headers={"Retry-After": "60"}, json={
+                "code": "ocr_unavailable", "message": "ocr down", "retryable": True, "detail": "ocr down"})
+        return httpx.Response(200, json=body())
+    ext, calls = make(h)
+    ext.extract(extract_req())
+    assert len(calls) == 2
+
+
+def test_top_level_model_version():
+    c = pdf_dataset_to_contract(body(model_version="pdf-dataset/m1"), "p1")
+    assert c["model_version"] == "pdf-dataset/m1"
+
+
 def test_timeout_no_retry_when_disabled(extract_req):
     def h(r):
         raise httpx.ReadTimeout("t")

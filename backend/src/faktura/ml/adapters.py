@@ -185,7 +185,13 @@ def _error_body(resp) -> dict[str, Any]:
         body = resp.json()
     except Exception:  # noqa: BLE001 - тело ошибки может быть не JSON
         return {}
-    return body if isinstance(body, dict) else {}
+    if not isinstance(body, dict):
+        return {}
+    # прототип ML-1 (pdf_dataset) отдаёт {"code","message","retryable","detail"}; старый вариант — только detail
+    if not isinstance(body.get("message"), str) and body.get("detail"):
+        d = body["detail"]
+        body = {**body, "message": d if isinstance(d, str) else json.dumps(d, ensure_ascii=False)}
+    return body
 
 
 class HttpExtractor:
@@ -284,9 +290,7 @@ class HttpExtractor:
                     return parse_extract_response(data, req.publication_id)
                 body = _error_body(resp)
                 if self.protocol == "pdf_dataset" and resp.status_code == 500:
-                    detail = body.get("detail")
-                    if not isinstance(detail, str):
-                        detail = json.dumps(detail, ensure_ascii=False) if detail else "HTTP 500"
+                    detail = str(body.get("message") or "") or "HTTP 500"
                     raise ExtractError("ml_error", f"ML-1: {detail}", retryable=False,
                                        details={"status": 500, "body": body or None, "request_id": request_id})
                 code = str(body.get("code") or "")
