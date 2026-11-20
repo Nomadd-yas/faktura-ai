@@ -1,5 +1,6 @@
 # Фактура AI — бэкенд, первый вариант (область solar).
-# Сервисы: api (FastAPI) | ml-mock (заглушка ML-1, POST /ml/extract) | postgres | minio.
+# Сервисы: api (FastAPI) | ml-mock (заглушка ML-1, POST /ml/extract) | postgres.
+# PDF и служебные файлы — локальное хранилище api на томе files (MinIO/S3 — позже, если понадобится).
 # Наружу открыт только api (порт API_PORT). Секреты — в deploy/.env (не в git), создаёт deploy/init-env.sh.
 # Подключение настоящего ML-1: FAKTURA_EXTRACT_URL в .env -> адрес сервиса ML-1, сервис ml-mock можно не поднимать.
 name: faktura
@@ -19,19 +20,6 @@ services:
       timeout: 3s
       retries: 20
 
-  minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    restart: unless-stopped
-    command: server /data
-    environment:
-      MINIO_ROOT_USER: faktura
-      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?нужен MINIO_PASSWORD в .env}
-    volumes: ["miniodata:/data"]
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
 
   ml-mock:
     build: ..
@@ -53,17 +41,15 @@ services:
     env_file: .env
     environment:
       FAKTURA_DB_URL: postgresql+psycopg://faktura:${POSTGRES_PASSWORD}@postgres:5432/faktura
-      FAKTURA_STORAGE_BACKEND: s3
-      FAKTURA_S3_ENDPOINT: http://minio:9000
-      FAKTURA_S3_BUCKET: faktura
-      FAKTURA_S3_ACCESS_KEY: faktura
-      FAKTURA_S3_SECRET_KEY: ${MINIO_PASSWORD}
+      FAKTURA_STORAGE_BACKEND: local
+      FAKTURA_STORAGE_DIR: /app/var/storage
+      FAKTURA_CACHE_DIR: /app/var/cache
       FAKTURA_EXTRACTOR: http
       FAKTURA_EXTRACT_URL: ${FAKTURA_EXTRACT_URL:-http://ml-mock:8081}
     depends_on:
       postgres: {condition: service_healthy}
-      minio: {condition: service_healthy}
       ml-mock: {condition: service_healthy}
+    volumes: ["files:/app/var"]
     ports: ["${API_PORT:-8000}:8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
@@ -73,4 +59,4 @@ services:
 
 volumes:
   pgdata: {}
-  miniodata: {}
+  files: {}

@@ -12,7 +12,6 @@ gen() { head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c "${1:-32
 cat > .env <<EOF
 API_PORT=8000
 POSTGRES_PASSWORD=$(gen 32)
-MINIO_PASSWORD=$(gen 32)
 FAKTURA_JWT_SECRET=$(gen 64)
 FAKTURA_ADMIN_EMAIL=admin@faktura.local
 FAKTURA_ADMIN_PASSWORD=$(gen 16)
