@@ -94,6 +94,13 @@ def _collect(services: Services, work: Path, files: list[UploadFile], archive: U
                 if top[0].code == "zip_too_large":
                     raise AppError("too_large", top[0].message)
                 raise AppError("unsupported_media_type", top[0].message)
+        if files:  # ZIP и отдельные PDF в одном запросе: объединяем
+            root = work / "up_files"
+            root.mkdir(parents=True, exist_ok=True)
+            pre += _save_uploads(files, root, s.max_upload_mb * _MB, s.max_upload_files)
+            extra = collect_inputs(root, limits=limits, work_dir=work / "unz_files")
+            res.files.extend(extra.files)
+            res.rejected.extend(extra.rejected)
         return res, pre, name
     root = work / "up"
     root.mkdir(parents=True, exist_ok=True)
@@ -113,8 +120,6 @@ def create_run(request: Request, file: list[UploadFile] | None = File(default=No
     files = [f for f in (file or []) if f is not None and (f.filename or "")]
     if archive is not None and not (archive.filename or ""):
         archive = None
-    if files and archive is not None:
-        raise AppError("validation_error", "Передайте либо файлы (file), либо один ZIP (archive)", field="archive")
     if not files and archive is None:
         raise AppError("no_files")
     work = Path(tempfile.mkdtemp(prefix="faktura_up_"))

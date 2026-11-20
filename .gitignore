@@ -27,3 +27,6 @@ reports/
 .idea/
 Thumbs.db
 .DS_Store
+
+# deploy
+backend/deploy/case/

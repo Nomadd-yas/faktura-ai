@@ -148,6 +148,17 @@ def test_archive_upload(client, auth, pdfs):
     assert any(x["code"] == "unsupported_file" for x in body["rejected"])
 
 
+def test_archive_and_files_in_one_request(client, auth, pdfs):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.write(pdfs["D001"], "D001.pdf")
+    files = [("archive", ("batch.zip", buf.getvalue(), "application/zip")),
+             ("file", ("D002.pdf", pdfs["D002"].read_bytes(), "application/pdf"))]
+    r = client.post(f"{API}/runs", files=files, headers=auth)
+    assert r.status_code == 202, r.text
+    assert {f["name"] for f in r.json()["files"]} == {"D001.pdf", "D002.pdf"}
+
+
 def test_zip_limits(client, auth, pdfs, services):
     services.settings.zip_max_files = 1
     buf = io.BytesIO()
