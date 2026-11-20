@@ -1,0 +1,18 @@
+"""API: корпус, файлы, прогоны, SSE, /extract, экспорт, профили, паспорт (план 5.8). Заглушки.
+
+Эндпоинты: GET /corpus/overview; POST/GET /corpora, GET/PATCH/DELETE /corpora/{id}, POST /corpora/{id}/restore,
+POST/GET /corpora/{id}/files, POST /corpora/{id}/files/{file_id}/retry, POST/GET /corpora/{id}/runs,
+GET /corpora/{id}/summary; GET /runs/{id}, POST /runs/{id}/cancel, GET /runs/{id}/output; POST /extract;
+POST /papers; GET/POST /profiles, GET/PATCH /profiles/{id}; GET /passport; GET /events, POST /events/token;
+POST /exports, GET /exports/{id}, GET /exports/{id}/file; заглушка POST /exports/preview.
+"""
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+from .events import EventTokens, sse_stream
+from .exports import ExportJobs
+
+ROUTERS: list[APIRouter] = []  # роутеры добавляет исполнитель модуля
+
+__all__ = ["ROUTERS", "sse_stream", "EventTokens", "ExportJobs"]

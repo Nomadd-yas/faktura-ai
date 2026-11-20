@@ -1,0 +1,9 @@
+﻿publication_id,measurement_id,device_id,measurement_type,spectrum,light_intensity,intensity_unit,scan_direction,scan_rate,mask_used,certified,certification_lab,temperature,stability_protocol,stress_conditions,note
+D001,MS1,DV1;DV2;DV3;DV4;DV5;DV6,J-V,AM1.5G,100,mW/cm2,reverse,0.15 V/s,true,false,,,,,В статье обратный ход назван FB–SC (от прямого смещения к короткому замыканию)
+D001,MS2,DV4,J-V,AM1.5G,100,mW/cm2,forward,0.15 V/s,true,false,,,,,В статье назван SC–FB
+D001,MS3,DV1;DV4,MPP tracking,AM1.5G,100,mW/cm2,,,true,false,,,,,Прибор удерживался при фиксированном напряжении точки максимальной мощности; длительность не указана
+D001,MS4,DV1;DV4,EQE,,,,,,,false,,,,,Спектры EQE — в Supplementary Figure S3
+D003,MS1,DV1;DV2,J-V,AM1.5G,100,mW/cm2,reverse,100 mV/s,true,false,,,,ambient,"Развёртка от 1.2 до −0.2 В (обратный ход), шаг 10 мВ; калибровка — Si-элемент Newport"
+D003,MS2,DV1;DV2,EQE,,,,,,,false,,,,,
+D003,MS3,DV2,MPP tracking,AM1.5G,100,mW/cm2,,,true,false,,,,,
+D003,MS4,DV1;DV2,stability,,,,,,,false,,,other,"dry air, RH = 10%, хранение",storage in dry air (протокол ISOS не назван)

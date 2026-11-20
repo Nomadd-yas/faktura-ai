@@ -1,0 +1,201 @@
+{
+  "model_version": "extract-0.3",
+  "publication": {
+    "publication_id": "D021",
+    "title": "Example CZTS solar cell",
+    "year": 2023,
+    "DOI": "10.1000/example",
+    "authors": [
+      "A.B. Ivanov",
+      "C. Petrov"
+    ],
+    "in_scope": true,
+    "exclusion_reason": null,
+    "_confidence": 0.97
+  },
+  "materials": [
+    {
+      "material_id": "M-RFMS",
+      "material_name_raw": "Cu2ZnSnS4 (RF magnetron sputtered)",
+      "formula_normalized": "Cu2ZnSnS4",
+      "material_class": "kesterite",
+      "dimensionality": null,
+      "additives": [],
+      "bandgap_value": 1.5,
+      "bandgap_unit": "eV",
+      "bandgap_method": "Tauc",
+      "note": null,
+      "_bbox": [
+        72.1,
+        410.3,
+        290.0,
+        422.8
+      ],
+      "_page": 6,
+      "_confidence": 0.81
+    }
+  ],
+  "devices": [
+    {
+      "device_id": "DV-B4",
+      "absorber_material_id": "M-RFMS",
+      "device_label": "B4",
+      "device_role": "record",
+      "device_type": "cell",
+      "architecture": "substrate",
+      "substrate_type": "rigid",
+      "active_area": 0.16,
+      "area_unit": "cm2",
+      "area_definition": null,
+      "encapsulation": null,
+      "note": null,
+      "_confidence": 0.88
+    }
+  ],
+  "layers": [
+    {
+      "layer_id": "DV-B4-L1",
+      "device_id": "DV-B4",
+      "layer_order": 1,
+      "layer_function": "back_contact",
+      "layer_material": "Mo",
+      "layer_thickness": 800,
+      "thickness_unit": "nm",
+      "deposition_method": "DC sputtering",
+      "annealing_temperature": null,
+      "annealing_time": null,
+      "atmosphere": null,
+      "note": null,
+      "_page": 4,
+      "_bbox": [
+        72.0,
+        100.0,
+        300.0,
+        112.0
+      ],
+      "_confidence": 0.9
+    }
+  ],
+  "measurements": [
+    {
+      "measurement_id": "MS1",
+      "device_id": [
+        "DV-B4"
+      ],
+      "measurement_type": "J-V",
+      "spectrum": "AM1.5G",
+      "light_intensity": 100,
+      "intensity_unit": "mW/cm2",
+      "scan_direction": null,
+      "scan_rate": null,
+      "mask_used": null,
+      "certified": false,
+      "certification_lab": null,
+      "temperature": null,
+      "stability_protocol": null,
+      "stress_conditions": null,
+      "note": null,
+      "_page": 5,
+      "_bbox": [
+        72.0,
+        200.0,
+        300.0,
+        212.0
+      ],
+      "_confidence": 0.86
+    }
+  ],
+  "results": [
+    {
+      "result_id": "R002",
+      "device_id": "DV-B4",
+      "measurement_id": "MS1",
+      "material_id": "M-RFMS",
+      "metric_name": "PCE",
+      "raw_value": "3.85",
+      "raw_unit": "%",
+      "aggregation": "champion",
+      "spread_value": null,
+      "n_devices": null,
+      "time_point": null,
+      "time_unit": null,
+      "result_origin": "primary",
+      "cited_publication_id": null,
+      "source_page": 13,
+      "source_section": "3.4",
+      "source_table": "Table 4",
+      "source_figure": null,
+      "source_fragment": "Table 4, B4 (record)",
+      "extraction_status": "extracted",
+      "duplicate_of": null,
+      "note": null,
+      "_bbox": [
+        356.1,
+        438.0,
+        391.2,
+        452.3
+      ],
+      "_confidence": 0.93
+    },
+    {
+      "result_id": "R003",
+      "device_id": "DV-B4",
+      "measurement_id": "MS1",
+      "material_id": "M-RFMS",
+      "metric_name": "PCE",
+      "raw_value": "5.25",
+      "raw_unit": "%",
+      "aggregation": "champion",
+      "result_origin": "primary",
+      "source_page": 13,
+      "source_figure": "Figure 10",
+      "source_fragment": "exhibited PCE = 5.25%",
+      "extraction_status": "extracted",
+      "duplicate_of": null,
+      "_bbox": [
+        300.0,
+        300.0,
+        400.0,
+        312.0
+      ],
+      "_confidence": 0.9
+    },
+    {
+      "result_id": "R004",
+      "device_id": "DV-B4",
+      "measurement_id": "MS1",
+      "material_id": "M-RFMS",
+      "metric_name": "PCE",
+      "raw_value": "5.25",
+      "raw_unit": "%",
+      "aggregation": "champion",
+      "result_origin": "primary",
+      "source_page": 1,
+      "source_section": "Abstract",
+      "source_fragment": "achieved a maximum efficiency of 5.25%",
+      "extraction_status": "extracted",
+      "duplicate_of": "R003",
+      "_bbox": [
+        72.0,
+        500.0,
+        300.0,
+        512.0
+      ],
+      "_confidence": 0.95
+    }
+  ],
+  "issues": [
+    {
+      "issue_id": "I1",
+      "record_ids": [
+        "R002",
+        "R003"
+      ],
+      "check_name": "contradiction",
+      "description": "Лучший прибор B4: в Table 4 PCE 3.85 %, в тексте и на рис. 10 - 5.25 %",
+      "source_page": 13,
+      "source_fragment": "exhibited PCE = 5.25%",
+      "_confidence": 0.8
+    }
+  ]
+}

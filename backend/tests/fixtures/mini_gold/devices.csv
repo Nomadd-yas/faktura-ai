@@ -1,0 +1,9 @@
+﻿publication_id,device_id,absorber_material_id,device_label,device_role,device_type,architecture,substrate_type,active_area,area_unit,area_definition,encapsulation,note
+D001,DV1,M1,pristine,control,cell,n-i-p,rigid,0.0625,cm2,aperture,,n-i-p (planar); aperture (metal mask)
+D001,DV2,M2,0.001 M SrCl2,target,cell,n-i-p,rigid,0.0625,cm2,aperture,,n-i-p (planar); aperture (metal mask)
+D001,DV3,M3,0.005 M SrCl2,target,cell,n-i-p,rigid,0.0625,cm2,aperture,,n-i-p (planar); aperture (metal mask)
+D001,DV4,M4,0.01 M SrCl2,target,cell,n-i-p,rigid,0.0625,cm2,aperture,,n-i-p (planar); aperture (metal mask)
+D001,DV5,M5,0.05 M SrCl2,target,cell,n-i-p,rigid,0.0625,cm2,aperture,,n-i-p (planar); aperture (metal mask)
+D001,DV6,M6,0.01 M NiCl2,target,cell,n-i-p,rigid,0.0625,cm2,aperture,,n-i-p (planar); aperture (metal mask)
+D003,DV1,M1,Sn3O4 ETL (undoped),control,cell,n-i-p,rigid,0.04,cm2,aperture,,n-i-p (planar); aperture (mask 0.04 cm2; ITO/Ag overlap 2 mm × 2 mm)
+D003,DV2,M1,5% Y-Sn3O4 ETL,target,cell,n-i-p,rigid,0.04,cm2,aperture,,n-i-p (planar); aperture (mask 0.04 cm2; ITO/Ag overlap 2 mm × 2 mm)

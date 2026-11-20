@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faktura"
+version = "0.1.0"
+description = "Faktura: извлечение данных из научных PDF в 7 связанных CSV (бэкенд, кейс ВИНИТИ)"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "python-multipart",
+  "pydantic>=2",
+  "pydantic-settings",
+  "sqlalchemy>=2",
+  "httpx",
+  "pymupdf",
+  "pypdf",
+  "click",
+  "pyjwt",
+  "argon2-cffi",
+  "openpyxl",
+  "platformdirs",
+]
+
+[project.optional-dependencies]
+pg = ["psycopg[binary]"]
+s3 = ["boto3"]
+img = ["pillow"]
+dev = ["pytest"]
+
+[project.scripts]
+faktura = "faktura.cli.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"faktura.norm" = ["data/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib", "-m", "not perf"]
+markers = [
+  "data: нужны данные кейса (data/caseB_kejs5)",
+  "slow: дольше 10 с",
+  "perf: замер времени; по умолчанию исключён, запуск -m perf (допуск x3 к порогу спеки)",
+  "pg: нужен FAKTURA_TEST_PG_URL",
+  "s3: нужен FAKTURA_TEST_S3_URL",
+]

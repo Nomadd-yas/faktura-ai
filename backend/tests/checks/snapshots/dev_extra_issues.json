@@ -1,0 +1,32 @@
+[
+ [
+  "D014",
+  "missing_conditions",
+  []
+ ],
+ [
+  "D018",
+  "missing_conditions",
+  []
+ ],
+ [
+  "D021",
+  "contradiction",
+  [
+   "R002",
+   "R004",
+   "R006",
+   "R106",
+   "R107",
+   "R108"
+  ]
+ ],
+ [
+  "D021",
+  "rounding",
+  [
+   "R008",
+   "R105"
+  ]
+ ]
+]
