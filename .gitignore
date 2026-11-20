@@ -1,0 +1,29 @@
+# Исходные архивы и распакованные данные (PDF ~800 МБ) — не версионируем
+*.zip
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Секреты и локальные настройки
+.env
+.env.*
+.claude/settings.local.json
+
+# Выходные артефакты
+output/
+reports/
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
