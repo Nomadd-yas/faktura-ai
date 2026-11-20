@@ -23,13 +23,14 @@ ssh -N -L 8000:localhost:8000 hima-gpu
 // vite.config.ts
 export default defineConfig({
   server: {
+    port: 5200,
     proxy: { '/api': { target: 'http://localhost:8000', changeOrigin: true } },
   },
 })
 ```
 Фронт ходит на относительный `/api/v1/...` — нет CORS, refresh-cookie работает как на одном домене.
 
-Без прокси: бэк разрешает CORS только для `http://localhost:5173`; запросы с `credentials: 'include'`. Другой адрес фронта — скажи, добавим.
+Без прокси: бэк разрешает CORS только для `http://localhost:5200`; запросы с `credentials: 'include'`. Другой адрес фронта — скажи, добавим.
 
 ## 4. Авторизация
 

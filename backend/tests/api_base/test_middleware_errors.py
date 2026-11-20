@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from faktura.api import API_PREFIX
 from faktura.domain.errors import AppError
 
-ORIGIN = "http://localhost:5173"
+ORIGIN = "http://localhost:5200"
 EXPOSE = {"x-action-id", "x-request-id", "content-disposition", "x-check-status", "x-faktura-stub"}
 ALLOW = {"authorization", "content-type", "x-request-id", "last-event-id", "idempotency-key"}
 
@@ -189,7 +189,7 @@ class TestCors:
     def test_multiple_origins(self, settings, services, h):
         from faktura.api.base import create_app
 
-        origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+        origins = ["http://localhost:5200", "http://127.0.0.1:5200"]
         c = TestClient(create_app(settings.model_copy(update={"cors_origins": origins}), services))
         for o in origins:
             assert c.get(h.url("/health"), headers={"Origin": o}).headers["access-control-allow-origin"] == o

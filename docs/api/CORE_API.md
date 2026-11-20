@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| База | `http://localhost:8000/api/v1` (CORS открыт для `http://localhost:5173`, меняется в `FAKTURA_CORS_ORIGINS`) |
+| База | `http://localhost:8000/api/v1` (CORS открыт для `http://localhost:5200`, меняется в `FAKTURA_CORS_ORIGINS`) |
 | Область | **только `solar`** (кейс 5, область 1). `rag` → `422 domain_not_supported` |
 | Авторизация | `Authorization: Bearer <access_token>`; без токена — `401` |
 | Даты | ISO 8601 UTC, `2026-11-20T09:00:00Z` |

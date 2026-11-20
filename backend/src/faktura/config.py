@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     admin_email: str | None = None
     admin_password: str | None = None
     allow_signup: bool = False
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5200"])
     # лимиты
     max_file_mb: int = 50
     max_pages: int = 300

@@ -18,7 +18,7 @@ FAKTURA_ADMIN_PASSWORD=$(gen 16)
 # Без HTTPS refresh-cookie с флагом Secure браузер не сохранит
 FAKTURA_COOKIE_SECURE=false
 # Адрес фронта (JSON-список), добавить реальный адрес фронта
-FAKTURA_CORS_ORIGINS=["http://localhost:5173"]
+FAKTURA_CORS_ORIGINS=["http://localhost:5200"]
 FAKTURA_RUN_CONCURRENCY=4
 # Настоящий ML-1: раскомментировать и указать адрес
 # FAKTURA_EXTRACT_URL=http://<ml-host>:<port>

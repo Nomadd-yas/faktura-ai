@@ -294,6 +294,6 @@ def test_file_statuses_mapping(client, auth, run_two, services):
 
 
 def test_cors_exposes_export_headers(client):
-    h = client.get(f"{API}/health", headers={"Origin": "http://localhost:5173"})
+    h = client.get(f"{API}/health", headers={"Origin": "http://localhost:5200"})
     exp = h.headers.get("access-control-expose-headers", "")
     assert "X-Export-Tables" in exp and "ETag" in exp
