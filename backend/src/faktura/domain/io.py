@@ -51,15 +51,13 @@ def parse_cell(table: str, column: str, text: str | None) -> Decimal | int | boo
 
 
 def format_cell(table: str, column: str, value: Any) -> str:
-    """Значение -> текст ячейки: Decimal без экспоненты и лишних нулей, true/false, списки через разделитель."""
+    """Значение -> текст ячейки: Decimal без экспоненты, хвостовые нули сохраняются, true/false, списки через разделитель."""
     if value is None:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, Decimal):
-        s = format(value, "f")
-        if "." in s:
-            s = s.rstrip("0").rstrip(".")
+        s = format(value, "f")  # запись как в источнике: без нормализации хвостовых нулей
         return "0" if s in ("-0", "") else s
     if isinstance(value, (list, tuple)):
         return LIST_FIELDS.get((table, column), ";").join(str(v) for v in value)

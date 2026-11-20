@@ -29,7 +29,7 @@ from . import schema as S
 from ._types import DEFAULT_WORKSPACE_ID, DEFAULT_WORKSPACE_NAME
 from .repos import (ActionsRepo, AnchorsRepo, CorporaRepo, ExportsRepo, FactsRepo, FilesRepo, GoldRepo,
                     IdempotencyRepo, IssuesRepo, LoginAttemptsRepo, PapersRepo, ProfilesRepo, RunsRepo, SessionsRepo,
-                    StatsRepo, SynonymsRepo, UsersRepo, WorkspacesRepo)
+                    StatsRepo, SubTablesRepo, SynonymsRepo, UsersRepo, WorkspacesRepo)
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +74,7 @@ class UnitOfWork:
     exports: ExportsRepo
     login_attempts: LoginAttemptsRepo
     synonyms: SynonymsRepo
+    sub: SubTablesRepo
 
     def __init__(self, db: "Database") -> None:
         self.db = db
@@ -98,6 +99,7 @@ class UnitOfWork:
         self.exports = ExportsRepo(self)
         self.login_attempts = LoginAttemptsRepo(self)
         self.synonyms = SynonymsRepo(self)
+        self.sub = SubTablesRepo(self)
 
     # --- жизненный цикл -------------------------------------------------------------------------
 

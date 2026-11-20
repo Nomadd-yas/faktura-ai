@@ -154,8 +154,9 @@ def test_step5_unknown_function_not_invented(synth_bundle, fake_norm, profile):
 
 # --- шаг 6: devices -------------------------------------------------------------------------------------
 
-def test_step6_encapsulation_text_to_bool(synth_bundle, fake_norm, profile):
-    assert norm(synth_bundle(), fake_norm, profile).devices[0].encapsulation is False  # К-7
+def test_step6_encapsulation_text_kept_as_is(synth_bundle, fake_norm, profile):
+    # свободный текст, как в эталоне («unencapsulated»); в bool не приводится
+    assert norm(synth_bundle(), fake_norm, profile).devices[0].encapsulation == "unencapsulated"
 
 
 def test_step6_encapsulation_none_stays_none(synth_bundle, fake_norm, profile):
@@ -180,16 +181,16 @@ def test_step7_light_intensity_number(synth_bundle, fake_norm, profile):
 
 # --- шаг 8: единица только при значении -------------------------------------------------------------------------
 
-def test_step8_thickness_unit_cleared_without_value(synth_bundle, fake_norm, profile):
+def test_step8_thickness_unit_kept_without_value(synth_bundle, fake_norm, profile):
     out = norm(synth_bundle(), fake_norm, profile)
-    assert lay(out, "L4").layer_thickness is None and lay(out, "L4").thickness_unit is None
+    assert lay(out, "L4").layer_thickness is None and lay(out, "L4").thickness_unit == "nm"  # как в эталоне
     assert lay(out, "L1").thickness_unit == "nm"  # со значением остаётся
 
 
-def test_step8_area_and_bandgap_unit_cleared(synth_bundle, fake_norm, profile):
+def test_step8_area_and_bandgap_unit_kept_without_value(synth_bundle, fake_norm, profile):
     out = norm(synth_bundle(), fake_norm, profile)
-    assert out.devices[1].active_area is None and out.devices[1].area_unit is None
-    assert out.materials[1].bandgap_value is None and out.materials[1].bandgap_unit is None
+    assert out.devices[1].active_area is None and out.devices[1].area_unit == "cm2"
+    assert out.materials[1].bandgap_value is None and out.materials[1].bandgap_unit == "eV"
 
 
 def test_step8_result_unit_cleared_when_value_failed(synth_bundle, fake_norm, profile):

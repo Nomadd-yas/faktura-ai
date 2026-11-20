@@ -1,0 +1,30 @@
+{
+  "version": "1",
+  "note": "Правила функции слоя (spec/06 §6.3 Слои). Правила проверяются по порядку; pattern - regex по тексту в нижнем регистре (NFKC). note=true: исходное название идёт в пометку. Подложка (стекло, фольга, полиимид) в layers не пишется - значение None.",
+  "rules": [
+    {"id": "ar_coating", "function": "interlayer", "note": true,
+     "patterns": ["anti-?reflect", "antireflect", "просветл", "\\bar[- ]?(coat|layer|film)", "\\bar\\b"]},
+    {"id": "metal_grid", "function": "front_contact", "patterns": ["сетк", "\\bgrid\\b", "\\bfinger"]},
+    {"id": "recombination", "function": "recombination", "patterns": ["recombination", "рекомбинац", "tunnel junction"]},
+    {"id": "passivation", "function": "passivation",
+     "patterns": ["passivat", "пассив", "\\bpeai\\b", "\\bpeabr\\b", "\\bpeacl\\b", "\\boai\\b", "\\bbai\\b", "\\bgai\\b"]},
+    {"id": "absorber", "function": "absorber",
+     "patterns": ["perovskite", "перовскит", "absorber", "поглощающ", "\\bcdte", "sb2se3", "sb2s3", "sb2\\(s,se\\)3", "\\bcigs?\\b",
+                  "cu\\(in,ga\\)se2", "cuinse2", "cu2znsn", "znsn\\(s,se\\)4", "\\bczts", "a-si", "pbi3", "pbi2br", "pbbr3", "pbi2\\.85", "pbcl3",
+                  "\\b(ma|fa)(pb|sn)", "\\bcs\\d*(\\.\\d+)?fa"]},
+    {"id": "front_window", "function": "front_contact",
+     "patterns": ["\\bi-zno\\b", "intrinsic zno", "undoped zno", "\\buzo\\b", "\\bzno:al\\b", "\\bazo\\b", "\\bizo\\b", "\\bito\\b", "\\bfto\\b",
+                  "\\btco\\b", "\\bni/al\\b", "\\bni-al\\b", "al-doped zno", "zno:ga", "\\bgzo\\b"]},
+    {"id": "etl", "function": "ETL",
+     "patterns": ["\\bcds\\b", "tio2", "sno2", "\\bzno\\b", "pcbm", "\\bc60\\b", "\\bicba\\b", "sn3o4", "\\bmos2", "\\bwo3\\b", "\\bzns\\b"]},
+    {"id": "htl", "function": "HTL",
+     "patterns": ["spiro", "ptaa", "\\bniox?\\b", "pedot", "\\bp3ht\\b", "cuscn", "\\bcui\\b", "\\bcu2o\\b", "\\bv1553\\b", "sf-mpa", "graphene oxide", "poly-?tpd"]},
+    {"id": "interlayer", "function": "interlayer",
+     "patterns": ["\\bbcp\\b", "\\blif\\b", "\\bmoo3\\b", "\\bmose2\\b", "\\bmgf2\\b", "\\bnaf\\b", "siox", "alkali barrier", "cuxcryoz", "\\bbuffer\\b"]},
+    {"id": "back_contact", "function": "back_contact",
+     "patterns": ["carbon", "углерод", "\\bmo\\b", "\\bau\\b", "\\bag\\b", "\\bal\\b", "\\bcu\\b", "\\bgold\\b", "\\bsilver\\b", "\\baluminium\\b",
+                  "\\baluminum\\b", "\\bpt\\b", "\\bni\\b", "\\bcr\\b", "\\bti\\b", "золот", "серебр", "metal electrode"]}
+  ],
+  "vocab": ["front_contact", "ETL", "absorber", "passivation", "HTL", "interlayer", "recombination", "back_contact"],
+  "substrate_patterns": ["^glass$", "^стекло$", "polyimide", "полиимид", "\\bfoil\\b", "^substrate$", "подложк", "soda-lime", "\\bslg\\b"]
+}

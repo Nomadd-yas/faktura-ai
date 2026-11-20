@@ -195,14 +195,13 @@ def test_recheck_is_synchronous_and_does_not_call_ml(jv_paper, profile):
 def test_recheck_keeps_review_status_of_other_issues(jv_paper, profile):
     env, pid = jv_paper("25")
     with env.uow() as uow:
-        b = uow.papers.load_bundle(pid)
-        jv = next(i for i in b.issues if i.check_name == "jv_consistency")
-    with env.uow() as uow:
-        uow.issues.upsert_preserving_review(pid, [i.model_copy(update={"status": "ok"}) if i.key == jv.key else i
-                                                  for i in b.issues])
+        stored = next(i for i in uow.issues.list(pid) if i.record.check_name == "jv_consistency")
+        key = stored.record.key
+        # upsert_preserving_review статус существующего ключа не меняет - разбор ставится через set_status
+        uow.issues.set_status(stored.id, "ok")
         recheck_paper(uow, pid, profile)
     with env.uow() as uow:
-        again = [i for i in uow.papers.load_bundle(pid).issues if i.key == jv.key]
+        again = [i for i in uow.papers.load_bundle(pid).issues if i.key == key]
     assert again and again[0].status.value == "ok"
 
 

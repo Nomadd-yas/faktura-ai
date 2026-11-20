@@ -111,59 +111,27 @@ def _combine(be: IssueRecord, ml: IssueRecord, ids: list[str]) -> IssueRecord:
 
 
 def merge_issues(backend: list[IssueRecord], ml: list[IssueRecord]) -> list[IssueRecord]:
-    """4 правила слияния (план 5.3, К-15). Ключ k = (check_name, frozenset(record_ids)).
+    """Слияние находок ML и правил бэка (К-15, REQ-055).
 
-    1. Совпадение ключа -> одна запись: record_ids (и порядок), source_page, source_fragment, confidence - от ML,
-       если там не пусто; description, numbers, severity - от бэка; computed_by=backend, merged=True.
-    2. Пересечение (тот же check_name, scope=record, оба набора непусты и пересекаются) -> одна запись как в п.1,
-       record_ids - набор ML, лишние id бэка - в numbers.extra_record_ids. Пары выбираются по наибольшему
-       пересечению, независимо от порядка входа.
-    3. Пустые record_ids у ML и правило scope=paper с тем же check_name -> одна запись с пустыми record_ids.
-    4. Прочее - как есть. Повторы по k внутри бэка (и внутри ML) схлопываются.
-    Входные списки не меняются."""
-    be = _collapse(backend, by_paper_check=True)
-    mls = _collapse(ml, by_paper_check=False)
-    used_be: set[int] = set()
-    result_for_ml: dict[int, IssueRecord] = {}
-
-    be_by_key: dict[Key, int] = {}
-    for bi, b in enumerate(be):
-        be_by_key.setdefault(_k(b), bi)
-    # 1. точное совпадение ключа
-    for mi, m in enumerate(mls):
-        bi = be_by_key.get(_k(m))
-        if bi is not None and bi not in used_be:
-            used_be.add(bi)
-            result_for_ml[mi] = _combine(be[bi], m, m.record_ids)
-    # 3. замечание о статье
-    for mi, m in enumerate(mls):
-        if mi in result_for_ml or m.record_ids or _scope(m.check_name) != "paper":
+    Замечания ML выгружаются как есть (issue_id, record_ids, текст, источник не меняются); повторы по ключу
+    k = (check_name, frozenset(record_ids)) внутри ML не схлопываются. Правила бэка только ДОБАВЛЯЮТСЯ после
+    ML-овских и пропускаются, если ML уже дал замечание с тем же check_name и тем же либо пересекающимся набором
+    record_ids (для scope=paper с пустыми record_ids - с тем же check_name). Повторы внутри бэка схлопываются. Входные списки не меняются."""
+    mls = [m.model_copy(deep=True) for m in ml]
+    seen: set[Key] = {_k(m) for m in mls}
+    paper_seen: set[str] = {m.check_name for m in mls if _scope(m.check_name) == "paper" and not m.record_ids}
+    ml_ids: dict[str, set[str]] = {}
+    for m in mls:
+        ml_ids.setdefault(m.check_name, set()).update(m.record_ids)
+    out: list[IssueRecord] = list(mls)
+    for b in _collapse(backend, by_paper_check=True):
+        if _k(b) in seen:
             continue
-        for bi, b in enumerate(be):
-            if bi not in used_be and b.check_name == m.check_name and _scope(b.check_name) == "paper":
-                used_be.add(bi)
-                result_for_ml[mi] = _combine(b, m, [])
-                break
-    # 2. пересечение: жадно по наибольшему пересечению, детерминированно
-    pairs = []
-    for mi, m in enumerate(mls):
-        if mi in result_for_ml or not m.record_ids or _scope(m.check_name) != "record":
+        if _scope(b.check_name) == "record" and set(b.record_ids) & ml_ids.get(b.check_name, set()):
+            continue  # то же замечание ML с иным набором записей
+        if _scope(b.check_name) == "paper" and not b.record_ids and b.check_name in paper_seen:
             continue
-        ms = set(m.record_ids)
-        for bi, b in enumerate(be):
-            if bi in used_be or b.check_name != m.check_name or not b.record_ids:
-                continue
-            inter = ms & set(b.record_ids)
-            if inter:
-                pairs.append((-len(inter), tuple(sorted(ms)), tuple(sorted(b.record_ids)), mi, bi))
-    for _n, _mk, _bk, mi, bi in sorted(pairs):
-        if mi in result_for_ml or bi in used_be:
-            continue
-        used_be.add(bi)
-        result_for_ml[mi] = _combine(be[bi], mls[mi], mls[mi].record_ids)
-
-    out: list[IssueRecord] = [result_for_ml.get(mi, m) for mi, m in enumerate(mls)]
-    out += [b for bi, b in enumerate(be) if bi not in used_be]
+        out.append(b)
     return out
 
 

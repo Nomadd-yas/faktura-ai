@@ -11,10 +11,12 @@ from .human import (FLAT_FORMATS, PREVIEW_LIMIT, RELATIONAL_FORMATS, content_typ
                     file_extension, flat_head, preview)
 from .meta import META_DIR, META_FILES, build_manifest, check_status, check_summary, to_jsonable, write_meta, zip_dir
 from .sanitize import SanitizeResult, number_issues, parse_number_text, sanitize
+from .rows import paper_submission_tables
 from .select import SelectResult, manual_fact_problem, materialize_manual_fact, select_for_submission
 from .validate import parse_check_output, run_check_script, strict_validate
 
 __all__ = [
+    "paper_submission_tables",
     "write_submission", "write_tables", "table_bytes", "SUBMISSION_FILES",
     "export_flat", "export_relational", "preview", "flat_head", "content_type", "file_extension",
     "FLAT_FORMATS", "RELATIONAL_FORMATS", "PREVIEW_LIMIT",

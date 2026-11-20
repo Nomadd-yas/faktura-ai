@@ -103,10 +103,9 @@ def test_existing_note_is_preserved_when_appending(make_bundle):
 @pytest.mark.parametrize("bad", ["encapsulated glass", "maybe", "yes?"])
 def test_bad_boolean_not_left_as_text(make_bundle, bad):
     b = make_bundle()
-    b.devices[0].encapsulation = bad
+    # devices.encapsulation - свободный текст (README шаблона, эталон: «unencapsulated»), не логическое поле
     b.measurements[0].mask_used = bad
     out = sanitize([b]).bundles[0]
-    assert not isinstance(out.devices[0].encapsulation, str)
     assert not isinstance(out.measurements[0].mask_used, str)
 
 
@@ -127,6 +126,9 @@ def test_non_numeric_converted_or_cleared(make_bundle, table, col, raw, expected
     setattr(getattr(b, table)[0], col, raw)
     res = sanitize([b])
     v = getattr(getattr(res.bundles[0], table)[0], col)
+    if (table, col) == ("layers", "layer_thickness") and raw in ("18.2-19.0", "63–68"):
+        assert v == raw  # диапазон толщины остаётся текстом, как в эталоне («63–68»)
+        return
     assert not isinstance(v, str)
     assert v is None or v == expected
     assert res.events
@@ -165,21 +167,21 @@ def test_year_string_normalised(make_bundle):
 @pytest.mark.parametrize("table,val,unit", [("layers", "layer_thickness", "thickness_unit"),
                                             ("materials", "bandgap_value", "bandgap_unit"),
                                             ("devices", "active_area", "area_unit")])
-def test_unit_without_value_cleared(make_bundle, table, val, unit):
+def test_unit_without_value_kept(make_bundle, table, val, unit):
+    # эталон оставляет «eV» у пустой ширины зоны; README шаблона правила об очистке не содержит
     b = make_bundle()
     row = getattr(b, table)[0]
     setattr(row, val, None)
-    assert getattr(row, unit)  # исходно единица есть
+    assert getattr(row, unit)
     res = sanitize([b])
-    assert getattr(getattr(res.bundles[0], table)[0], unit) is None
-    assert res.events
+    assert getattr(getattr(res.bundles[0], table)[0], unit) == getattr(row, unit)
 
 
-def test_unit_cleared_when_value_cleared_by_sanitizer(make_bundle):
+def test_thickness_range_text_kept_with_unit(make_bundle):
     b = make_bundle()
-    b.layers[0].layer_thickness = "63-68"
+    b.layers[0].layer_thickness = "63–68"
     out = sanitize([b]).bundles[0].layers[0]
-    assert out.layer_thickness is None and out.thickness_unit is None
+    assert out.layer_thickness == "63–68" and out.thickness_unit == "nm"
 
 
 def test_unit_kept_with_value(make_bundle):
@@ -348,12 +350,19 @@ def _iss(iid, page, order):
     return r
 
 
-def test_number_issues_sequential_by_page_empty_last_then_order(make_bundle):
+def test_number_issues_keeps_ml_ids_and_order(make_bundle):
     b = make_bundle()
-    b.issues = [_iss("x", None, 0), _iss("y", 5, 1), _iss("z", 2, 2), _iss("w", 5, 0)]
+    b.issues = [_iss("I7", None, 0), _iss("I2", 5, 1), _iss("I5", 2, 2)]
     out = number_issues(b)
-    assert [i.issue_id for i in out.issues] == ["I1", "I2", "I3", "I4"]
-    assert [i.description for i in out.issues] == ["z", "w", "y", "x"]
+    assert [i.issue_id for i in out.issues] == ["I7", "I2", "I5"]
+    assert [i.meta.ml_order for i in out.issues] == [0, 1, 2]
+
+
+def test_number_issues_new_ids_continue_after_max(make_bundle):
+    b = make_bundle()
+    b.issues = [_iss("I3", 5, 0), _iss("", 1, 1), _iss("", None, 2), _iss("I3", 4, 3)]
+    out = number_issues(b)
+    assert [i.issue_id for i in out.issues] == ["I3", "I4", "I5", "I6"]  # повтор I3 - как безномерный
 
 
 def test_number_issues_empty(make_bundle):
@@ -368,7 +377,7 @@ def test_number_issues_single_gets_i1(make_bundle):
 
 def test_number_issues_is_stable_on_repeat(make_bundle):
     b = make_bundle()
-    b.issues = [_iss("x", 3, 1), _iss("y", 3, 0)]
+    b.issues = [_iss("I1", 3, 1), _iss("", 3, 0)]
     once = number_issues(b)
     twice = number_issues(once)
     assert [(i.issue_id, i.description) for i in once.issues] == [(i.issue_id, i.description) for i in twice.issues]
@@ -380,7 +389,7 @@ def test_number_issues_preserves_other_tables(make_bundle):
     assert out.publication.publication_id == "P001"
 
 
-def test_number_issues_numeric_page_order(make_bundle):
+def test_number_issues_does_not_reorder_by_page(make_bundle):
     b = make_bundle()
-    b.issues = [_iss("a", 10, 0), _iss("b", 9, 1)]
-    assert [i.source_page for i in number_issues(b).issues] == [9, 10]
+    b.issues = [_iss("I1", 10, 0), _iss("I2", 9, 1)]
+    assert [i.source_page for i in number_issues(b).issues] == [10, 9]

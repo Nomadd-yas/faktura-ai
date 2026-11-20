@@ -68,13 +68,13 @@ INTEGER_FIELDS: frozenset[tuple[str, str]] = frozenset({
 })
 
 BOOL_FIELDS: frozenset[tuple[str, str]] = frozenset({
-    ("publications", "in_scope"), ("devices", "encapsulation"),
+    ("publications", "in_scope"),
     ("measurements", "mask_used"), ("measurements", "certified"),
 })
 # разделитель списка в ячейке
 LIST_FIELDS: dict[tuple[str, str], str] = {
     ("publications", "authors"): "; ",
-    ("materials", "additives"): ";",
+    ("materials", "additives"): "; ",
     ("measurements", "device_id"): ";",
     ("issues", "record_ids"): ";",
 }

@@ -184,6 +184,10 @@ def _fix_cell(ctx: _Ctx, table: str, row: Any, col: str) -> None:
         setattr(row, col, str(v))
 
 
+RANGE_TEXT_FIELDS = {("layers", "layer_thickness")}
+_RANGE_TEXT = re.compile(r"^\d+(?:[.,]\d+)?\s*[–—-]\s*\d+(?:[.,]\d+)?$")
+
+
 def _fix_number(ctx: _Ctx, table: str, row: Any, col: str, v: Any) -> None:
     """Число в числовом поле. Тихо: int <-> Decimal без потери значения. С событием и note: всё остальное."""
     is_int = (table, col) in INTEGER_FIELDS
@@ -202,6 +206,9 @@ def _fix_number(ctx: _Ctx, table: str, row: Any, col: str, v: Any) -> None:
         reason = None if v.is_finite() else "не число"
     else:
         s = str(v).strip()
+        if (table, col) in RANGE_TEXT_FIELDS and _RANGE_TEXT.match(s):
+            setattr(row, col, s)  # диапазон толщины «63–68» - как в эталоне
+            return
         if s == "" or s.lower() in _PLACEHOLDERS:
             setattr(row, col, None)
             if s:
@@ -221,12 +228,9 @@ def _fix_number(ctx: _Ctx, table: str, row: Any, col: str, v: Any) -> None:
 
 
 def _fix_units(ctx: _Ctx) -> None:
-    for (table, vcol), (_, ucol) in UNIT_FOR_VALUE.items():
-        for row in getattr(ctx.b, table):
-            if getattr(row, vcol, None) is None and getattr(row, ucol, None) not in (None, ""):
-                old = getattr(row, ucol)
-                setattr(row, ucol, None)
-                ctx.log(f"{_row_label(table, row)}.{ucol}: «{old}» -> пусто (единица без значения, REQ-037)")
+    """Единица без значения (bandgap_unit/thickness_unit/area_unit) остаётся: эталон оставляет «eV» у пустой ширины
+    зоны, README шаблона правила об очистке не содержит."""
+    return None
 
 
 def _fix_publication_ids(ctx: _Ctx) -> None:
@@ -369,19 +373,29 @@ def _page_key(v: Any) -> int | None:
 
 
 def number_issues(bundle: PaperBundle) -> PaperBundle:
-    """I1, I2... по source_page (пустые - в конце), затем ml_order. Порядок строк в CSV - тот же
-    (meta.ml_order перенумеровывается), повторный вызов ничего не меняет. Остальные таблицы не трогаются."""
+    """Замечания с уже заданным issue_id (от ML) выгружаются как есть и в своём порядке; замечания без номера
+    (правила бэка) получают новые I<n> после максимального числового номера, в порядке списка. Повторный вызов
+    ничего не меняет. Остальные таблицы не трогаются."""
     b = bundle.model_copy(deep=True)
-    indexed = list(enumerate(b.issues))
-
-    def sort_key(item: tuple[int, Any]):
-        i, iss = item
-        page = _page_key(iss.source_page)
-        return (page is None, page if page is not None else 0, iss.meta.ml_order, i)
-
-    ordered = [iss for _, iss in sorted(indexed, key=sort_key)]
-    for n, iss in enumerate(ordered, 1):
-        iss.issue_id = f"I{n}"
-        iss.meta.ml_order = n - 1
-    b.issues = ordered
+    used: set[str] = set()
+    top = 0
+    for iss in b.issues:
+        iid = (iss.issue_id or "").strip()
+        iss.issue_id = iid
+        if iid and iid not in used:
+            used.add(iid)
+            m = re.fullmatch(r"I(\d+)", iid)
+            if m:
+                top = max(top, int(m.group(1)))
+        else:
+            iss.issue_id = ""
+    for iss in b.issues:
+        if not iss.issue_id:
+            top += 1
+            while f"I{top}" in used:
+                top += 1
+            iss.issue_id = f"I{top}"
+            used.add(iss.issue_id)
+    for n, iss in enumerate(b.issues):
+        iss.meta.ml_order = n
     return b

@@ -27,6 +27,7 @@ from . import query as Q
 from . import schema as S
 from ._types import (DEFAULT_WORKSPACE_NAME, RESTORE_WINDOW_DAYS, GoldSet, RefreshSession, StoredUser, Synonym,
                      Workspace)
+from .cursor import decode_cursor, encode_cursor
 from .codec import dec, dec_to_float, dec_to_str, dump_model, enc, load_model, str_to_dec, to_decimal
 from .stats import (ACTIVE_RUN, StatsRepo, recount_fact_open_issues, refresh_corpus_stats, refresh_paper_and_corpus,
                     refresh_paper_counters)
@@ -36,7 +37,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = ["WorkspacesRepo", "ProfilesRepo", "PapersRepo", "FactsRepo", "AnchorsRepo", "IssuesRepo", "CorporaRepo",
            "FilesRepo", "RunsRepo", "ActionsRepo", "StatsRepo", "GoldRepo", "IdempotencyRepo", "UsersRepo",
-           "SessionsRepo", "LoginAttemptsRepo", "ExportsRepo", "SynonymsRepo"]
+           "SessionsRepo", "LoginAttemptsRepo", "ExportsRepo", "SynonymsRepo", "SubTablesRepo"]
 
 
 # --- общее -------------------------------------------------------------------------------------
@@ -1461,3 +1462,94 @@ class SynonymsRepo(_Repo):
         t = S.dictionary_synonyms
         if self.c.execute(t.delete().where(t.c.id == synonym_id)).rowcount == 0:
             raise _not_found("Синоним", synonym_id)
+
+
+# --- 7 таблиц шаблона сдачи (sub_*) -----------------------------------------------------------------
+
+_RESULT_SORTS: dict[str, tuple[str, ...]] = {
+    "seq": (), "publication": ("publication_id",), "metric": ("metric_name", "publication_id"),
+}
+
+
+class SubTablesRepo(_Repo):
+    """Строки таблиц шаблона сдачи (значения - строки как в CSV). Запись - в транзакции сохранения статьи."""
+
+    def replace(self, paper_id: str, corpus_id: str | None, tables: dict[str, list[dict[str, str]]]) -> None:
+        """Удаляет прежние строки статьи и вставляет новые (position - порядок в списке)."""
+        for name, t in S.SUB.items():
+            self.c.execute(t.delete().where(t.c.paper_id == paper_id))
+            cols = TABLES[name]
+            rows = [dict({k: ("" if r.get(k) is None else str(r.get(k))) for k in cols},
+                         paper_id=paper_id, corpus_id=corpus_id or "", position=i)
+                    for i, r in enumerate(tables.get(name, []))]
+            if rows:
+                self.c.execute(t.insert(), rows)
+
+    def paper_tables(self, paper_id: str) -> dict[str, list[dict[str, str]]]:
+        """Все 7 таблиц статьи (ключ - имя таблицы шаблона), строки в порядке position."""
+        out: dict[str, list[dict[str, str]]] = {}
+        for name, t in S.SUB.items():
+            q = sa.select(*[t.c[k] for k in TABLES[name]]).where(t.c.paper_id == paper_id).order_by(
+                t.c.position, t.c.seq)
+            out[name] = [dict(r._mapping) for r in self.c.execute(q)]
+        return out
+
+    # --- чтение для API
+    def _visible(self, t: sa.Table, corpus_id: str):
+        ok = sa.select(S.papers.c.id).where(S.papers.c.deleted_at.is_(None))
+        return sa.and_(t.c.corpus_id == corpus_id, t.c.paper_id.in_(ok))
+
+    def _page(self, name: str, where: list, order: tuple[str, ...], sort_sig: str, limit: int,
+              cursor: str | None) -> tuple[list[dict[str, str]], int, str | None]:
+        t = S.SUB[name]
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise _bad("limit: положительное целое", "limit")
+        total = self.c.execute(sa.select(sa.func.count()).select_from(t).where(*where)).scalar() or 0
+        keys = [t.c[k] for k in order] + [t.c.seq]
+        q = sa.select(*[t.c[k] for k in TABLES[name]], t.c.seq).where(*where)
+        if cursor:
+            cur = decode_cursor(cursor)
+            if len(cur) != len(keys) + 1 or cur[0] != sort_sig:
+                raise _bad("Некорректный курсор", "cursor")
+            vals = list(cur[1:])
+            q = q.where(sa.tuple_(*keys) > sa.tuple_(*vals) if len(keys) > 1 else keys[0] > vals[0])
+        rows = self.c.execute(q.order_by(*keys).limit(limit + 1)).all()
+        more = len(rows) > limit
+        rows = rows[:limit]
+        nxt = None
+        if more and rows:
+            last = rows[-1]._mapping
+            nxt = encode_cursor([sort_sig, *[last[k.name] for k in keys]])
+        return [{k: r._mapping[k] for k in TABLES[name]} for r in rows], total, nxt
+
+    def list_results(self, corpus_id: str, pids: Sequence[str] | None = None, metrics: Sequence[str] | None = None,
+                     device_id: str | None = None, measurement_id: str | None = None,
+                     material_id: str | None = None, exclude_duplicates: bool = False, sort: str = "seq",
+                     limit: int = 50, cursor: str | None = None) -> tuple[list[dict[str, str]], int, str | None]:
+        """Строки results корпуса: (rows, total, next_cursor). sort: seq | publication | metric (keyset)."""
+        if sort not in _RESULT_SORTS:
+            raise _bad(f"sort: одно из {', '.join(_RESULT_SORTS)}", "sort")
+        t = S.sub_results
+        where = [self._visible(t, corpus_id)]
+        if pids:
+            where.append(t.c.publication_id.in_(list(pids)))
+        if metrics:
+            where.append(t.c.metric_name.in_(list(metrics)))
+        for col, v in (("device_id", device_id), ("measurement_id", measurement_id), ("material_id", material_id)):
+            if v:
+                where.append(t.c[col] == v)
+        if exclude_duplicates:
+            where.append(t.c.duplicate_of == "")
+        return self._page("results", where, _RESULT_SORTS[sort], sort, limit, cursor)
+
+    def list_issues(self, corpus_id: str, pids: Sequence[str] | None = None,
+                    check_names: Sequence[str] | None = None, limit: int = 50, cursor: str | None = None
+                    ) -> tuple[list[dict[str, str]], int, str | None]:
+        """Строки issues корпуса: (rows, total, next_cursor), порядок по seq."""
+        t = S.sub_issues
+        where = [self._visible(t, corpus_id)]
+        if pids:
+            where.append(t.c.publication_id.in_(list(pids)))
+        if check_names:
+            where.append(t.c.check_name.in_(list(check_names)))
+        return self._page("issues", where, (), "seq", limit, cursor)

@@ -78,13 +78,11 @@ def test_one_sun_counts_as_intensity(mk):
     assert out == []
 
 
-def test_ml_duplicates_with_same_key_are_joined_not_lost_d010(mk):
+def test_ml_duplicates_with_same_key_are_exported_as_is_d010(mk):
     ml = [mk.issue("contradiction", [], desc="Структура прибора расходится"),
           mk.issue("contradiction", [], desc="Подложка расходится")]
     out = merge_issues([], ml)
-    assert len(out) == 1
-    assert "Структура" in out[0].description and "Подложка" in out[0].description
-    assert len(out[0].numbers["merged_duplicates"]) == 1
+    assert [i.description for i in out] == ["Структура прибора расходится", "Подложка расходится"]
 
 
 def test_paper_scope_key_stable_when_text_changes(mk):

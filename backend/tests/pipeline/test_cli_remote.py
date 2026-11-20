@@ -16,10 +16,13 @@ TABLE_FILES = sorted(f"{t}.csv" for t in TABLES)
 
 def make_zip(check_status="ok") -> bytes:
     buf = io.BytesIO()
+    def entry(name: str) -> zipfile.ZipInfo:  # фикстура clock замораживает time.time около 0: дата 1970 в ZIP нельзя
+        return zipfile.ZipInfo(name, (2024, 1, 1, 0, 0, 0))
+
     with zipfile.ZipFile(buf, "w") as zf:
         for t, cols in TABLES.items():
-            zf.writestr(f"{t}.csv", "﻿" + ",".join(cols) + "\r\n")
-        zf.writestr("check_report.txt", "Ошибок: 0\n" if check_status != "failed" else "Ошибок: 3\n")
+            zf.writestr(entry(f"{t}.csv"), "﻿" + ",".join(cols) + "\r\n")
+        zf.writestr(entry("check_report.txt"), "Ошибок: 0\n" if check_status != "failed" else "Ошибок: 3\n")
     return buf.getvalue()
 
 

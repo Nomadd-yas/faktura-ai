@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -45,6 +46,18 @@ def _text(v: Any) -> str | None:
         return s or "0"
     s = str(v).strip()
     return s or None
+
+
+def _keep_source(source: Any, normalized: Decimal | None, *more: Any) -> Decimal | None:
+    """Значение не менялось - запись как в источнике (71.0 остаётся 71.0, без нормализации хвостовых нулей).
+    Сравниваются source и more (например, уже заданные ML normalized_value / metric_value)."""
+    if isinstance(normalized, Decimal):
+        for cand in (source, *more):
+            if isinstance(cand, (Decimal, str)):
+                d = _dec(cand)
+                if d is not None and d == normalized:
+                    return d
+    return normalized
 
 
 def _empty(v: Any) -> bool:
@@ -119,7 +132,11 @@ def _step_result_value(r: Result, normalizer: Normalizer, trace: list[TraceStep]
     elif status == "not_applicable" and res.normalized_value is None:
         r.meta.norm_issue = None
     else:
-        r.normalized_value = res.normalized_value
+        nv = _keep_source(r.raw_value, res.normalized_value, r.normalized_value, r.metric_value)
+        if (status == "converted" and res.normalized_unit == "%" and isinstance(nv, Decimal) and nv.is_finite()
+                and nv == nv.to_integral_value() and nv.as_tuple().exponent >= 0):
+            nv = nv.quantize(Decimal("0.1"))  # доля -> %: целое с одним знаком (0.71 -> 71.0), как в эталоне
+        r.normalized_value = nv
         r.normalized_unit = res.normalized_unit or None
         r.metric_value = r.normalized_value
         r.metric_unit = r.normalized_unit
@@ -148,7 +165,7 @@ def _step_field(row: Any, table: str, column: str, normalizer: Normalizer) -> No
     unit = getattr(row, unit_col) if unit_col else None
     res = normalizer.normalize_field(table, column, _text(value), _text(unit))
     if res.norm_status in _OK_STATUSES and res.normalized_value is not None:
-        setattr(row, column, res.normalized_value)
+        setattr(row, column, _keep_source(value, res.normalized_value))
         if unit_col and res.normalized_unit:
             setattr(row, unit_col, res.normalized_unit)
         if res.norm_status == "converted":
@@ -184,20 +201,18 @@ def _step_layers(b: PaperBundle, normalizer: Normalizer) -> None:
 def _step_devices(b: PaperBundle, normalizer: Normalizer) -> None:
     for d in b.devices:
         _step_field(d, "devices", "active_area", normalizer)
+        # encapsulation - свободный текст (README шаблона не задаёт словарь; эталон: «unencapsulated»): как есть
         enc = d.encapsulation
-        if isinstance(enc, bool) or enc is None:
-            continue
-        value, note = normalizer.normalize_encapsulation(enc)
-        d.encapsulation = value
-        if value is None and note:
-            d.note = _append_note(d.note, f"encapsulation: {note}")
+        if isinstance(enc, bool):
+            d.encapsulation = "encapsulated" if enc else "unencapsulated"
 
 
 def _step_measurements(b: PaperBundle, normalizer: Normalizer) -> None:
     for ms in b.measurements:
         if isinstance(ms.spectrum, str) and ms.spectrum.strip():
             s = normalizer.normalize_spectrum(ms.spectrum)
-            if s:
+            # только чистый вариант написания («AM 1.5G»); пояснения в скобках (эталон) не затираются
+            if s and re.sub(r"[\s_-]", "", ms.spectrum).casefold() == re.sub(r"[\s_-]", "", s).casefold():
                 ms.spectrum = s
         li = ms.light_intensity
         if isinstance(li, str) and li.strip():
@@ -209,10 +224,8 @@ def _step_measurements(b: PaperBundle, normalizer: Normalizer) -> None:
 
 
 def _step_units(b: PaperBundle) -> None:
-    for (table, col), (_, unit_col) in UNIT_FOR_VALUE.items():
-        for row in getattr(b, table):
-            if _empty(getattr(row, col)) and not _empty(getattr(row, unit_col)):
-                setattr(row, unit_col, None)
+    # единицы bandgap/thickness/area при пустом значении не очищаются: эталон оставляет «eV» у пустой ширины зоны
+    # (README шаблона такого правила не содержит); очищаются только единицы показателей results
     for r in b.results:
         if _empty(r.metric_value) and not _empty(r.metric_unit):
             r.metric_unit = None

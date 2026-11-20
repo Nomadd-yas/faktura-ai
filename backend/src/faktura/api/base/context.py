@@ -47,7 +47,13 @@ class AppContext:
                 import faktura.pipeline as pipeline  # noqa: PLC0415 - ленивый импорт (нет циклов, быстрый старт)
 
                 try:
-                    self.services = pipeline.build_services(self.settings)
+                    sv = pipeline.build_services(self.settings)
+                    # первый запуск сервера: схема БД и администратор из FAKTURA_ADMIN_EMAIL/PASSWORD
+                    sv.db.create_all()
+                    from ...storage import seed_admin  # noqa: PLC0415
+
+                    seed_admin(sv.db, self.settings)
+                    self.services = sv
                 except AppError:
                     raise
                 except Exception as e:  # pragma: no cover - зависит от окружения

@@ -1,0 +1,12 @@
+{
+  "version": "1",
+  "note": "Канонизация формул (spec/06 §6.3). aliases: ключ без пробелов, ASCII, в нижнем регистре -> формула. cations: сокращение катиона в начале формулы A-B-X -> раскрытая запись.",
+  "aliases": {
+    "mapbi3": "CH3NH3PbI3", "mapbbr3": "CH3NH3PbBr3", "mapbcl3": "CH3NH3PbCl3", "masni3": "CH3NH3SnI3",
+    "fapbi3": "HC(NH2)2PbI3", "fapbbr3": "HC(NH2)2PbBr3", "fasni3": "HC(NH2)2SnI3",
+    "czts": "Cu2ZnSnS4", "czte": "Cu2ZnSnSe4", "cztse": "Cu2ZnSnSe4", "cztsse": "Cu2ZnSn(S,Se)4",
+    "cigs": "Cu(In,Ga)Se2", "cigse": "Cu(In,Ga)Se2", "cis": "CuInSe2", "cgs": "CuGaSe2"
+  },
+  "cations": {"MA": "CH3NH3", "FA": "HC(NH2)2"},
+  "known": ["CdTe", "CdS", "Sb2Se3", "Sb2S3", "CsPbI3", "CsPbI2Br", "CsPbIBr2", "CsPbBr3", "TiO2", "SnO2", "ZnO", "NiO", "MoO3", "CuSCN", "CuI", "Cu2O", "PbI2", "Spiro-OMeTAD"]
+}

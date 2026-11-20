@@ -41,6 +41,12 @@ API_ERROR_CODES: dict[str, tuple[int, str]] = {
     "nothing_to_export": (422, "Нечего экспортировать — выберите статьи или снимите «только принятые»"),
     "paper_not_ready": (422, "Статья ещё разбирается"),
     "submission_invalid": (422, "Набор не прошёл проверку"),
+    # ядро v1 (CORE_API.md)
+    "domain_not_supported": (422, "Эта область пока не поддерживается: доступна только solar"),
+    "no_files": (400, "Не выбрано ни одного файла"),
+    "too_large": (413, "Слишком большая загрузка"),
+    "unsupported_media_type": (415, "Нужны PDF-файлы или один ZIP-архив"),
+    "run_in_progress": (409, "Разбор ещё идёт — выгрузка будет готова после завершения"),
 }
 for _code, _val in API_ERROR_CODES.items():
     ERROR_CATALOG.setdefault(_code, _val)

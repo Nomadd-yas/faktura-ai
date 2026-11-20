@@ -48,7 +48,8 @@ def test_eval_detects_wrong_value(run_cli, mini_gold_dir, tmp_path):
     pred = tmp_path / "pred"
     shutil.copytree(mini_gold_dir, pred)
     p = pred / "results.csv"
-    txt = p.read_text(encoding="utf-8-sig").replace("12.89", "99.9", 1)
+    # eval сравнивает normalized_value (К-3), поэтому портим все вхождения, а не только metric_value
+    txt = p.read_text(encoding="utf-8-sig").replace("12.89", "99.9")
     p.write_text(txt, encoding="utf-8-sig")
     rep = tmp_path / "rep.json"
     r = run_cli("eval", "--gold", mini_gold_dir, "--pred", pred, "--json", rep)

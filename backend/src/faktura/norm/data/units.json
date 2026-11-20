@@ -1,0 +1,53 @@
+{
+  "version": "1",
+  "note": "Целевые единицы и множители (spec/06 §6.1). factor - строка 'числитель[/знаменатель]'. aliases: ключ после очистки (без пробелов, Omega->ohm, mu->u, точка-умножение->*, ^ убран) -> каноническая единица. Сначала ищется точное совпадение, затем в нижнем регистре.",
+  "groups": {
+    "percent":     {"target": "%",        "factors": {"%": "1", "fraction": "100"}},
+    "voltage":     {"target": "V",        "factors": {"V": "1", "mV": "1/1000"}},
+    "current":     {"target": "mA/cm2",   "factors": {"mA/cm2": "1", "A/m2": "1/10", "A/cm2": "1000", "uA/cm2": "1/1000"}},
+    "resistance":  {"target": "Ohm*cm2",  "factors": {"Ohm*cm2": "1", "kOhm*cm2": "1000", "mOhm*cm2": "1/1000"}},
+    "time":        {"target": "h",        "factors": {"h": "1", "min": "1/60", "day": "24", "s": "1/3600"}},
+    "dimensionless": {"target": null,     "factors": {}}
+  },
+  "fields": {
+    "materials.bandgap_value": {"target": "eV",  "factors": {"eV": "1", "meV": "1/1000"}},
+    "layers.layer_thickness":  {"target": "nm",  "factors": {"nm": "1", "um": "1000", "mm": "1000000", "angstrom": "1/10", "cm": "10000000"}},
+    "devices.active_area":     {"target": "cm2", "factors": {"cm2": "1", "mm2": "1/100", "m2": "10000"}}
+  },
+  "field_aliases": {
+    "bandgap_value": "materials.bandgap_value", "bandgap": "materials.bandgap_value",
+    "layer_thickness": "layers.layer_thickness", "thickness": "layers.layer_thickness",
+    "active_area": "devices.active_area", "area": "devices.active_area"
+  },
+  "display": {
+    "V": "В", "mV": "мВ", "%": "%", "mA/cm2": "мА/см²", "A/m2": "А/м²", "A/cm2": "А/см²", "uA/cm2": "мкА/см²",
+    "Ohm*cm2": "Ом·см²", "kOhm*cm2": "кОм·см²", "mOhm*cm2": "мОм·см²", "h": "ч", "min": "мин", "day": "сут", "s": "с",
+    "eV": "эВ", "meV": "мэВ", "nm": "нм", "um": "мкм", "mm": "мм", "cm": "см", "angstrom": "Å",
+    "cm2": "см²", "mm2": "мм²", "m2": "м²", "fraction": "доля"
+  },
+  "aliases": {
+    "%": "%", "percent": "%", "pct": "%", "проценты": "%",
+    "fraction": "fraction", "frac": "fraction", "доля": "fraction", "rel": "fraction",
+    "V": "V", "volt": "V", "volts": "V", "в": "V",
+    "mV": "mV", "millivolt": "mV", "мв": "mV",
+    "mA/cm2": "mA/cm2", "macm-2": "mA/cm2", "ma*cm-2": "mA/cm2", "macm2": "mA/cm2", "ma/cm-2": "mA/cm2",
+    "ма/см2": "mA/cm2", "мa/см2": "mA/cm2",
+    "A/m2": "A/m2", "am-2": "A/m2", "а/м2": "A/m2",
+    "A/cm2": "A/cm2", "acm-2": "A/cm2", "а/см2": "A/cm2",
+    "uA/cm2": "uA/cm2", "uacm-2": "uA/cm2",
+    "Ohm*cm2": "Ohm*cm2", "ohmcm2": "Ohm*cm2", "ohm*cm2": "Ohm*cm2", "ohmcm-2": "Ohm*cm2", "ом*см2": "Ohm*cm2", "омсм2": "Ohm*cm2",
+    "kOhm*cm2": "kOhm*cm2", "kohm*cm2": "kOhm*cm2", "kohmcm2": "kOhm*cm2", "ком*см2": "kOhm*cm2",
+    "mOhm*cm2": "mOhm*cm2",
+    "Ohm": "Ohm", "ohm": "Ohm", "ом": "Ohm", "kOhm": "kOhm", "ohm/sq": "Ohm/sq",
+    "h": "h", "hr": "h", "hrs": "h", "hour": "h", "hours": "h", "ч": "h",
+    "min": "min", "minute": "min", "minutes": "min", "мин": "min",
+    "d": "day", "day": "day", "days": "day", "сут": "day", "дн": "day",
+    "s": "s", "sec": "s", "с": "s",
+    "eV": "eV", "эв": "eV", "meV": "meV",
+    "nm": "nm", "нм": "nm",
+    "um": "um", "micron": "um", "microns": "um", "мкм": "um",
+    "mm": "mm", "мм": "mm", "cm": "cm", "см": "cm",
+    "å": "angstrom", "angstrom": "angstrom", "ang": "angstrom",
+    "cm2": "cm2", "см2": "cm2", "mm2": "mm2", "мм2": "mm2", "m2": "m2"
+  }
+}

@@ -51,8 +51,11 @@ def _json_value(table: str, col: str, text: str | None) -> Any:
     if isinstance(v, Decimal):
         if (table, col) in INTEGER_FIELDS and v == v.to_integral_value():
             return int(v)
+        text_v = format(v, "f")
+        if "." not in text_v and abs(v) < 10**15:
+            return int(v)  # «100» остаётся 100, а не 100.0
         f = float(v)
-        return f if Decimal(repr(f)) == v else format(v, "f")
+        return f if repr(f) == text_v else text_v  # запись как в источнике (71.0 -> 71.0)
     return v
 
 

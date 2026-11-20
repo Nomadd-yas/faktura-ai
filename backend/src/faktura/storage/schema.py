@@ -15,6 +15,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 
+from ..domain.tables import TABLES as _SUB_COLUMNS
+
 metadata = sa.MetaData()
 
 JSONType = sa.JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
@@ -284,6 +286,33 @@ issues = sa.Table(
     sa.Column("updated_at", UTCDateTime, nullable=False),
     sa.Index("ix_issues_paper", "paper_id", "position"),
 )
+
+# --- 7 таблиц шаблона сдачи (solar): строки статьи ровно как в CSV экспорта ----------------------------
+# Колонки README 1:1 (domain.tables.TABLES), значения - строки, пустая строка = нет значения.
+
+SUB_TABLES: tuple[str, ...] = tuple(_SUB_COLUMNS)
+
+
+def _sub_table(name: str) -> sa.Table:
+    cols = [
+        sa.Column("seq", sa.Integer, primary_key=True, autoincrement=True),
+        _paper_fk(),
+        sa.Column("corpus_id", sa.String(64), nullable=False, default="", server_default=""),
+        sa.Column("position", sa.Integer, nullable=False, default=0),
+    ]
+    cols += [sa.Column(c, sa.Text, nullable=False, default="", server_default="") for c in _SUB_COLUMNS[name]]
+    idx = [sa.Index(f"ix_sub_{name}_paper", "paper_id", "position")]
+    if name == "results":
+        idx += [sa.Index("ix_sub_results_corpus_pub", "corpus_id", "publication_id"),
+                sa.Index("ix_sub_results_corpus_metric", "corpus_id", "metric_name")]
+    if name == "issues":
+        idx += [sa.Index("ix_sub_issues_corpus_pub", "corpus_id", "publication_id")]
+    return sa.Table(f"sub_{name}", metadata, *cols, *idx)
+
+
+SUB: dict[str, sa.Table] = {n: _sub_table(n) for n in SUB_TABLES}
+sub_publications, sub_materials, sub_devices, sub_layers, sub_measurements, sub_results, sub_issues = (
+    SUB[n] for n in SUB_TABLES)
 
 # --- кеш агрегатов корпуса (REQ-101) -----------------------------------------------------------
 

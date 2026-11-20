@@ -350,7 +350,7 @@ class PaperProcessor:
                 prev = uow.papers.get(paper.id)
                 versions["parser"] = (prev.versions or {}).get("parser", "") if prev else ""
                 versions["from_cache"] = (prev.versions or {}).get("from_cache", "false") if prev else "false"
-        self._save(paper, bundle, facts, anchors, issues, stats, mv, versions, keep_review=keep_review,
+        self._save(paper, bundle, facts, anchors, issues, stats, mv, versions, keep_review=keep_review, profile=profile,
                    needs_ocr=bool(doc.needs_ocr) if doc is not None else None,
                    page_count=doc.page_count if doc is not None else None)
         self._publish(paper.workspace_id, "paper.done",
@@ -361,7 +361,7 @@ class PaperProcessor:
 
     def _save(self, paper, bundle: PaperBundle, facts: list[FactDraft], anchors: list[AnchorDraft],
               issues: list[IssueRecord], stats: PaperStats, mv: str, versions: dict, *, keep_review: bool,
-              needs_ocr: bool | None, page_count: int | None) -> None:
+              needs_ocr: bool | None, page_count: int | None, profile: ExtractionProfile | None = None) -> None:
         """Одна транзакция: замена строк, фактов, якорей и замечаний; перенос правок; смысловые дубли."""
         with self.services.db.uow() as uow:
             old_facts = uow.facts.list_for_paper(paper.id)
@@ -373,6 +373,8 @@ class PaperProcessor:
             uow.papers.save_processed(paper.id, bundle, facts, anchors, issues, stats=stats, model_version=str(mv),
                                       versions=versions)
             self._restore_review(uow, paper.id, old_facts, keep_review=keep_review)
+            if profile is not None:
+                self._save_sub_tables(uow, paper, profile)
             fields: dict[str, Any] = dict(status=PaperStatus.done, error_code=None,
                                           title_key=publication_title_key(bundle.publication))
             if needs_ocr is not None:
@@ -384,6 +386,15 @@ class PaperProcessor:
                 refresh_semantic_duplicate(uow, paper.id, bundle.publication)
             elif paper.dup_kind is not None:
                 uow.papers.set_duplicate(paper.id, None, None)
+
+    @staticmethod
+    def _save_sub_tables(uow, paper, profile: ExtractionProfile) -> None:
+        """Строки 7 таблиц шаблона (sub_*) - те же, что выдал бы экспорт CSV: из сохранённой статьи с правками."""
+        from ..export import paper_submission_tables
+
+        saved = uow.papers.load_bundle(paper.id, apply_review=True)
+        tables, _ = paper_submission_tables(saved, profile, manual_facts=uow.facts.manual_for_paper(paper.id))
+        uow.sub.replace(paper.id, paper.corpus_id, tables)
 
     @staticmethod
     def _restore_review(uow, paper_id: str, old_facts: list[Fact], *, keep_review: bool) -> None:
@@ -428,6 +439,7 @@ class PaperProcessor:
             issues = [i.record for i in uow.issues.list(paper.id, include_stale=False)]
             stats = paper_stats(bundle, facts, issues, profile)
             uow.papers.update(paper.id, stats=stats, status=PaperStatus.done, error_code=None)
+            self._save_sub_tables(uow, paper, profile)
         if diff.opened or diff.closed:
             self._publish(paper.workspace_id, "issues.changed",
                           {"paper_id": paper.id, "opened": len(diff.opened), "closed": len(diff.closed)})

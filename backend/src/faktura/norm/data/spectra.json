@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "note": "Спектр освещения (spec/06 §6.3). patterns - regex по тексту в нижнем регистре (NFKC); порядок важен.",
+  "spectra": [
+    {"value": "AM0", "patterns": ["\\bam\\s*0\\b"]},
+    {"value": "AM1.5D", "patterns": ["\\bam\\s*1[.,]5\\s*d\\b"]},
+    {"value": "AM1.5G", "patterns": ["\\bam\\s*1[.,]5\\s*g?\\b", "\\b1[.,]5\\s*am\\b", "\\bam\\s*1[.,]5g"]}
+  ]
+}

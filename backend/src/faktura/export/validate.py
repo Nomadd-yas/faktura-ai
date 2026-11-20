@@ -19,7 +19,7 @@ from pathlib import Path
 from ..domain.entities import CheckReport, ValidationProblem
 from ..domain.tables import (BOOL_FIELDS, CHECK_CATALOG, EVAL_METRICS, ID_COLUMN, INTEGER_FIELDS, LIST_FIELDS,
                              NUMERIC_FIELDS, NUMERIC_STRICT, TABLES, TARGET_UNITS, UNIT_FOR_VALUE, VOCAB)
-from .sanitize import REFERENCES
+from .sanitize import _RANGE_TEXT, RANGE_TEXT_FIELDS, REFERENCES
 
 __all__ = ["strict_validate", "run_check_script", "parse_check_output"]
 
@@ -84,7 +84,7 @@ def strict_validate(tables: dict[str, list[dict[str, str]]]) -> list[ValidationP
                     probs.append(_p("error", "vocab", f"{t}.csv, строка {i}: {c} = «{v}» — нет в списке допустимых",
                                     t, i, c))
                 elif key in NUMERIC_FIELDS:
-                    if not _is_number(v):
+                    if not _is_number(v) and not (key in RANGE_TEXT_FIELDS and _RANGE_TEXT.match(v)):
                         probs.append(_p("error", "not_number", f"{t}.csv, строка {i}: {c} = «{v}» — не число",
                                         t, i, c))
                     elif key in INTEGER_FIELDS and not _is_integer(v):

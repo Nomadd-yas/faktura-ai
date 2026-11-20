@@ -13,6 +13,8 @@ from fastapi import APIRouter
 from .events import EventTokens, sse_stream
 from .exports import ExportJobs
 
-ROUTERS: list[APIRouter] = []  # роутеры добавляет исполнитель модуля
+from .routes_runs import router as runs_router
+
+ROUTERS: list[APIRouter] = [runs_router]  # ядро v1: /runs (CORE_API §2, §4)
 
 __all__ = ["ROUTERS", "sse_stream", "EventTokens", "ExportJobs"]

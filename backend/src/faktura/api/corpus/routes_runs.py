@@ -1,0 +1,245 @@
+"""Разбор (Run): POST/GET /runs, GET /runs/{id}, /runs/{id}/summary, /runs/{id}/submission.zip (CORE_API §2, §4)."""
+from __future__ import annotations
+
+import io
+import logging
+import re
+import shutil
+import tempfile
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, Response
+
+from ...domain.entities import CorpusFileStatus, CurrentUser, RunStatus
+from ...domain.errors import AppError
+from ...domain.services import Services
+from ...domain.tables import TABLES
+from ...pdfio.inputs import CollectResult, ZipLimits, collect_inputs
+from ...storage import decode_cursor, encode_cursor
+from ..base.deps import JSON_MEDIA_TYPE, current_user, get_services, upload_rate_limit
+from .views import (DOMAIN, CORPUS_KIND, RunData, corpus_id_of, default_title, get_corpus, run_id_of, run_summary,
+                    run_view, user_corpora)
+
+log = logging.getLogger("faktura.api")
+router = APIRouter(tags=["runs"])
+
+_REJECT_CODES = {"duplicate_name": "duplicate", "pdf_broken": "broken_pdf", "pdf_encrypted": "broken_pdf",
+                 "pdf_no_text": "broken_pdf"}
+_NOT_PDF_MSG = "Можно загрузить только PDF"
+_MB = 1024 * 1024
+
+
+def _safe_rel(name: str | None) -> str | None:
+    """Относительный путь из имени загруженного файла (для папки - с подпапками); без `..`, дисков и пустых частей."""
+    parts = [p for p in re.split(r"[\\/]+", name or "") if p not in ("", ".", "..") and ":" not in p]
+    return "/".join(parts) if parts else None
+
+
+def _reject_row(name: str, code: str, message: str) -> dict:
+    return {"name": name, "code": _REJECT_CODES.get(code, code), "message": message}
+
+
+def _save_uploads(files: list[UploadFile], root: Path, limit_bytes: int, limit_files: int):
+    """Файлы -> папка root. Возвращает отклонённые заранее (пустые, повторы пути, мусорные имена)."""
+    rejected: list[dict] = []
+    total = 0
+    if len(files) > limit_files:
+        raise AppError("too_large", f"Слишком много файлов: не больше {limit_files} за раз")
+    for up in files:
+        rel = _safe_rel(up.filename)
+        if rel is None:
+            rejected.append(_reject_row(up.filename or "(без имени)", "unsupported_file", _NOT_PDF_MSG))
+            continue
+        dest = root / rel
+        if dest.exists():
+            rejected.append(_reject_row(rel, "duplicate", f"{rel}: файл с таким путём уже передан"))
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as out:
+            shutil.copyfileobj(up.file, out, _MB)
+        size = dest.stat().st_size
+        total += size
+        if total > limit_bytes:
+            raise AppError("too_large", f"Загрузка больше {limit_bytes // _MB} МБ")
+        if size == 0:
+            dest.unlink()
+            rejected.append(_reject_row(rel, "empty_file", f"{rel}: пустой файл"))
+    return rejected
+
+
+def _collect(services: Services, work: Path, files: list[UploadFile], archive: UploadFile | None
+             ) -> tuple[CollectResult, list[dict], str | None]:
+    s = services.settings
+    pre: list[dict] = []
+    limits = ZipLimits.from_settings(s)
+    if archive is not None:
+        name = _safe_rel(archive.filename) or "archive.zip"
+        name = name.rsplit("/", 1)[-1]
+        if not name.lower().endswith(".zip"):
+            raise AppError("unsupported_media_type", "Архив должен быть в формате ZIP")
+        zp = work / "up" / name
+        pre = _save_uploads([archive], zp.parent, s.max_zip_mb * _MB, 1)
+        if not zp.exists():
+            raise AppError("no_files", "Архив пустой")
+        res = collect_inputs(zp, limits=limits, work_dir=work / "unz")
+        if not res.files:
+            top = [r for r in res.rejected if r.name == name]
+            if top:
+                if top[0].code == "zip_bomb":
+                    raise AppError("zip_bomb", top[0].message, http_status=422)
+                if top[0].code == "zip_too_large":
+                    raise AppError("too_large", top[0].message)
+                raise AppError("unsupported_media_type", top[0].message)
+        return res, pre, name
+    root = work / "up"
+    root.mkdir(parents=True, exist_ok=True)
+    pre = _save_uploads(files, root, s.max_upload_mb * _MB, s.max_upload_files)
+    return collect_inputs(root, limits=limits, work_dir=work / "unz"), pre, None
+
+
+@router.post("/runs", status_code=202, summary="Создать разбор (загрузка PDF/ZIP)")
+def create_run(request: Request, file: list[UploadFile] | None = File(default=None),
+               archive: UploadFile | None = File(default=None), domain: str = Form("solar"),
+               title: str | None = Form(default=None), user: CurrentUser = Depends(upload_rate_limit),
+               services: Services = Depends(get_services)):
+    from ...pipeline import CorpusService, RunService
+
+    if domain != DOMAIN:
+        raise AppError("domain_not_supported", field="domain")
+    files = [f for f in (file or []) if f is not None and (f.filename or "")]
+    if archive is not None and not (archive.filename or ""):
+        archive = None
+    if files and archive is not None:
+        raise AppError("validation_error", "Передайте либо файлы (file), либо один ZIP (archive)", field="archive")
+    if not files and archive is None:
+        raise AppError("no_files")
+    work = Path(tempfile.mkdtemp(prefix="faktura_up_"))
+    try:
+        collected, pre_rejected, zip_name = _collect(services, work, files, archive)
+        for r in collected.rejected:
+            if r.code == "unsupported_file":
+                r.message = _NOT_PDF_MSG
+        cs = CorpusService(services)
+        now = datetime.now(timezone.utc)
+        n_guess = len(collected.files)
+        name = (title or "").strip() or zip_name or default_title(n_guess, now)
+        corpus = cs.create(user.workspace_id, user.id, name, DOMAIN, kind=CORPUS_KIND)
+        try:
+            intake = cs.add_inputs(corpus.id, collected, mode="api", dedupe=True, reuse_existing=False)
+        except BaseException:
+            _drop(services, corpus.id)
+            raise
+        rejected = [*pre_rejected,
+                    *[_reject_row(r.rel_path or r.name, _intake_code(r), r.message) for r in intake.rejected],
+                    *[_reject_row(f.source or f.name, "duplicate",
+                                  f"{f.source or f.name}: такой же файл (SHA-256) уже есть в этом разборе")
+                      for f in intake.skipped_duplicates]]
+        if not intake.added:
+            _drop(services, corpus.id)
+            raise AppError("no_files", "Среди загруженного нет подходящих PDF", details={"rejected": rejected})
+        if not (title or "").strip() and not zip_name:
+            with services.db.uow() as uow:
+                uow.corpora.update(corpus.id, name=default_title(len(intake.added), now))
+        rs = RunService(services)
+        run = rs.start(corpus.id, "full", user_id=user.id)
+        rs.submit(run.id)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    with services.db.uow() as uow:
+        body = run_view(uow, uow.corpora.get(corpus.id))
+    body["rejected"] = rejected
+    return JSONResponse(body, status_code=202, media_type=JSON_MEDIA_TYPE,
+                        headers={"Location": f"/api/v1/runs/{run_id_of(corpus.id)}"})
+
+
+def _intake_code(r) -> str:
+    """PDF по расширению, но содержимое не PDF - это битый файл, а не «не тот формат»."""
+    if r.code == "unsupported_file" and r.name.lower().endswith(".pdf"):
+        return "broken_pdf"
+    return r.code
+
+
+def _drop(services: Services, corpus_id: str) -> None:
+    try:
+        with services.db.uow() as uow:
+            uow.corpora.soft_delete(corpus_id)
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось убрать пустой разбор %s", corpus_id)
+
+
+@router.get("/runs", summary="Список разборов")
+def list_runs(limit: int = Query(20, ge=1, le=200), cursor: str | None = None, files: bool = True,
+              user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
+    offset = 0
+    if cursor:
+        cur = decode_cursor(cursor)
+        if len(cur) != 2 or cur[0] != "runs" or not isinstance(cur[1], int) or cur[1] < 0:
+            raise AppError("validation_error", "Некорректный курсор", field="cursor")
+        offset = cur[1]
+    with services.db.uow() as uow:
+        corpora = user_corpora(uow, user)
+        page = corpora[offset:offset + limit]
+        data = [run_view(uow, c, files="short" if files else "none") for c in page]
+    nxt = encode_cursor(["runs", offset + limit]) if offset + limit < len(corpora) else None
+    return {"data": data, "next_cursor": nxt}
+
+
+@router.get("/runs/{run_id}", summary="Разбор целиком")
+def get_run(run_id: str, user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
+    with services.db.uow() as uow:
+        return run_view(uow, get_corpus(uow, user, run_id))
+
+
+@router.get("/runs/{run_id}/summary", summary="Сводка разбора")
+def get_summary(run_id: str, user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
+    with services.db.uow() as uow:
+        return run_summary(uow, get_corpus(uow, user, run_id))
+
+
+@router.get("/runs/{run_id}/submission.zip", summary="Набор для сдачи: 7 CSV в ZIP")
+def submission_zip(run_id: str, partial: bool = False, user: CurrentUser = Depends(current_user),
+                   services: Services = Depends(get_services)):
+    from ...export import table_bytes
+
+    with services.db.uow() as uow:
+        corpus = get_corpus(uow, user, run_id)
+        d = RunData(uow, corpus)
+        if d.run is not None and d.run.status in (RunStatus.queued, RunStatus.running, RunStatus.cancelling) \
+                and not partial:
+            raise AppError("run_in_progress")
+        tables: dict[str, list[dict]] = {t: [] for t in TABLES}
+        seen: set[str] = set()
+        papers_n = 0
+        for f in d.files:
+            if f.publication_id in seen:
+                continue
+            paper = d.papers.get(f.paper_id) if f.paper_id else None
+            done = paper is not None and f.status == CorpusFileStatus.done and paper.status.value == "done"
+            if not done:
+                if partial and f.status in (CorpusFileStatus.pending, CorpusFileStatus.queued,
+                                            CorpusFileStatus.processing, CorpusFileStatus.downloading):
+                    continue
+                tables["publications"].append({"publication_id": f.publication_id})  # упавшая: только id
+                seen.add(f.publication_id)
+                papers_n += 1
+                continue
+            seen.add(f.publication_id)
+            papers_n += 1
+            for t, rows in uow.sub.paper_tables(paper.id).items():
+                tables[t].extend(rows)
+        title = corpus.name
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for t in TABLES:
+            z.writestr(f"{t}.csv", table_bytes(t, tables[t]))
+    stem = re.sub(r'[\\/:*?"<>|\r\n]+', "_", (title or "submission")).strip(" .") or "submission"
+    filename = f"{stem}.zip" if stem.lower().endswith("submission") else f"{stem} - submission.zip"
+    return Response(buf.getvalue(), media_type="application/zip", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        "X-Export-Tables": str(len(TABLES)), "X-Export-Results": str(len(tables["results"])),
+        "X-Export-Papers": str(papers_n), "X-Export-Filename": quote(filename),
+    })

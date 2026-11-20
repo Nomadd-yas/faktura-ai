@@ -57,8 +57,9 @@ def _all_mode_extras(gold_bundles, profile):
         missing += [k for k in {_key(i) for i in b.issues} if k not in got]
         gold_keys = {_key(i) for i in b.issues}
         extras += [i for i in merged if _key(i) not in gold_keys]
-        keys = [_key(i) for i in merged]
-        assert len(keys) == len(set(keys)), f"{b.publication_id}: два замечания с одним ключом"
+        # ML-замечания выгружаются как есть (в эталоне D010 два contradiction без record_ids); проверяем добавки бэка
+        keys = [_key(i) for i in merged if _key(i) not in gold_keys]
+        assert len(keys) == len(set(keys)), f"{b.publication_id}: добавки бэка дублируются по ключу"
     return extras, missing
 
 

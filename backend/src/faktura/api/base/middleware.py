@@ -21,9 +21,11 @@ REQUEST_ID_HEADER = "X-Request-Id"
 _SAFE_RID = re.compile(r"^[A-Za-z0-9._:\-]{1,200}$")
 
 CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
-CORS_ALLOW_HEADERS = ("Authorization", "Content-Type", "X-Request-Id", "Last-Event-ID", "Idempotency-Key")
+CORS_ALLOW_HEADERS = ("Authorization", "Content-Type", "X-Request-Id", "Last-Event-ID", "Idempotency-Key", "Range",
+                      "If-None-Match", "If-Range")
 CORS_EXPOSE_HEADERS = ("X-Action-Id", "X-Request-Id", "Content-Disposition", "X-Check-Status", "X-Faktura-Stub",
-                       "Retry-After")
+                       "Retry-After", "ETag", "Content-Range", "Accept-Ranges", "X-Export-Tables",
+                       "X-Export-Results", "X-Export-Papers", "X-Export-Filename")
 CORS_MAX_AGE = 600
 
 

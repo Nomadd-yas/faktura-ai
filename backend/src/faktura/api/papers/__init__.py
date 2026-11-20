@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-ROUTERS: list[APIRouter] = []  # роутеры добавляет исполнитель модуля
+from .routes_data import router as data_router
+
+ROUTERS: list[APIRouter] = [data_router]  # ядро v1: /papers/solar/{pid}, /results, /issues (CORE_API §3)
 
 __all__ = ["ROUTERS"]
