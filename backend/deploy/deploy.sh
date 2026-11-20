@@ -5,6 +5,8 @@
 #   --ml  дополнительно собрать и передать образ прототипа ML-1 (ml/pdf-dataset -> faktura-ml:latest, несколько ГБ).
 #         Запустится он только при COMPOSE_PROFILES=ml в deploy/.env на сервере.
 # Выкладывается только закоммиченный код. deploy/.env и тома на сервере не перезаписываются.
+# Это «тяжёлый» путь (образы целиком). Для правок кода быстрее: git push server main + deploy/server-deploy.sh.
+# Здесь образ на сервере помечается :shipped, коммит — в deploy/.shipped-<name>: основа для server-deploy.sh.
 set -euo pipefail
 WITH_ML=0
 HOST="hima-gpu"
@@ -19,6 +21,10 @@ IMAGE="faktura-backend:latest"
 ML_IMAGE="faktura-ml:latest"
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+
+REV="$(git rev-parse HEAD)"
+echo "== git push server ($(git rev-parse --short HEAD))"
+git push -q server HEAD:main
 
 echo "== код ($(git rev-parse --short HEAD)) -> $HOST:~/$REMOTE_DIR"
 ssh "$HOST" "bash -c 'mkdir -p ~/$REMOTE_DIR/deploy/case'"
@@ -35,6 +41,7 @@ mkdir -p "$BUILD_DIR/backend"
 git archive --format=tar HEAD:backend | tar -x -C "$BUILD_DIR/backend"
 docker build -q -t "$IMAGE" "$BUILD_DIR/backend"
 docker save "$IMAGE" | gzip -1 | ssh -o ServerAliveInterval=30 "$HOST" "bash -c 'gunzip | docker load'"
+ssh "$HOST" "bash -c 'docker tag $IMAGE faktura-backend:shipped && echo $REV > ~/$REMOTE_DIR/deploy/.shipped-backend'"
 
 if [[ "$WITH_ML" == 1 ]]; then
   echo "== прототип ML-1: сборка $ML_IMAGE локально (из HEAD) и передача"
@@ -42,6 +49,7 @@ if [[ "$WITH_ML" == 1 ]]; then
   git archive --format=tar HEAD:ml/pdf-dataset | tar -x -C "$BUILD_DIR/ml"
   docker build -t "$ML_IMAGE" "$BUILD_DIR/ml"
   docker save "$ML_IMAGE" | gzip -1 | ssh -o ServerAliveInterval=30 "$HOST" "bash -c 'gunzip | docker load'"
+  ssh "$HOST" "bash -c 'docker tag $ML_IMAGE faktura-ml:shipped && echo $REV > ~/$REMOTE_DIR/deploy/.shipped-ml'"
 fi
 
 echo "== .env и запуск"

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Деплой НА СЕРВЕРЕ из git-ремоута ~/garden/faktura.git (локально: git push server main).
-#   ssh hima-gpu "bash ~/garden/backend/deploy/server-deploy.sh [--ml] [ref]"
-# Образы собираются на сервере поверх уже загруженных (кеш слоёв): пересобирается только слой с кодом.
-# RUN-шаги идут без сети (--network=none): если поменялись зависимости и кеша нет, сборка сразу падает
-# (PyPI с сервера очень медленный) — тогда один раз отправить образы с локальной машины: bash backend/deploy/deploy.sh [--ml]
+# Быстрый деплой НА СЕРВЕРЕ из git-ремоута ~/garden/faktura.git. Локально:
+#   git push server main && ssh hima-gpu "bash ~/garden/backend/deploy/server-deploy.sh [--ml] [ref]"
+# Образ собирается без сети поверх последнего отправленного с локальной машины (<image>:shipped):
+# меняется только слой с кодом (deploy/overlay/*.Dockerfile). Если с момента отправки поменялись зависимости
+# или Dockerfile — скрипт останавливается: тогда один раз  bash backend/deploy/deploy.sh [--ml]  с локальной машины.
 set -euo pipefail
 WITH_ML=0
 REF="main"
@@ -23,17 +23,27 @@ git -C "$REPO" archive "$REF" | tar -x -C "$SRC"
 mkdir -p "$DST"
 git -C "$REPO" archive "$REF:backend" | tar -x -C "$DST"   # deploy/.env и deploy/case не в git — не трогаются
 
-build() {  # build <image> <context>
-  echo "== сборка $1 (кеш слоёв, без сети)"
-  if ! docker build -q --network=none --cache-from "$1" --build-arg BUILDKIT_INLINE_CACHE=1 -t "$1" "$2"; then
-    echo "!! $1 не собрался из кеша (вероятно, поменялись зависимости). Отправьте образ с локальной машины:" >&2
-    echo "   bash backend/deploy/deploy.sh $( [[ $1 == faktura-ml* ]] && echo --ml )" >&2
+# overlay <name> <context> <deps-paths...>
+overlay() {
+  local name="$1" ctx="$2"; shift 2
+  local stamp="$DST/deploy/.shipped-$name"
+  if ! docker image inspect "faktura-$name:shipped" >/dev/null 2>&1 || [[ ! -f "$stamp" ]]; then
+    echo "!! нет отправленного образа faktura-$name:shipped — сначала с локальной машины: bash backend/deploy/deploy.sh $( [[ $name == ml ]] && echo --ml )" >&2
     exit 1
   fi
+  local base; base="$(cat "$stamp")"
+  if ! git -C "$REPO" diff --quiet "$base" "$REF" -- "$@"; then
+    echo "!! с отправки образа $name ($base) поменялись зависимости/Dockerfile:" >&2
+    git -C "$REPO" diff --stat "$base" "$REF" -- "$@" >&2
+    echo "   отправьте образ с локальной машины: bash backend/deploy/deploy.sh $( [[ $name == ml ]] && echo --ml )" >&2
+    exit 1
+  fi
+  echo "== faktura-$name:latest = shipped($base) + код"
+  docker build -q --network=none -f "$SRC/backend/deploy/overlay/$name.Dockerfile" -t "faktura-$name:latest" "$ctx" >/dev/null
 }
-build faktura-backend:latest "$SRC/backend"
+overlay backend "$SRC/backend" backend/pyproject.toml backend/Dockerfile
 if [[ "$WITH_ML" == 1 ]]; then
-  build faktura-ml:latest "$SRC/ml/pdf-dataset"
+  overlay ml "$SRC/ml/pdf-dataset" ml/pdf-dataset/requirements.txt ml/pdf-dataset/Dockerfile
 fi
 
 echo "== запуск"
