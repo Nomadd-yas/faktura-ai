@@ -44,8 +44,22 @@ class PipelineError(Exception):
         self.status = self.STATUS.get(code, 500)
 
 
+def _code_hash() -> str:
+    """[faktura-patch] хеш кода конвейера и промптов: правка промптов -> новая версия -> бэкенд не берёт старый кеш."""
+    import hashlib
+    h = hashlib.sha256()
+    for name in ("pipeline.py", "extract_dataset.py", "strip_tail.py"):
+        p = BASE / name
+        if p.exists():
+            h.update(p.read_bytes())
+    return h.hexdigest()[:8]
+
+
+_CODE_HASH = _code_hash()
+
+
 def model_version() -> str:
-    return "pdf-dataset/" + os.environ.get("ROUTERAI_MODEL", DEFAULT_MODEL)
+    return f"pdf-dataset/{_CODE_HASH}/" + os.environ.get("ROUTERAI_MODEL", DEFAULT_MODEL)
 
 
 def config_path() -> Path:
