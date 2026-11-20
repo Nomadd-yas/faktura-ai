@@ -1,7 +1,7 @@
 # Фактура AI — бэкенд, первый вариант (область solar).
 # Сервисы: api (FastAPI) | ml-mock (заглушка ML-1, POST /ml/extract) | postgres.
 # PDF и служебные файлы — локальное хранилище api на томе files (MinIO/S3 — позже, если понадобится).
-# Наружу открыт только api (порт API_PORT). Секреты — в deploy/.env (не в git), создаёт deploy/init-env.sh.
+# Наружу ничего не открыто: api слушает 127.0.0.1:API_PORT сервера, доступ — через ssh-туннель (deploy/tunnel.ps1). Секреты — в deploy/.env (не в git), создаёт deploy/init-env.sh.
 # Подключение настоящего ML-1: FAKTURA_EXTRACT_URL в .env -> адрес сервиса ML-1, сервис ml-mock можно не поднимать.
 name: faktura
 
@@ -50,7 +50,7 @@ services:
       postgres: {condition: service_healthy}
       ml-mock: {condition: service_healthy}
     volumes: ["files:/app/var"]
-    ports: ["${API_PORT:-8000}:8000"]
+    ports: ["127.0.0.1:${API_PORT:-8000}:8000"]  # только localhost сервера: доступ через ssh-туннель
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
       interval: 10s
