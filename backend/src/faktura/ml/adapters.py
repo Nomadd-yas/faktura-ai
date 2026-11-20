@@ -26,6 +26,7 @@ from ..domain.extraction import ExtractOutcome, ExtractRequest, MlHealth
 from ..domain.io import parse_cell, read_tables
 from ..domain.ports import ExtractAdapter, FileStore
 from ..domain.tables import INTEGER_FIELDS, TABLES
+from .pdf_dataset import pdf_dataset_to_contract
 from .response import BACKEND_RESULT_FIELDS, ROW_TABLES, parse_extract_response
 
 log = logging.getLogger(__name__)
@@ -196,7 +197,11 @@ class HttpExtractor:
 
     def __init__(self, base_url: str, timeout_s: float = 330, retry_delays: tuple[float, ...] = (30, 120, 600),
                  concurrency: int = 2, sleep: Callable[[float], None] = time.sleep, transport: Any = None,
-                 health_timeout_s: float = 10.0) -> None:
+                 health_timeout_s: float = 10.0, protocol: str = "contract", retry_on_timeout: bool = True) -> None:
+        if protocol not in ("contract", "pdf_dataset"):
+            raise AppError("validation_error", f"Неизвестный протокол ML-1: {protocol} (contract | pdf_dataset)")
+        self.protocol = protocol
+        self.retry_on_timeout = bool(retry_on_timeout)
         if not base_url or not str(base_url).strip():
             raise AppError("validation_error", "Не задан адрес ML-1 (FAKTURA_EXTRACT_URL / --extract-url)")
         self.base_url = str(base_url).strip()
@@ -255,12 +260,15 @@ class HttpExtractor:
             retry_after: float | None = None
             try:
                 with self._sem:
-                    resp = client.post(self._url("/ml/extract"), data=form,
+                    resp = client.post(self._url("/extract" if self.protocol == "pdf_dataset" else "/ml/extract"),
+                                       data=form,
                                        files={"file": (filename, content, "application/pdf")})
             except httpx.TimeoutException as e:
                 last = ExtractError("ml_timeout", f"ML-1 не ответил за {self.timeout_s:g} с", retryable=True)
                 log.warning("ML-1 %s: таймаут (попытка %d/%d)", req.publication_id, attempt + 1, attempts)
                 last.__cause__ = e
+                if not self.retry_on_timeout:
+                    raise last
             except httpx.TransportError as e:  # ConnectError, ReadError, RemoteProtocolError ...
                 last = ExtractError("ml_unavailable", f"Нет связи с ML-1: {type(e).__name__}", retryable=True)
                 log.warning("ML-1 %s: %s (попытка %d/%d)", req.publication_id, type(e).__name__, attempt + 1, attempts)
@@ -271,8 +279,16 @@ class HttpExtractor:
                         data = resp.json()
                     except Exception as e:  # noqa: BLE001
                         raise ExtractError("ml_schema_mismatch", "Ответ ML-1 не JSON") from e
+                    if self.protocol == "pdf_dataset":
+                        data = pdf_dataset_to_contract(data, req.publication_id)
                     return parse_extract_response(data, req.publication_id)
                 body = _error_body(resp)
+                if self.protocol == "pdf_dataset" and resp.status_code == 500:
+                    detail = body.get("detail")
+                    if not isinstance(detail, str):
+                        detail = json.dumps(detail, ensure_ascii=False) if detail else "HTTP 500"
+                    raise ExtractError("ml_error", f"ML-1: {detail}", retryable=False,
+                                       details={"status": 500, "body": body or None, "request_id": request_id})
                 code = str(body.get("code") or "")
                 message = str(body.get("message") or "") or f"HTTP {resp.status_code}"
                 details = {"status": resp.status_code, "body": body or None, "request_id": request_id}
@@ -486,6 +502,9 @@ class CachedExtractor:
 
     def _offline(self, req: ExtractRequest, err: ExtractError) -> ExtractOutcome:
         hit = self.cache.get_last(req.sha256)
+        if hit is not None and getattr(self.inner, "protocol", None) == "pdf_dataset" \
+                and not str(hit[0]).startswith("pdf-dataset"):
+            hit = None  # не подсовывать ответ мока/другого ML вместо прототипа
         if hit is None:
             raise err
         v, raw = hit
@@ -499,10 +518,16 @@ class CachedExtractor:
                 return self._offline(req, ExtractError(
                     "ml_unavailable", "Сервис извлечения недоступен, сохранённого ответа нет", retryable=True))
             version = h.model_version
-        if version:
+        if version and version != self.inner.name:
             raw = self.cache.get(req.sha256, version)
             if raw is not None:
                 return self._from_cache(req, version, raw)
+        elif getattr(self.inner, "protocol", None) == "pdf_dataset":
+            # прототип ML-1 версии в /health не сообщает: берём последний сохранённый ответ, но только его же
+            # (не ответ мока/другого ML для того же PDF)
+            hit = self.cache.get_last(req.sha256)
+            if hit is not None and str(hit[0]).startswith("pdf-dataset"):
+                return self._from_cache(req, hit[0], hit[1])
         try:
             out = self.inner.extract(req.model_copy(update={"model_version": version or req.model_version}))
         except ExtractError as e:
@@ -549,7 +574,8 @@ def build_extractor(settings: Settings, *, kind: str | None = None, url: str | N
         ext: ExtractAdapter = HttpExtractor(
             base, timeout_s=settings.extract_timeout_s,
             retry_delays=tuple(retry_delays) if retry_delays is not None else settings.retry_delays,
-            concurrency=settings.extract_concurrency)
+            concurrency=settings.extract_concurrency, protocol=settings.extract_protocol,
+            retry_on_timeout=settings.extract_retry_on_timeout)
     elif k == "raw":
         if raw_dir is None:
             raise AppError("validation_error", "Для import-raw нужен каталог ответов ML: --raw-dir / --in")

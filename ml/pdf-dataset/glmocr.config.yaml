@@ -1,0 +1,25 @@
+# Конфигурация glmocr (self-hosted) для конвейера PDF -> dataset.json.
+# Правится руками: api_host/api_port/model должны совпадать с вашим
+# vLLM/SGLang, model — с --served-model-name.
+#
+# Вариант без правки: смонтируйте свой config.yaml поверх этого —
+#   docker run ... -v "$PWD/glmocr.config.yaml:/app/glmocr.config.yaml:ro" pdf-dataset /data/D001.pdf
+# либо укажите путь через GLMOCR_CONFIG=/path/to/config.yaml
+
+pipeline:
+  maas:
+    enabled: false
+  ocr_api:
+    api_host: 192.168.1.10          # ← адрес вашего сервера с GLM-OCR
+    api_port: 8123
+    api_path: /v1/chat/completions
+    model: zai-org/GLM-OCR          # ← как --served-model-name у вашего сервера
+    verify_ssl: false
+    request_timeout: 120
+    retry_max_attempts: 2
+  layout:
+    model_dir: PaddlePaddle/PP-DocLayoutV3_safetensors
+    device: cpu                     # cpu | cuda | cuda:0
+
+result_formatter:
+  output_format: both               # md + json

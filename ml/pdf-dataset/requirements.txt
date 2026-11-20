@@ -1,0 +1,10 @@
+# glmocr[selfhosted] тянет torch 2.10+, opencv — тяжело, но так требует layout-модель.
+# Версия glmocr зафиксирована по тестам; при смене проверьте API GlmOcr(config_path=...).
+glmocr[selfhosted]==0.1.5
+openai>=1.50
+PyMuPDF>=1.24
+
+# HTTP API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9

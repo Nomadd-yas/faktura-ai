@@ -20,7 +20,13 @@ FAKTURA_COOKIE_SECURE=false
 # Адрес фронта (JSON-список), добавить реальный адрес фронта
 FAKTURA_CORS_ORIGINS=["http://localhost:5200"]
 FAKTURA_RUN_CONCURRENCY=4
-# Настоящий ML-1: раскомментировать и указать адрес
-# FAKTURA_EXTRACT_URL=http://<ml-host>:<port>
+# --- ML-1 прототип (сервис ml в compose) вместо мока: раскомментировать блок, вписать ключ RouterAI ---
+# COMPOSE_PROFILES=ml
+# ROUTERAI_API_KEY=
+# FAKTURA_EXTRACT_URL=http://ml:8080
+# FAKTURA_EXTRACT_PROTOCOL=pdf_dataset
+# FAKTURA_EXTRACT_TIMEOUT_S=1800
+# FAKTURA_EXTRACT_CONCURRENCY=1
+# FAKTURA_EXTRACT_RETRY_ON_TIMEOUT=false
 EOF
 echo ".env создан (секреты сгенерированы, в вывод не попадают)"

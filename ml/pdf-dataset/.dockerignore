@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+work/
+out/
+*.raw_response.txt
+.git/

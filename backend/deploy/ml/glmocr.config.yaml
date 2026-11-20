@@ -1,0 +1,19 @@
+# glmocr для сервиса ml (прототип ML-1, ml/pdf-dataset) в compose: монтируется поверх /app/glmocr.config.yaml.
+# GLM-OCR — vLLM на хосте сервера (:8123); из контейнера хост виден как host.docker.internal (extra_hosts: host-gateway).
+pipeline:
+  maas:
+    enabled: false
+  ocr_api:
+    api_host: host.docker.internal
+    api_port: 8123
+    api_path: /v1/chat/completions
+    model: zai-org/GLM-OCR
+    verify_ssl: false
+    request_timeout: 120
+    retry_max_attempts: 2
+  layout:
+    model_dir: PaddlePaddle/PP-DocLayoutV3_safetensors
+    device: cpu
+
+result_formatter:
+  output_format: both

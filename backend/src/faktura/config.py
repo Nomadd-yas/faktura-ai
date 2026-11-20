@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     extract_timeout_s: float = 330
     extract_concurrency: int = 2
     extract_retry_delays: str = "30,120,600"
+    extract_protocol: Literal["contract", "pdf_dataset"] = "contract"  # pdf_dataset - прототип ML-1 (POST /extract)
+    extract_retry_on_timeout: bool = True
     ml_pause_poll_s: float = 30
     ml_pause_max_s: float = 1800
     cache_dir: Path | None = None

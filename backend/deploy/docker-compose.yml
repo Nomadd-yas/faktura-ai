@@ -2,7 +2,7 @@
 # Сервисы: api (FastAPI) | ml-mock (заглушка ML-1, POST /ml/extract) | postgres.
 # PDF и служебные файлы — локальное хранилище api на томе files (MinIO/S3 — позже, если понадобится).
 # Наружу ничего не открыто: api слушает 127.0.0.1:API_PORT сервера, доступ — через ssh-туннель (deploy/tunnel.ps1). Секреты — в deploy/.env (не в git), создаёт deploy/init-env.sh.
-# Подключение настоящего ML-1: FAKTURA_EXTRACT_URL в .env -> адрес сервиса ML-1, сервис ml-mock можно не поднимать.
+# Прототип ML-1 вместо мока: блок «ML-1 прототип» в .env (см. init-env.sh) + образ faktura-ml (deploy.sh --ml).
 name: faktura
 
 services:
@@ -35,6 +35,29 @@ services:
       timeout: 5s
       retries: 10
 
+  # Прототип ML-1 (ml/pdf-dataset, Иван): PDF -> glmocr (vLLM GLM-OCR на хосте :8123) -> RouterAI -> 7 таблиц.
+  # Временная заплатка до новой версии ML-1. Поднимается только с профилем ml (COMPOSE_PROFILES=ml в .env).
+  # Наружу не открыт, авторизации у сервиса нет — только внутренняя сеть compose. Ключ RouterAI — в .env.
+  ml:
+    image: faktura-ml:latest
+    profiles: ["ml"]
+    restart: unless-stopped
+    environment:
+      ROUTERAI_API_KEY: ${ROUTERAI_API_KEY:-}
+      ROUTERAI_MODEL: ${ROUTERAI_MODEL:-deepseek/deepseek-v4.1-flash-1017}
+      ROUTERAI_PROVIDER: ${ROUTERAI_PROVIDER:-deepinfra}
+    command: ["serve"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - ./ml/glmocr.config.yaml:/app/glmocr.config.yaml:ro
+      - ml-out:/out
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
   api:
     image: faktura-backend:latest
     restart: unless-stopped
@@ -60,3 +83,4 @@ services:
 volumes:
   pgdata: {}
   files: {}
+  ml-out: {}
