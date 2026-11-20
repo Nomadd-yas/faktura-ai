@@ -535,7 +535,7 @@ class LLMError(Exception):
 
 def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None):
     """Один вызов с fallback json_schema -> json_object и диагностикой."""
-    providers = [p.strip() for p in args.provider.split(",") if p.strip()]
+    providers = [p.strip().lower() for p in args.provider.split(",") if p.strip()]  # [faktura-patch] slug строчными
     # [faktura-patch] список = приоритет: первый живой из списка, при сбое — следующий, вне списка не уходим
     extra_body = {"provider": {"order": providers, "allow_fallbacks": False}} if providers else {}
     t0 = time.time()
