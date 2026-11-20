@@ -5,7 +5,7 @@
 ```
 PDF ──glmocr (layout PP-DocLayoutV3 локально + OCR на вашем сервере)──▶ markdown
     ──strip_tail (обрезка References и т.п.)──────────────────────────▶ clean.md
-    ──extract_dataset (7 вызовов RouterAI, deepinfra pinned)──────────▶ dataset.json + meta.json
+    ──extract_dataset (7 вызовов RouterAI, провайдер по приоритету)──────────▶ dataset.json + meta.json
 ```
 
 `extract_dataset.py` — модуль, который `pipeline.py` импортирует и вызывает напрямую
@@ -114,7 +114,7 @@ Invoke-RestMethod -Uri "http://localhost:8080/extract" -Method Post -Form $form 
 | Адрес OCR-сервера, порт, `served-model-name`, устройство layout | `glmocr.config.yaml` (в каталоге рядом с `pipeline.py`, живёт в `/app` в образе) | правкой файла и пересборкой, либо смонтировать свой поверх: `-v "$PWD/glmocr.config.yaml:/app/glmocr.config.yaml:ro"`, либо `GLMOCR_CONFIG=/path/to/config.yaml` |
 | RouterAI-ключ  | env `ROUTERAI_API_KEY` (обязательный)      | `-e`                                           |
 | Модель RouterAI| env `ROUTERAI_MODEL`                       | по умолчанию `deepseek/deepseek-v4.1-flash-1017` |
-| Провайдер      | env `ROUTERAI_PROVIDER`                    | по умолчанию `deepinfra` (whitelist, `only`)   |
+| Провайдер      | env `ROUTERAI_PROVIDER`                    | по умолчанию `wafer`; несколько через запятую — по приоритету (`order` + `allow_fallbacks: false`)   |
 
 `--publication-id D001` — явный id (по умолчанию — имя PDF без расширения).
 `--no-strip` — не обрезать хвостовые разделы markdown.

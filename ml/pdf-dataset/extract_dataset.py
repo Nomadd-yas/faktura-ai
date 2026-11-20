@@ -536,7 +536,8 @@ class LLMError(Exception):
 def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None):
     """Один вызов с fallback json_schema -> json_object и диагностикой."""
     providers = [p.strip() for p in args.provider.split(",") if p.strip()]
-    extra_body = {"provider": {"only": providers}} if providers else {}
+    # [faktura-patch] список = приоритет: первый живой из списка, при сбое — следующий, вне списка не уходим
+    extra_body = {"provider": {"order": providers, "allow_fallbacks": False}} if providers else {}
     t0 = time.time()
 
     strict = not args.no_strict
@@ -590,7 +591,7 @@ def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw
 
 
 def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
-            provider="deepinfra", no_strict=False, max_chars=200000,
+            provider="wafer", no_strict=False, max_chars=200000,
             max_tokens=16384, issues_max_tokens=2048, no_issues=False,
             issues_with_text=False, meta_path=None, api_key=None) -> dict:
     """Извлекает датасет из markdown-статьи.
@@ -711,7 +712,7 @@ def main() -> int:
     ap.add_argument("--publication-id", default=None)
     ap.add_argument("--out", help="выходной JSON (по умолчанию <input>.dataset.json)")
     ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--provider", default="deepinfra", help='whitelist провайдеров; "" = не пинить')
+    ap.add_argument("--provider", default="wafer", help='провайдеры по приоритету через запятую; "" = не пинить')
     ap.add_argument("--no-strict", action="store_true")
     ap.add_argument("--max-chars", type=int, default=200000, help="обрезать вход")
     ap.add_argument("--max-tokens", type=int, default=16384, help="лимит на один main-вызов")

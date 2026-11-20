@@ -8,7 +8,7 @@
 #
 # Конфигурация glmocr — отдельный файл glmocr.config.yaml рядом с pipeline.py
 # или путь из GLMOCR_CONFIG (например, смонтированный свой файл).
-# RouterAI: ROUTERAI_API_KEY (обяз.), ROUTERAI_MODEL, ROUTERAI_PROVIDER (deepinfra).
+# RouterAI: ROUTERAI_API_KEY (обяз.), ROUTERAI_MODEL, ROUTERAI_PROVIDER (wafer; несколько через запятую — по приоритету).
 
 import argparse
 import json
@@ -240,7 +240,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
                       publication_id=pub_id,
                       out=str(dataset_out),
                       model=os.environ.get("ROUTERAI_MODEL", DEFAULT_MODEL),
-                      provider=os.environ.get("ROUTERAI_PROVIDER", "deepinfra"),
+                      provider=os.environ.get("ROUTERAI_PROVIDER", "wafer"),
                       meta_path=str(meta_out))
         failed_tables = res["failed_tables"]
     except LLMError as e:
