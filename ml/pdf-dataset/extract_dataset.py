@@ -592,7 +592,7 @@ def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw
 
 def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             provider="wafer", no_strict=False, max_chars=200000,
-            max_tokens=16384, issues_max_tokens=2048, no_issues=False,
+            max_tokens=16384, issues_max_tokens=12288, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
             issues_with_text=False, meta_path=None, api_key=None) -> dict:
     """Извлекает датасет из markdown-статьи.
 
@@ -716,7 +716,7 @@ def main() -> int:
     ap.add_argument("--no-strict", action="store_true")
     ap.add_argument("--max-chars", type=int, default=200000, help="обрезать вход")
     ap.add_argument("--max-tokens", type=int, default=16384, help="лимит на один main-вызов")
-    ap.add_argument("--issues-max-tokens", type=int, default=2048)
+    ap.add_argument("--issues-max-tokens", type=int, default=12288)
     ap.add_argument("--no-issues", action="store_true")
     ap.add_argument("--issues-with-text", action="store_true",
                     help="к issues-проходу добавить текст статьи (дороже)")
