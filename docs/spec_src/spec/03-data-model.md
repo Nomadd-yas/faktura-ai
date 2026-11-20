@@ -37,7 +37,7 @@ Workspace ─┬─ Corpus ─┬─ CorpusFile ── Paper           (осно
 
 **Факт интерфейса и таблицы ТЗ.** Интерфейс работает с плоским списком фактов «образец × параметр». ТЗ описывает нормализованные таблицы. В API оба слоя:
 
-- **Таблицы ТЗ** (`result`, `material`, `layer`, `rag_config`, …) — машиночитаемый набор данных для экспорта и внешних программ, имена полей ровно как в ТЗ.
+- **Таблицы ТЗ** (область 1 — §3.6, область 2 — §3.7; обе = 7 таблиц сдачи) — машиночитаемый набор данных для экспорта и внешних программ, имена полей ровно как в ТЗ.
 - **Факт** — одно извлечённое значение одного поля одной записи ТЗ с происхождением, исходной и нормализованной записью и статусом. Поле `target` говорит, какую клетку таблицы ТЗ он заполняет:
 
 | Параметр интерфейса (`param`) | Коллекция | Куда пишется в модели ТЗ |
@@ -131,7 +131,9 @@ Workspace ─┬─ Corpus ─┬─ CorpusFile ── Paper           (осно
 
 ---
 
-## 3.3. Проекты и чаты
+## 3.3. Проекты и чаты [В ФОНЕ]
+
+> Выключены в интерфейсе флагом `FEATURES` (`src/features.ts`); бэку делать не нужно до решения команды. Сущность интерфейса вместо них — **разбор** `Run` (§15.2).
 
 ### Project
 | Поле | Тип | Обяз. | Ист. | Описание |
@@ -225,6 +227,7 @@ Workspace ─┬─ Corpus ─┬─ CorpusFile ── Paper           (осно
 | Поле | Тип | Обяз. | Ист. | Описание |
 |---|---|---|---|---|
 | `publication_id` (= `id`) | string | да | [BE] | ТЗ; **имя файла без расширения** (`D001`, `P042`) — так требует формат сдачи |
+| `domain` | enum(`solar`,`rag`) | да | [BE]\|[USER] | **ключ статьи — пара (`domain`, `publication_id`)**: коды D001… совпадают в двух областях; пути `/papers/{domain}/{pid}` |
 | `title` | string | да | [BE]→[ML] | до разбора — имя файла без `.pdf`, `_`/`-` → пробел [BE]; после разбора — извлечённое [ML], если найдено. ТЗ |
 | `year` | int | нет | [ML] | ТЗ |
 | `DOI` | string | нет | [ML] | ТЗ, без `https://doi.org/` |
@@ -335,6 +338,7 @@ Workspace ─┬─ Corpus ─┬─ CorpusFile ── Paper           (осно
 | `source_table` | string | нет | [ML] | «Table 4», «TABLE 1» |
 | `source_figure` | string | нет | [ML] | «Figure 10», «FIGURE 5B» |
 | `source_fragment` | string | нет | [ML]\|[USER] | **дословная** короткая цитата со страницы (или «Table 2, строка B»); проверяется как в `check_submission.py` |
+| `source_table_row_label`, `source_table_row_text` | string | нет | [ML] | метка строки таблицы и сырой текст строки — для «места в таблице», когда `source_fragment` — адрес «Table 1, строка X» |
 | `quote_found` | bool | да | [BE] | цитата найдена на `source_page` (та же нормализация, что в `check_submission.py`) |
 | `duplicate_of` | id | нет | [ML]\|[BE] | `result_id` основной записи для повторного упоминания того же значения того же прибора **внутри статьи** (§3.6.1) |
 | `note` | string | нет | [ML]\|[USER] | свободное примечание (колонка `note` сдачи) |
@@ -509,82 +513,86 @@ Workspace ─┬─ Corpus ─┬─ CorpusFile ── Paper           (осно
 | `conditions` | `measurements` (`spectrum`, `light_intensity`, `intensity_unit`, `temperature`) |
 | новые (появятся в интерфейсе) | `Rs`, `Rsh`, `HI`, `Jsc_EQE`, `stabilized_PCE`, `T80`, `retained_PCE`; `active_area`, `scan_direction`, `aggregation`, `device_role`, `result_origin` |
 
-## 3.7. Предметная область 2 — RAG (ТЗ, стр. 8–9)
+## 3.7. Предметная область 2 — RAG: 7 таблиц сдачи
 
-> **Формат сдачи уточнить, когда будет архив по области 2.** Модель ниже — по полям ТЗ; основной фокус — область 1.
+Сущности **1:1 с шаблоном** `docs/case5_area2/submission_template/` (`README.md`, `schema.json`, версия `rag-viniti-adaptation-1.0`): `publications`, `configurations`, `datasets`, `tasks`, `experiments`, `results`, `issues`. Формат — [§14.B](14-submission.md). Общие правила те же, что в области 1: пустое = нет в статье (не `NaN`, `null`, `unknown`; ноль — `0`), id уникальны **внутри публикации**, `publication_id` = имя PDF, списки через `;` только в `authors` и `issues.record_ids`.
 
-### publication — как в §3.4.
+**Закрытые словари — только три**: `publications.in_scope` (`true`/`false`), `results.result_origin` (`primary`/`cited`), `results.extraction_status` (`extracted`/`present_not_extractable`/`absent`). Рекомендуемые значения: `results.metric_direction` — `higher_is_better`, `lower_is_better`, `target` (иное — предупреждение, неизвестно — пусто). Всё остальное (`retrieval_method`, `task_type`, `metric_group`, `metric_unit`, `aggregation`, `check_name`) — **открытый текст по статье**.
 
-### dataset_task — набор и задача
-| Поле | Тип | Обяз. | Ист. | Описание |
-|---|---|---|---|---|
-| `dataset_id` | id | да | [BE] | |
-| `publication_id` | id | да | [BE] | |
-| `dataset_name` | string | нет | [ML]→[BE] | канон по словарю датасетов; если только описание — `null` |
-| `dataset_description` | string | нет | [ML] | «корпус из 12 тыс. документов» |
-| `dataset_version` | string | нет | [ML] | |
-| `task_id` | id | да | [BE] | |
-| `task_type` | enum(`retrieval`,`qa`,`multi-hop-qa`,`summarization`,`fact-checking`,`other`) | нет | [ML] | |
-| `language` | string | нет | [ML] | ISO 639-1 |
-| `data_split` | enum(`train`,`dev`,`test`,`other`) | нет | [ML] | |
-| `scientific_domain` | string | нет | [ML] | |
+Объём: в эталоне dev 21 статья, **37 616 результатов**, 4 733 конфигурации, 241 датасет, 90 задач, 142 эксперимента, 134 замечания; одна статья (D014) — 28 649 строк, из них `Answer F1` — 12 074. Поэтому API строк `results` — только постранично и с фильтрами (§15.4).
 
-### experiment
-| Поле | Тип | Обяз. | Ед. | Ист. | Описание |
-|---|---|---|---|---|---|
-| `experiment_id` | id | да | | [BE] | |
-| `publication_id` | id | да | | [BE] | |
-| `dataset_id`, `task_id` | id | нет | | [BE] | |
-| `evaluation_protocol` | string | нет | | [ML] | |
-| `baseline_name` | string | нет | | [ML] | только если статья прямо называет базовую линию |
-| `hardware` | string | нет | | [ML] | |
-| `latency_ms` | number | нет | мс | [ML]→[BE] | |
-| `tokens_per_query` | number | нет | ток. | [ML]→[BE] | |
-| `sample_size` | int | нет | | [ML] | |
-| `config_ids` | id[] | да | | [BE] | |
+### publications
+Как в области 1 (§3.6): `publication_id`, `title`, `year`, `DOI`, `authors` (через `;`), `in_scope`, `exclusion_reason` (обязательна при `false`, **пуста** при `true` — иначе ошибка скрипта). Граница области: система находит сведения во внешней коллекции и использует контекст при ответе, статья описывает конфигурацию и результаты оценки; решение по содержанию, а не по слову «RAG». Источник: [ML].
 
-### rag_config — конфигурация
-| Поле | Тип | Обяз. | Ед. | Ист. | Описание |
-|---|---|---|---|---|---|
-| `config_id` | id | да | | [BE] | |
-| `publication_id` | id | да | | [BE] | |
-| `row_id` | string | да | | [BE] | |
-| `rag_variant` | string | нет | | [ML] | подпись строки |
-| `retrieval_method` | enum(`sparse`,`dense`,`hybrid`,`late-interaction`,`other`) | нет | | [ML]→[BE] | по словарю методов: BM25 → `sparse` |
-| `retriever_model` | string | нет | | [ML] | |
-| `embedding_model`, `embedding_version` | string | нет | | [ML] | |
-| `chunking_method` | string | нет | | [ML] | |
-| `chunk_size` | int | нет | ток. | [ML]→[BE] | |
-| `chunk_overlap` | int | нет | | [ML]→[BE] | |
-| `chunk_unit` | enum(`tokens`,`chars`,`words`,`sentences`) | нет | | [ML]→[BE] | |
-| `index_type`, `vector_store` | string | нет | | [ML] | |
-| `top_k` | int | нет | | [ML] | |
-| `reranker_model` | string | нет | | [ML] | |
-| `fusion_method` | string | нет | | [ML] | «RRF» (не ТЗ — из прототипа) |
-| `generator_model`, `generator_version`, `prompt_strategy`, `context_strategy` | string | нет | | [ML] | |
-| `fact_ids` | id[] | да | | [BE] | |
+### configurations
+| Поле | Тип | Ист. | Правило |
+|---|---|---|---|
+| `config_id` | string | [ML]→[BE] | `C01`… |
+| `rag_variant` | string | [ML] | название системы или baseline из статьи |
+| `retrieval_method` | string | [ML] | как в статье: `BM25`, `dense`, `hybrid` |
+| `retriever_model` | string | [ML] | |
+| `embedding_model`, `embedding_version` | string | [ML] | версия — только если указана отдельно |
+| `chunking_method` | string | [ML] | |
+| `chunk_size`, `chunk_overlap` | number ≥ 0 | [ML] | только числом; **диапазон → пусто + `note`** |
+| `chunk_unit` | string | [ML] | `tokens`, `characters`… по статье |
+| `index_type`, `vector_store` | string | [ML] | одно не выводится из другого |
+| `top_k` | int ≥ 0 | [ML] | число извлекаемых элементов; **≠ `metric_k`**; `0` — абляция без контекста |
+| `reranker_model` | string | [ML] | |
+| `generator_model`, `generator_version` | string | [ML] | **разные генераторы — разные конфигурации** |
+| `prompt_strategy`, `context_strategy` | string | [ML] | |
+| `note` | string | [ML]\|[USER] | строка таблицы, доп. параметры, неоднозначности, источник |
 
-### metric_result — результат метрики
-| Поле | Тип | Обяз. | Ист. | Описание |
-|---|---|---|---|---|
-| `result_id` | id | да | [BE] | |
-| `experiment_id`, `config_id` | id | да | [BE] | |
-| `dataset_id`, `task_id` | id | нет | [BE] | |
-| `metric_group` | enum(`retrieval`,`generation`,`efficiency`) | да | [BE] | по `metric_name` |
-| `metric_name` | string | да | [ML]→[BE] | «Recall», «MRR», «nDCG», «EM», «F1» |
-| `metric_variant` | string | нет | [ML] | |
-| `metric_direction` | enum(`higher_is_better`,`lower_is_better`) | да | [BE] | из конфигурации метрики; если статья говорит иначе — [ML] |
-| `metric_k` | int | нет | [ML] | |
-| `metric_value` | number | да | [BE] | |
-| `metric_unit` | enum(`fraction`,`percent`,`ms`,`tokens`) | да | [BE] | Recall/MRR — `fraction` |
-| `baseline_value` | number | нет | [BE] | значение базовой конфигурации того же эксперимента (если `baseline_name` известен) |
-| `aggregation` | enum(`mean`,`median`,`max`) | нет | [ML] | |
-| `sample_size` | int | нет | [ML] | |
-| происхождение, статус | | | как в факте | |
-| `fact_id` | id | да | [BE] | |
-| `comparability_key` | string | да | [BE] | |
+Разные генераторы, абляции и настройки — отдельные конфигурации (в D001 строка `RA-CoT` с двумя генераторами — `C01` и `C02`).
 
-Разные эксперименты и варианты метрик **не объединяются** (ТЗ, стр. 9–10).
+### datasets
+`dataset_id`, `dataset_name`, `dataset_version`, `language`, `data_split`, `scientific_domain`, `note` — все [ML], по статье. Разные версии или разбиения в разных сравнениях не сливаются. Размер выборки не выводится из размера датасета.
+
+### tasks
+`task_id`, `task_type` (открытый текст: «open-domain multi-hop question answering»), `note` — [ML]. Связь задачи с набором — только в `results`.
+
+### experiments
+| Поле | Тип | Ист. | Правило |
+|---|---|---|---|
+| `experiment_id` | string | [ML]→[BE] | `E1`… |
+| `evaluation_protocol` | string | [ML] | протокол, способ расчёта, ограничения сравнения |
+| `baseline_name` | string | [ML] | если указан; несколько — через `;` (как в эталоне) |
+| `hardware` | string | [ML] | |
+| `latency_ms` | number ≥ 0 | [ML]→[BE] | при известной исходной единице («0.8 s» → 800); исходная запись — в `note`. **Не распространять на все конфигурации**: если задержка зависит от конфигурации — отдельные строки `results` (метрика задержки) или разные эксперименты |
+| `tokens_per_query` | number ≥ 0 | [ML] | общий расход не делить на запросы без основания |
+| `sample_size` | int ≥ 0 | [ML] | размер оценочной выборки, не всего датасета |
+| `note` | string | [ML] | |
+
+### results
+Одна строка — одно значение одной метрики в одном эксперименте для одной конфигурации, набора и задачи.
+
+| Поле | Тип | Ист. | Правило |
+|---|---|---|---|
+| `result_id` | string | [ML]→[BE] | `R001`… |
+| `experiment_id`, `config_id`, `dataset_id`, `task_id` | string | [ML] | **по одному id** в каждом; у `primary` — желательно все четыре (иначе предупреждение) |
+| `metric_group` | string | [ML] | свободный текст: «answer quality», «retrieval quality», «efficiency» |
+| `metric_name` | string | [ML] | как в статье: `EM`, `F1`, `Answer F1`, `NDCG@5`, `Recall@5` |
+| `metric_variant` | string | [ML] | определение: token-level F1, macro, judge-based |
+| `metric_direction` | string | [ML]\|[BE] | `higher_is_better` / `lower_is_better` / `target`; неизвестно — пусто |
+| `metric_k` | int ≥ 0 | [ML] | k метрики @k (`NDCG@5` → 5); **не `top_k`**; `OC@0.8` — не k |
+| `metric_value`, `metric_unit` | number, string | [BE] | **= `normalized_value`, `normalized_unit`** |
+| `baseline_value` | number | [ML] | значение baseline **только** при сопоставимых задаче, наборе, определении метрики, шкале и протоколе |
+| `aggregation` | string | [ML] | открытое поле, **только при явном указании**: `mean`, `mean across queries`, `upper_95CI`… |
+| `sample_size` | int | [ML] | если для этого результата указан отдельно |
+| `raw_value`, `raw_unit` | string | [ML] | исходная запись дословно, со знаками и обозначениями: `.204`, `+4.4`, `24.8%` |
+| `normalized_value`, `normalized_unit` | number, string | [BE] | §6.6: единица — открытый текст (`fraction`, `%`, `percentage_points`, `ms`, `score`…), пересчёт только при установленной шкале |
+| `result_origin`, `cited_publication_id` | | [ML] | `cited` — число перенесено из другой работы (ссылка как в статье: `[12]`, «Lewis et al., 2020»; не ключ к `publications`); воспроизведённый авторами baseline — `primary`; у `primary` `cited_publication_id` пуст (иначе ошибка) |
+| `source_page` | int ≥ 1 | [ML] | обязателен для `extracted` |
+| `source_section`, `source_table`, `source_figure` | string | [ML] | хотя бы один из `source_fragment`/`source_table`/`source_figure` обязателен |
+| `source_fragment` | string | [ML] | **дословный** фрагмент страницы (может быть многострочным, как строка таблицы в PDF). Запись вида «таблица 3, строка X» — **не** сюда, а в `source_table`/`note` |
+| `extraction_status` | enum | [ML] | `extracted` требует `raw_value`, `source_page` и указатель |
+| `duplicate_of` | string | [ML]\|[BE] | повтор того же значения в другом месте; совпадают эксперимент, конфигурация, набор, задача, метрика, вариант, k, единица, агрегация, выборка, происхождение; значение — допускается более грубое округление. Циклы и ссылки на себя запрещены; разные числа — не дубли (обе записи + замечание) |
+| `note` | string | [ML]\|[USER] | столбец/кривая, способ нормализации, способ оцифровки графика |
+| *служебные*: `review`, `confidence`, `bbox`, `quote_found`, `ocr_used`, `ocr_confidence` | | | отдельно от строки (§15.4) |
+
+**Не создавать декартово произведение** метрик × конфигураций с искусственными `absent`: строка заводится только для значения, которое есть (или явно обозначено) в статье.
+
+### issues
+`issue_id`, `record_ids` (через `;`), `check_name` — **открытое имя**, `description` (числа и условия), `source_page`, `source_fragment` — см. §5.2-B.
 
 ---
 
@@ -613,7 +621,8 @@ Workspace ─┬─ Corpus ─┬─ CorpusFile ── Paper           (осно
 | `anchor_ids` | id[] | да | [BE] | |
 | `related` | `{entity, id}`[] | да | [BE] | связанные записи ТЗ |
 | `numbers` | json | нет | [BE] | `{calc, reported, diff_pct, threshold_pct}` |
-| `status` | enum(`open`,`fixed`,`ok`) | да | [USER] | по умолчанию `open` [BE] |
+| `status` (в API интерфейса — `state`) | enum(`open`,`fixed`,`ok`) | да | [USER]\|[BE] | по умолчанию `open`; **автоматически `fixed`**, когда все значения `record_ids` исправлены или отклонены человеком (§15.12) |
+| `state_auto` | bool | да | [BE] | закрыто автоматически — «Открыть снова» не действует (`409 issue_auto_fixed`) |
 | `resolved_by`, `resolved_at` | id, datetime | нет | [BE] | |
 | `touched_fact_ids` | id[] | да | [BE] | |
 | `computed_by` | enum(`backend`,`ml`) | да | [BE] | |

@@ -34,7 +34,7 @@
 D021,I1,R002;R003,contradiction,"Лучший прибор B4: в Table 4 PCE 3.85 %, в тексте и на рис. 10 — 5.25 %",13,exhibited PCE = 5.25%
 ```
 
-В API у `Issue` дополнительно: `severity` (`error|warn|info`), `ui_level` (`conflict|doubt|warn`), `fact_ids` (= `record_ids` в терминах фактов), `anchor_ids` (bbox для подсветки), `numbers` (вычисленные числа), `status` (`open|fixed|ok` — разбор человеком), `computed_by`, `confidence` (у ML), `rule_version`. В выгрузку попадают замечания со `status` `open` и `fixed` (факт подтверждён, но расхождение в статье есть); `ok` («не ошибка») — не выгружаются.
+В API у `Issue` дополнительно: `severity` (`error|warn|info`), `ui_level` (`conflict|doubt|warn`), `fact_ids` (= `record_ids` в терминах фактов), `anchor_ids` (bbox для подсветки), `numbers` (вычисленные числа), `status` / `state` (`open|fixed|ok` — разбор человеком; **автозакрытие**: если все значения замечания исправлены или отклонены — `fixed` само, §15.12), `computed_by`, `confidence` (у ML), `rule_version`. В выгрузку попадают замечания со `status` `open` и `fixed` (факт подтверждён, но расхождение в статье есть); `ok` («не ошибка») — не выгружаются.
 
 ## 5.2. Каталог `check_name`
 
@@ -83,13 +83,28 @@ D021,I1,R002;R003,contradiction,"Лучший прибор B4: в Table 4 PCE 3.
 | `low_confidence` | `confidence < 0,6` у значения ML — для очереди проверки | нет |
 | `ocr_low_confidence` | §11 | нет |
 
-### Предметная область 2 (RAG)
+### 5.2-B. Предметная область 2 (RAG)
 
-Правила `metric_scale` (значение вне шкалы метрики), `metric_k_missing` (нет k у метрики @k), `recall_k` (Recall@k1 > Recall@k2 при k1 < k2), `mrr` (MRR > Recall@10) — в модели остаются. **Формат сдачи и имена `check_name` для области 2 уточнить, когда будет архив по области 2.**
+Формат строки — тот же `issues.csv` (`publication_id, issue_id, record_ids, check_name, description, source_page, source_fragment`). **`check_name` — открытые имена** (README шаблона): рекомендуемые `metric_scale`, `metric_k`, `protocol_mismatch`, `normalization`, `contradiction`. В эталоне dev (134 замечания) имена почти все уникальны и описательны (`percentage_vs_percentage_point`, `plot_precision`, `sample_count_conflict`, `unspecified_generator`, `relative versus absolute latency`, `Figure versus table inconsistency`…). Правило для нас: бэк пишет **рекомендуемые** имена для своих правил; ML-находки — рекомендуемое имя, если подходит, иначе короткое описательное `snake_case` по образцу эталона. Исходный результат **не удаляется** (значение за шкалой сохраняется).
+
+| `check_name` | Что проверяет | Условие | Кто |
+|---|---|---|---|
+| `metric_scale` | значение вне шкалы метрики | при `metric_unit` = `fraction` (0…1) или `%` (0…100) для Accuracy, Precision, Recall, F1, EM, Hit@k, MRR, NDCG — значение вне шкалы (то же условие, что предупреждение скрипта) | [BE] |
+| `metric_k` | k метрики | имя вида `…@5` без `metric_k`; `metric_k` ≠ k в имени; `metric_k` скопирован из `top_k` конфигурации (подсказка ML) | [BE] (+[ML]) |
+| `normalization` | шкала и единицы | доля и процент в одной таблице без явной шкалы; «%» у абсолютной разницы (это п.п. — `percentage_points`, в эталоне `percentage_vs_percentage_point`); относительный процент против абсолютного; пересчёт без установленной шкалы | [BE] (единица/шкала) + [ML] (смысл «%» в тексте) |
+| `protocol_mismatch` | сопоставимость | `baseline_value` указан, но у baseline и результата различаются задача, набор, определение метрики, шкала или протокол; сравнение в статье между разными экспериментами | [BE] по таблицам + [ML] |
+| `contradiction` | одно значение в разных местах расходится | повторы (`duplicate_of`) или записи с одинаковыми связями и определением метрики, но разными числами (сверх округления); текст против таблицы/рисунка | [BE] + [ML] |
+| `latency_scope` *(описательное)* | задержка/токены приписаны всем конфигурациям | `experiments.latency_ms`/`tokens_per_query` заполнены, а в эксперименте несколько конфигураций с разной задержкой в статье | [BE] (подсказка) + [ML] |
+| `plot_precision` *(как в эталоне)* | значение оцифровано с графика | `source_figure` без `source_fragment`, `note` про оцифровку — точность ограничена | [ML] |
+| прочие описательные (`sample_count_conflict`, `unspecified_generator`, `judge ambiguity`, `rounding`…) | неоднозначность, конфликт параметров, недостающие условия | — | [ML] |
+
+`source_page` и `source_fragment` у замечания — место, где видно расхождение (дословная цитата; проверяется скриптом так же, как у результатов).
 
 ## 5.3. Сопоставимость (между статьями — только фильтр)
 
 [BE] вычисляет `comparability_key` у каждого результата (ТЗ, раздел 3.3 условий): `material_class | device_type | spectrum=AM1.5G & light_intensity=100 mW/cm2 | area_bucket | aggregation | scan_direction | certified | stability`. `area_bucket`: `< 0,1`, `0,1–1`, `> 1 cm2`. Сертифицированные и стабильность — отдельные группы. Пустое поле — ключ «неполный»: сравнение допускается с предупреждением.
+
+Область 2: `task_type | dataset_name + dataset_version + data_split | metric_name + metric_variant + metric_k | metric_unit | evaluation_protocol` — разные эксперименты остаются разными записями; `baseline_value` допустим только внутри одного ключа.
 
 Используется как фильтр в таблице фактов и Сравнении (`comparable: {ok, reasons[]}`). Замечание `comparability` в статье ставится только по признакам самой статьи (нестандартное освещение, мини-модуль) — не по сравнению с другими статьями.
 

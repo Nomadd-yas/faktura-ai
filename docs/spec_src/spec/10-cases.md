@@ -4,31 +4,29 @@
 
 Кто действует: **ПОЛЬЗ** — человек, **ФРОНТ**, **БЭК**, **ML**. JSON сокращён («…»); полные форматы — §4, §7.
 
-## 10.1. Кейс 1 (основной): пакетный прогон корпуса солнечных элементов
+## 10.1. Кейс 1 (основной): разбор пачки PDF в интерфейсе
 
-Организаторы дали корпус области 1 (кейс 5): `dev/` — 21 PDF с эталоном `dev_gold/`, `test/` — 90 PDF (`P001`…`P090`), по ним оценка. Сначала прогоняем dev и меряем качество, затем test и сдаём 7 CSV.
+Организаторы дали корпус области 1 (кейс 5): `dev/` — 21 PDF с эталоном `dev_gold/`, `test/` — 90 PDF (`P001`…`P090`), по ним оценка. Пользователь загружает PDF в интерфейс, смотрит результат и скачивает 7 CSV; для сдачи то же делает CLI.
 
 | № | Кто | Действие | Эндпоинт → и ← (коротко) |
 |---|---|---|---|
-| 1 | ПОЛЬЗ → ФРОНТ → БЭК | вход | → `POST /auth/login {"email":"team@faktura.ai","password":"••••"}` ← `200 {"access_token":"eyJ…","user":{…}}` |
-| 2 | ФРОНТ → БЭК | первый экран «Корпус» | → `GET /corpus/overview` ← `{"corpora":[],"empty":true}` → пустое состояние «Загрузите папку или ZIP с PDF» |
-| 3 | ПОЛЬЗ → ФРОНТ → БЭК | создать корпус | → `POST /corpora {"name":"Кейс 5 — test","collection":"solar","profile_id":"prf_solar_tz_v1"}` ← `201 {"corpus_id":"crp_test",…}` |
-| 4 | ПОЛЬЗ → ФРОНТ → БЭК | загрузить ZIP (или папку пачками) | → `POST /uploads` + `PATCH /uploads/{id}` (resumable), → `POST /corpora/crp_test/files {"upload_id":"upl_1"}` ← `202 {"accepted":90,"duplicates":0,"rejected":[{"name":"readme.txt","code":"unsupported_file"}]}` |
-| 5 | БЭК | дедупликация | SHA-256: дублей нет (иначе — `skipped_duplicate`) |
-| 6 | ПОЛЬЗ → ФРОНТ → БЭК | «Прогнать всё» | → `POST /corpora/crp_test/runs {"kind":"new_only","concurrency":4}` ← `202 {"run_id":"run_12","status":"queued","counts":{"total":90}}` |
-| 7 | БЭК → ML-2 | разбор каждого PDF (по 4 одновременно) | → `POST /ml/parse` (multipart `file`, `domain_hint=solar`) ← `{"document":{pages, blocks, tables…},"topic":{"collection":"solar","confidence":0.93},"needs_ocr":false,"references":[…]}` |
-| 8 | БЭК → ML-1 | извлечение по списку полей профиля | → `POST /ml/extract` (multipart `file`, `domain=solar`, `fields=[{"key":"pce"},{"key":"voc"},…]`, `document`) ← `{"publication":{…},"devices":[{"ref":"d1","label":"A"},…],"results":[{"field":"pce","device_ref":"d2","raw_value":"18,6","raw_unit":"%","page":4,"source_type":"table","source_ref":"Табл. 2","bbox":[…],"confidence":0.93,"result_origin":"primary"},…],"model_version":"extract-0.3"}` (предварительный контракт, §7.0) |
-| 9 | БЭК | по каждому файлу | валидация → сопоставление полей → нормализация (`faktura_norm` от ML-2) (FF `0.77 fraction` → `77 %`, `712 mV` → `0.712 V`) → факты и таблицы ТЗ → проверки (`jv_consistency`, `contradiction`, `missing_conditions`, …) |
-| 10 | БЭК → ФРОНТ | прогресс по файлам | SSE `run.file {"file_id":"cf_061","status":"done","facts":16,"issues":1}`, `run.progress {"progress":41,"counts":{"done":60,"failed":1,…}}`; статьи вне области — `done` с `in_scope=false` |
-| 11 | БЭК → ФРОНТ | прогон закончен | SSE `run.done {"run_id":"run_12","status":"done_with_errors","counts":{"done":90,"failed":0}}` |
-| 12 | ФРОНТ → БЭК | сводка | → `GET /corpora/crp_test/summary` ← `{"facts":{"total":2310},"issues":{"open":211,"by_rule":[{"check_name":"physics","open":23},{"check_name":"contradiction","open":9}]},"coverage":[{"field":"pce","pct":96.6},{"field":"scan_direction","pct":26.0}],"not_found":[{"field":"certified"}]}` |
-| 13 | ПОЛЬЗ → ФРОНТ → БЭК | таблица фактов, фильтр «КПД > 20 %, перовскиты» | → `GET /facts/table?corpus_id=crp_test&q=КПД > 20 % перовскиты&sort=value&dir=desc&limit=100&facets=true` ← `{"filters":[{"label":"КПД > 20 %"},{"label":"перовскит"}],"data":[{"fact_id":"fct_stab_c_h0_pce","display":"21,3 %","raw_value":"21,3 %","paper_title":"Стабильность перовскитных элементов при 85 °C","source_page":7,"source_ref":"Табл. 2","review_status":"new","issues":[]},…],"total":37}` |
-| 14 | ПОЛЬЗ → ФРОНТ → БЭК | открыть источник | → `GET /papers/pap_stab/anchors?page=7`, `GET /papers/pap_stab/pages/7` ← `rects` ячейки → подсветка на странице 7 |
-| 15 | ПОЛЬЗ → ФРОНТ → БЭК | замечания | → `GET /issues?corpus_id=crp_test&severity=error` ← «Текст противоречит таблице» ×9, «КПД выше подтверждённого рекорда» ×2; по каждому — «Решено» / «Не ошибка» `POST /issues/resolve`, или исправить значение `PATCH /facts/{id} {"raw":"18,7"}`, или отклонить `POST /facts/{id}/reject` |
-| 16 | ПОЛЬЗ → ФРОНТ → БЭК | массово принять надёжные | → `POST /facts/bulk {"action":"accept","filter":{"corpus_id":"crp_test","reliable":true}}` ← `{"count":1840,"action_id":"act_…"}` |
-| 17 | ПОЛЬЗ → ФРОНТ → БЭК | экспорт для сдачи | → `POST /exports {"scope":{"corpus_id":"crp_test"},"format":"submission","validate":true}` ← ZIP: `publications.csv`, `materials.csv`, `devices.csv`, `layers.csv`, `measurements.csv`, `results.csv`, `issues.csv` + `check_report.txt` (`X-Check-Status: ok`); паспорт — `GET /passport` |
+| 1 | ПОЛЬЗ → ФРОНТ → БЭК | вход | → `POST /auth/login {"email":"team@faktura.ai","password":"••••"}` ← `200 {"access_token":"eyJ…","user":{…}}` → фронт ведёт на **`/app`** |
+| 2 | ФРОНТ → БЭК | главная-композер, недавние разборы | → `GET /runs?limit=6` ← `{"data":[{"id":"run_demo","title":"Демо — dev, 21 статья с эталоном","demo":true,"counts":{"files":21,"done":19,"out":2},"results":659,"issues":53}]}` |
+| 3 | ПОЛЬЗ → ФРОНТ → БЭК | перетащил папку `test/` (90 PDF), «Разобрать 90» | → `POST /runs` (multipart: 90 × `file`, `domain=solar`) ← `202 {"id":"run_7","title":"90 статей · 20 ноя","files":[{"id":"P001","name":"P001.pdf","status":"queued"},…]}` → фронт открывает `/run/run_7` |
+| 4 | БЭК → ML-2 → ML-1 | конвейер на каждый PDF (по 4 одновременно) | → `POST /ml/parse` ← документ, `needs_ocr`; → `POST /ml/extract` (`file`, `publication_id=P001`, `domain=solar`) ← строки 7 таблиц (§7.0.1) |
+| 5 | БЭК | по каждому файлу | валидация → `in_scope=false` → только `publications` (статус `out` + причина) → нормализация (`0.77 fraction` → `77 %`, `1123 mV` → `1.123 V`) → проверки (`jv_consistency`, `contradiction`, `missing_conditions`, …) → сохранение |
+| 6 | БЭК → ФРОНТ | ветка разбора: прогресс | SSE `GET /runs/run_7/events`: `event: file {"id":"P003","status":"running","progress":40,"stage":"Извлечение"}`, `{"id":"P017","status":"out","reason":"Только численное моделирование…"}`, `{"id":"P003","status":"done","results":31,"issues":2}` … `event: done {"counts":{"files":90,"done":84,"out":6},"results":2810,"issues":230}` |
+| 7 | ФРОНТ → БЭК | сводка | → `GET /runs/run_7/summary` ← `{"papers":90,"in_scope":84,"results":2810,"issues":230,"coverage":[{"metric":"PCE","papers":83,"of":84},…]}` |
+| 8 | ПОЛЬЗ → ФРОНТ → БЭК | таблица результатов, фильтр «PCE > 20 перовскит» | → `GET /results?run=run_7&q=PCE > 20 перовскит&sort=value&dir=desc&limit=100` ← `{"data":[{"row":{"publication_id":"P042","result_id":"R004","metric_name":"PCE","raw_value":"21.3","raw_unit":"%","normalized_value":"21.3","normalized_unit":"%","aggregation":"champion","source_page":"5","source_table":"Table 1",…},"device_label":"Cs0.05","review":{"status":"new"}},…],"total":37}` |
+| 9 | ПОЛЬЗ → ФРОНТ → БЭК | клик по строке → статья на значении | `/paper/solar/P042?run=run_7&r=R004` → `GET /papers/solar/P042` ← 7 таблиц статьи + `reviews` + `meta`; `GET /papers/solar/P042/pdf` (Range) → pdf.js открывает стр. 5 и подсвечивает `source_fragment` (или подпись «Table 1») |
+| 10 | ПОЛЬЗ → ФРОНТ → БЭК | замечания разбора | → `GET /issues?run=run_7&check_name=contradiction` ← `{"data":[{"row":{"publication_id":"P042","issue_id":"I1","record_ids":"R004;R011","check_name":"contradiction","description":"В аннотации PCE 21.3 %, в Table 1 — 20.9 %","source_page":"1","source_fragment":"efficiency of 21.3%"},"meta":{"computed_by":"ml"}}]}` → клик → `/paper/solar/P042?run=run_7&i=I1` |
+| 11 | ПОЛЬЗ → ФРОНТ → БЭК | исправить значение / отклонить | → `PATCH /runs/run_7/papers/solar/P042/results/R011/review {"status":"accepted","corrected_value":21.3}` ← `{"review":{…},"action_id":"act_81","issues_changed":{"closed":["I1"]}}`; «Отменить» → `POST /actions/act_81/undo` |
+| 12 | ПОЛЬЗ → ФРОНТ → БЭК | массово принять надёжные | → `POST /runs/{id}/reviews/batch {"filter":{"run":"run_7","review":"new","has_issues":false},"status":"accepted"}` ← `{"count":2410,"action_id":"act_82"}` |
+| 12a | ПОЛЬЗ → ФРОНТ → БЭК | вопрос в разборе «КПД выше 20 % у перовскитов» | → `POST /runs/run_7/messages {"text":"КПД выше 20 % у перовскитов"}` ← SSE: `text` с числами-сносками, `cards: [{"kind":"results","query":{"metric":"PCE","min":20,"q":"перовскит"}}]`, `cites: [{"domain":"solar","pid":"P042","result_id":"R004","page":5}]`, `suggestions` |
+| 13 | ПОЛЬЗ → ФРОНТ → БЭК | догрузить 2 PDF в тот же разбор | → `POST /runs/run_7/files` (multipart) ← `202 {"added":[{"id":"P091",…}]}` — прогресс снова в ветке |
+| 14 | ПОЛЬЗ → ФРОНТ → БЭК | «Скачать набор (7 CSV)» | → `GET /runs/run_7/submission.zip?check=true` ← ZIP: `publications.csv … issues.csv` + `check_report.txt`, `X-Check-Status: ok`. Правки учтены: отклонённые строки не выгружены и убраны из `record_ids`/`duplicate_of`; у исправленной `R011` `normalized_value`/`metric_value` = 21.3, в `note` — «исправлено вручную; модель: 20.9» |
 
-**То же без интерфейса** (проверка на скрытых примерах):
+**То же без интерфейса** (сдача, проверка на скрытых примерах):
 ```
 $ faktura extract --domain solar --in ./test --out ./out --check docs/case5/tools/check_submission.py
 [  1/90] done    P001.pdf   results=31 issues=2
@@ -36,13 +34,15 @@ $ faktura extract --domain solar --in ./test --out ./out --check docs/case5/tool
 [ 90/90] done    P090.pdf   results=27 issues=1
 Готово: 90 файлов, 84 в области, 6 вне области. check_submission: ошибок 0, предупреждений 12. Набор: ./out (exit 0)
 ```
-Результат — папка §13.6: ровно 7 CSV шаблона в `out/` (+ служебное `out/_meta/`). Проверка: `python docs/case5/tools/check_submission.py out test` → `ошибок: 0`. Качество на dev: `faktura-eval --gold docs/case5/dev_gold --pred ./out_dev` (скрипт ML-2).
+Результат — ровно 7 CSV в `out/` (+ служебное `out/_meta/`), §13.6. Качество на dev: `faktura-eval --gold docs/case5/dev_gold --pred ./out_dev` (скрипт ML-2).
 
-**Повторный прогон.** Добавили в профиль поле `scan_direction` (`PATCH /profiles/prf_solar_tz_v1` ← `{"version":4,"rerun_hint":"full"}`) → `POST /corpora/crp_solar/runs {"kind":"full","keep_review":true}`: ML разбирает заново, принятые и исправленные человеком значения переносятся. Изменили порог правила `jv_consistency` → `{"kind":"recheck"}` — без ML, за секунды.
+**Повторный прогон.** Новая версия модели → `POST /runs/run_7/restart {"keep_review":true}`: правки человека переносятся. Изменили порог `jv_consistency` → только перепроверка, без ML (§13.5).
 
 ---
 
 ## 10.2. Кейс 2 (дополнительный): одна статья о перовските, разбор и чат
+
+> **[В ФОНЕ]** — сценарий прототипа с чатом и проектами. В новом интерфейсе одна статья разбирается как разбор из одного файла (кейс 1, шаги 3–11); шаг 7 (вопрос в чате) и проекты выключены `FEATURES`, бэку их делать не нужно до решения команды. Сохранено как описание на будущее.
 
 Статья «Перовскитный солнечный элемент с КПД 18,6 %: стабильность и интерфейсы» (Иванов А. В., Котова Е. С. и др., 2024). В таблице 2 три образца A, B, C; в тексте сказано, что лучший — B, хотя по таблице КПД выше у A.
 
@@ -161,17 +161,22 @@ data: {"status":"done","explore":"Сравни КПД перовскитов п�
 
 ---
 
-## 10.3. Кейс 3: статья о RAG (коротко)
+## 10.3. Кейс 3: разбор корпуса RAG (область 2) со сканами и вопросом
 
-Статья «Гибридный поиск BM25 + плотные эмбеддинги для RAG» (Соколов М. И., Дьячкова А. Р., 2024). В табл. 2 — BM25, Dense, Hybrid; в аннотации «Recall@5 гибридного поиска достигает 0,76», а в таблице 0,74.
+Архив области 2: `dev/` — 21 PDF (D001–D021, из них сканы D002, D013, D021), `test/` — 90 PDF (14 сканов). Коды совпадают с областью 1 — статья везде пара (`rag`, `D001`).
 
-| № | Кто | Действие | Эндпоинт и данные |
+| № | Кто | Действие | Эндпоинт и данные (коротко) |
 |---|---|---|---|
-| 1 | ПОЛЬЗ → ФРОНТ → БЭК | загрузка вне проекта, под полем выбрано «Солнечные элементы» | `POST /papers` (`file=@hybrid_search.pdf`, `collection=solar`) → `202`, `topic_by: "guess"` |
-| 2 | ML → БЭК | тема | A1 `{"collection":"rag","confidence":0.95,"topics":["hybrid","bm25"]}` → БЭК: `collection = rag`, `topic_by = text`, SSE `paper.updated` |
-| 3 | ML → БЭК | извлечение | A4 строки BM25 / Dense / Hybrid; A5 `chunk` «512 ток.», `R@5` «0,74» (`metric_k: 5`), `R@10`, `MRR`; текст «BM25 + e5-large, слияние RRF» → `retriever`; A6 `datasets_tasks` `{"dataset_name":null,"dataset_description":"корпус из 12 тыс. документов"}`; A7 `{"kind":"equals","row_ref":"hybrid","param_raw":"Recall@5","value_raw":"0,76","where":"abstract"}` |
-| 4 | БЭК | нормализация и проверки | Recall — доли (0,74); `retriever` → `retrieval_method = hybrid`, `retriever_model = "BM25 + e5-large"`, `fusion_method = "RRF"`; `recall_k` ок (0,74 ≤ 0,85); `contradiction`: 0,76 ≠ 0,74 → `error` «Аннотация расходится с таблицей»; язык, протокол, генератор — `null` (не указаны) |
-| 5 | ФРОНТ | разбор | `GET /papers/pap_hybrid/structure` → конвейер: датасет «корпус из 12 тыс. документов», чанки 512 ток., ретривер, переранжирование «не указано», генератор «не указано», метрики |
-| 6 | ПОЛЬЗ | «Не ошибка» по замечанию (в аннотации округлено по другому прогону) | `POST /issues/resolve {"issue_ids":["pap_hybrid:contradiction:clm_eq"],"how":"ok"}` |
-| 7 | ПОЛЬЗ | вопрос «Какие конфигурации лучшие по Recall@5?» | `POST /chats/ask {"collection":"rag",…}` → поток: «Лучшее — Recall@5 0,77: конфигурация «С reranker»…», сноски на факты `r5` |
-| 8 | ПОЛЬЗ | экспорт RAG | `POST /exports {"scope":{"collection":"rag"},"format":"xlsx","layout":"relational"}` → листы `publications`, `datasets_tasks`, `experiments`, `rag_configs`, `metric_results`, `issues` |
+| 1 | ПОЛЬЗ → ФРОНТ → БЭК | на `/app` выбрал область «RAG», перетащил `dev/`, «Разобрать 21» | → `POST /runs` (`domain=rag`, 21 × `file`) ← `202 {"id":"run_rag1","domain":"rag","files":[{"id":"D001","status":"queued"},…]}` |
+| 2 | БЭК | проверка текстового слоя | pypdf и PyMuPDF дают пустой текст на всех страницах D002, D013, D021 → эти файлы идут в OCR |
+| 3 | БЭК → ML-2 | разбор и OCR | → `POST /ml/parse` (`ocr=auto`) ← «документ» + у сканов `pages[].ocr_used=true`, `words` с bbox и уверенностью, `ocr.mean_confidence=0.91` |
+| 4 | БЭК → ML-1 | извлечение по 7 таблицам области 2 | → `POST /ml/extract` (`domain=rag`) ← NDJSON: `configurations` (разные генераторы — разные `config_id`), `datasets`, `tasks`, `experiments`, `results` (у D014 — около 28 тыс. строк), `issues` |
+| 5 | БЭК | нормализация и проверки | `.204` → `0.204 fraction` без пересчёта шкалы; `24.8%` остаётся `24.8 %`; `NDCG@5` → `metric_k=5`; правила `metric_scale`, `metric_k`, `normalization`, `protocol_mismatch`, `contradiction` |
+| 6 | БЭК → ФРОНТ | ветка разбора | SSE `run_rag1/events`: `{"id":"D013","status":"running","stage":"Распознавание скана"}` … `{"id":"D013","status":"done","scan":true,"ocr_confidence":0.88,"results":1240}` |
+| 7 | ФРОНТ → БЭК | таблица большой статьи | → `GET /results/summary?domain=rag&pid=D014` (сводка по метрикам и конфигурациям) → `GET /results?domain=rag&pid=D014&metric=Answer F1&config_id=C03&dataset_id=DS2&limit=100` |
+| 8 | ПОЛЬЗ → ФРОНТ → БЭК | открыл значение со скана | `/paper/rag/D013?r=R120` → `GET /papers/rag/D013` (+ `results=summary`), `GET /papers/rag/D013/pdf`, `GET /papers/rag/D013/ocr` → подсветка по `words`; пометки «скан, распознано OCR», при `ocr_confidence < 0,8` — «сверьте цифры» |
+| 9 | ПОЛЬЗ → ФРОНТ → БЭК | вопрос в разборе | → `POST /runs/run_rag1/messages {"text":"сравни EM на HotpotQA у D001 и D003"}` ← SSE: `text` + `cards: [{"kind":"compare","domain":"rag","pids":["D001","D003"],"metric":"EM"}]` + `cites: [{"domain":"rag","pid":"D001","result_id":"R001","page":6}]` + `suggestions`; сопоставимость — `comparable: {"ok": false, "reasons": ["разные определения EM"]}` |
+| 10 | ПОЛЬЗ → ФРОНТ → БЭК | связи | → `GET /graph?run=run_rag1&domain=rag&kinds=dataset,generator` ← статьи, общие `HotpotQA`, `LLaMA3-8B-Instruct`… |
+| 11 | ПОЛЬЗ → ФРОНТ → БЭК | скачать набор | → `GET /runs/run_rag1/submission.zip?check=true` ← 7 CSV области 2 + `check_report.json`: бэк запускает `docs/case5_area2/tools/check_submission.py … --ocr --json-report` → код `2` (часть цитат со сканов не подтверждена OCR буквально) → `X-Check-Status: warnings` |
+
+Без интерфейса: `faktura extract --domain rag --in ./test --out ./out --check` → `out/rag/` (7 CSV) + `out/_meta/check_report_rag.json`.

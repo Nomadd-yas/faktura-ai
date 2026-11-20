@@ -8,7 +8,9 @@
 
 Сводная таблица всех эндпоинтов — [§4.22](#422-сводная-таблица-эндпоинтов).
 
-> **Основной поток — пакетный** (корпус, прогоны, таблица фактов корпуса, сводка, CLI): эндпоинты описаны в [§13](13-corpus.md) и включены в сводную таблицу (строки 99–121). Эндпоинты этого файла — общие (статьи, факты, замечания, словарь, экспорт) и дополнительные сценарии (чат, загрузка одной статьи).
+> **Интерфейс вызывает эндпоинты §15** ([15-runs.md](15-runs.md)): разборы, 7 таблиц статьи (`GET /papers/{domain}/{pid}`), `GET /results`, `GET /issues`, PDF, правки, экспорт по разбору. Где описание ниже расходится с §15 (форма `GET /papers/{id}`, `GET /issues`), верен §15. Разделы 4.4, 4.5 и граф прототипа 4.12 — **[В ФОНЕ]**; вопросы внутри разбора и новый граф — §15.9, §15.10.
+>
+> **Пакетный поток** (корпус, прогоны, таблица фактов корпуса, сводка, CLI): эндпоинты описаны в [§13](13-corpus.md) и включены в сводную таблицу (строки 99–121). Эндпоинты этого файла — общие (статьи, факты, замечания, словарь, экспорт) и дополнительные сценарии (чат, загрузка одной статьи).
 
 ---
 
@@ -81,7 +83,9 @@
 
 ---
 
-## 4.4. Проекты
+## 4.4. Проекты [В ФОНЕ]
+
+> **[В ФОНЕ]** — в интерфейсе выключено флагом `FEATURES` (`src/features.ts`), фронт эти эндпоинты сейчас не вызывает, **бэку делать не нужно до решения команды**.
 
 ### `GET /projects`
 Мои проекты. Сортировка по умолчанию: `pinned desc, created_at asc` (как в боковой панели). Без пагинации. Источник: `name, collection, note, pinned` — [USER]; счётчики, даты — [BE].
@@ -110,7 +114,9 @@
 
 ---
 
-## 4.5. Чаты и сообщения
+## 4.5. Чаты и сообщения [В ФОНЕ]
+
+> **[В ФОНЕ]** — в интерфейсе выключено флагом `FEATURES` (`src/features.ts`), фронт эти эндпоинты сейчас не вызывает, **бэку делать не нужно до решения команды**.
 
 ### `GET /chats`
 Параметры: `project_id` (id или `none` — «Недавние»), `kind` (`paper|ask`), `pinned` (bool), `q` (поиск по названию), `sort` (`updated_at` по умолчанию, `desc`), `limit`, `cursor`. Источник: `title` — [BE]|[USER]; `project_id`, `pinned` — [USER]; остальное — [BE].
@@ -271,6 +277,8 @@ data: {"status":"done","explore":"Какие приборы лучшие по К
 
 ## 4.7. Статья
 
+> Для нового интерфейса: `GET /papers/{domain}/{pid}` отдаёт **7 таблиц шаблона** статьи (+ `reviews`, `meta`) — §15.4; PDF — `GET /papers/{domain}/{pid}/pdf` (§15.5). Расширенные эндпоинты ниже (`layout`, `anchors`, `coverage`, `structure`, `links`) — для будущих экранов; `structure` и `links` фронт сейчас не вызывает.
+
 ### `GET /papers`
 Список статей команды. Параметры: `collection`, `project_id`, `status` (`processing|done|failed`), `mine` (bool), `q` (название, авторы), `ids` (через запятую), `sort` (`added_at` по умолчанию | `year` | `title`), `dir`, `limit`, `cursor`. Источник: метаданные — [ML]; счётчики, статус — [BE].
 ```json
@@ -365,6 +373,8 @@ data: {"status":"done","explore":"Какие приборы лучшие по К
 ---
 
 ## 4.8. Факты
+
+> Для нового интерфейса — `GET /results` и `PATCH /runs/{id}/papers/{domain}/{pid}/results/{rid}/review`, `POST /runs/{id}/reviews/batch` (§15.4, §15.6). Эндпоинты `/facts/*` ниже — общий слой (в т. ч. для полей материалов, слоёв и условий) и внешний API.
 
 ### `GET /facts`
 Факты с фильтрами (и для внешних программ — пример `GET /api/v1/facts?param=pce&min=18&collection=solar` на экране «Экспорт»).
@@ -471,6 +481,8 @@ data: {"status":"done","explore":"Какие приборы лучшие по К
 ---
 
 ## 4.10. Замечания
+
+> Для нового интерфейса — `GET /issues?run=&check_name=` в форме строк `issues.csv` (§15.4). Разбор замечаний человеком (`resolve`/`reopen`) в новом интерфейсе пока не вызывается: правки идут по записям `results` (§15.6).
 
 ### `GET /issues`
 | Параметр | Описание |
@@ -593,7 +605,11 @@ data: {"status":"done","explore":"Какие приборы лучшие по К
 
 ---
 
-## 4.12. Граф связей
+## 4.12. Граф связей прототипа (по спискам литературы) [В ФОНЕ]
+
+> **Граф нужен, но в новом виде — §15.10**: `GET /graph?run=&domain=&kinds=` и `GET /papers/{domain}/{pid}/related` по данным 7 таблиц. Описание ниже — вариант прототипа (литература, внешние работы), он остаётся в фоне.
+
+> **[В ФОНЕ]** — в интерфейсе выключено флагом `FEATURES` (`src/features.ts`), фронт эти эндпоинты сейчас не вызывает, **бэку делать не нужно до решения команды**. (`GET /papers/{id}/links` и литература — тоже.)
 
 ### `GET /graph`
 Параметры: `collection` (обяз.), `root` (paper_id — окрестность корня + все статьи коллекции, `nearGraph()`), `project_id` (только статьи проекта). Источник: [BE] (литература — [ML]).
@@ -863,26 +879,26 @@ data: {"status":"done","explore":"Какие приборы лучшие по К
 | 9 | GET/POST/DELETE | `/me/api-keys` (появится) | 4.2 | BE |
 | 10 | GET | `/collections` | 4.3 | BE |
 | 11 | GET | `/collections/{id}/stats` | 4.3 | BE |
-| 12 | GET | `/projects` | 4.4 | USER/BE |
-| 13 | POST | `/projects` | 4.4 | USER |
-| 14 | GET | `/projects/{id}` | 4.4 | USER/BE |
-| 15 | PATCH | `/projects/{id}` | 4.4 | USER |
-| 16 | DELETE | `/projects/{id}` | 4.4 | BE |
-| 17 | POST | `/projects/{id}/restore` | 4.4 | BE |
-| 18 | GET | `/projects/{id}/suggestions` | 4.4 | BE/ML |
-| 19 | GET | `/chats` | 4.5 | BE/USER |
-| 20 | GET | `/chats/{id}` | 4.5 | BE/USER |
-| 21 | POST | `/chats/ask` | 4.5 | USER→BE/ML |
-| 22 | PATCH | `/chats/{id}` | 4.5 | USER |
-| 23 | DELETE | `/chats/{id}` | 4.5 | BE |
-| 24 | POST | `/chats/{id}/restore` | 4.5 | BE |
-| 25 | GET | `/chats/{id}/turns` | 4.5 | USER/BE/ML |
-| 26 | POST | `/chats/{id}/turns` | 4.5 | USER→BE/ML |
-| 27 | GET | `/turns/{id}/stream` (SSE) | 4.5 | BE/ML |
-| 28 | POST | `/turns/{id}/stop` | 4.5 | USER→BE |
-| 29 | POST | `/turns/{id}/versions` | 4.5 | USER→BE/ML |
-| 30 | PUT | `/turns/{id}/active-version` | 4.5 | USER |
-| 31 | PUT | `/turns/{id}/rating` | 4.5 | USER |
+| 12 | GET | `/projects`  **[В ФОНЕ]** | 4.4 | USER/BE |
+| 13 | POST | `/projects`  **[В ФОНЕ]** | 4.4 | USER |
+| 14 | GET | `/projects/{id}`  **[В ФОНЕ]** | 4.4 | USER/BE |
+| 15 | PATCH | `/projects/{id}`  **[В ФОНЕ]** | 4.4 | USER |
+| 16 | DELETE | `/projects/{id}`  **[В ФОНЕ]** | 4.4 | BE |
+| 17 | POST | `/projects/{id}/restore`  **[В ФОНЕ]** | 4.4 | BE |
+| 18 | GET | `/projects/{id}/suggestions`  **[В ФОНЕ]** | 4.4 | BE/ML |
+| 19 | GET | `/chats`  **[В ФОНЕ]** | 4.5 | BE/USER |
+| 20 | GET | `/chats/{id}`  **[В ФОНЕ]** | 4.5 | BE/USER |
+| 21 | POST | `/chats/ask`  **[В ФОНЕ]** | 4.5 | USER→BE/ML |
+| 22 | PATCH | `/chats/{id}`  **[В ФОНЕ]** | 4.5 | USER |
+| 23 | DELETE | `/chats/{id}`  **[В ФОНЕ]** | 4.5 | BE |
+| 24 | POST | `/chats/{id}/restore`  **[В ФОНЕ]** | 4.5 | BE |
+| 25 | GET | `/chats/{id}/turns`  **[В ФОНЕ]** | 4.5 | USER/BE/ML |
+| 26 | POST | `/chats/{id}/turns`  **[В ФОНЕ]** | 4.5 | USER→BE/ML |
+| 27 | GET | `/turns/{id}/stream` (SSE)  **[В ФОНЕ]** | 4.5 | BE/ML |
+| 28 | POST | `/turns/{id}/stop`  **[В ФОНЕ]** | 4.5 | USER→BE |
+| 29 | POST | `/turns/{id}/versions`  **[В ФОНЕ]** | 4.5 | USER→BE/ML |
+| 30 | PUT | `/turns/{id}/active-version`  **[В ФОНЕ]** | 4.5 | USER |
+| 31 | PUT | `/turns/{id}/rating`  **[В ФОНЕ]** | 4.5 | USER |
 | 32 | POST | `/papers` | 4.6 | USER→BE |
 | 33 | GET | `/papers/{id}/processing` | 4.6 | BE/ML |
 | 34 | PUT | `/papers/{id}/collection` | 4.6 | USER→BE |
@@ -897,7 +913,7 @@ data: {"status":"done","explore":"Какие приборы лучшие по К
 | 43 | GET | `/papers/{id}/coverage` | 4.7 | BE |
 | 44 | GET | `/papers/{id}/structure` | 4.7 | ML→BE |
 | 45 | GET | `/papers/{id}/links` | 4.7 | ML→BE |
-| 46 | GET | `/papers/{id}/cited-by` | 4.12 | BE |
+| 46 | GET | `/papers/{id}/cited-by`  **[В ФОНЕ]** | 4.12 | BE |
 | 47 | GET | `/facts` | 4.8 | ML/BE/USER |
 | 48 | GET | `/papers/{id}/facts` | 4.8 | ML/BE/USER |
 | 49 | GET | `/facts/{id}` | 4.8 | ML/BE/USER |
@@ -924,9 +940,9 @@ data: {"status":"done","explore":"Какие приборы лучшие по К
 | 70 | PATCH | `/views/{id}` | 4.11 | USER |
 | 71 | DELETE | `/views/{id}` | 4.11 | BE |
 | 72 | POST | `/views/{id}/restore` | 4.11 | BE |
-| 73 | GET | `/graph` | 4.12 | BE (ML) |
-| 74 | GET | `/graph/edges.csv` | 4.12 | BE |
-| 75 | GET | `/entities/{id}/papers` | 4.12 | BE |
+| 73 | GET | `/graph`  **[В ФОНЕ]** | 4.12 | BE (ML) |
+| 74 | GET | `/graph/edges.csv`  **[В ФОНЕ]** | 4.12 | BE |
+| 75 | GET | `/entities/{id}/papers`  **[В ФОНЕ]** | 4.12 | BE |
 | 76 | GET | `/checks` | 4.13 | BE |
 | 77 | GET | `/checks/rules` | 4.13 | BE |
 | 78 | GET | `/checks/accuracy` | 4.13 | BE (эталон USER) |
@@ -951,6 +967,36 @@ data: {"status":"done","explore":"Какие приборы лучшие по К
 | 97 | POST | `/admin/gold` | 4.21 | USER |
 | 98 | POST | `/admin/reprocess` | 4.21 | BE |
 
+| 122 | POST | `/runs` | 15.3 | USER→BE |
+| 123 | POST | `/runs/{id}/files` | 15.3 | USER→BE |
+| 124 | GET | `/runs` | 15.3 | BE |
+| 125 | GET | `/runs/{id}` | 15.3 | BE |
+| 126 | PATCH | `/runs/{id}` | 15.3 | USER |
+| 127 | DELETE | `/runs/{id}` (+ `POST /runs/{id}/restore`) | 15.3 | BE |
+| 128 | POST | `/runs/{id}/restart` | 15.3 | USER→BE/ML |
+| 129 | POST | `/runs/{id}/stop` | 15.3 | USER→BE |
+| 130 | GET | `/runs/{id}/events` (SSE) | 15.3 | BE |
+| 131 | GET | `/runs/{id}/summary` | 15.3 | BE |
+| 132 | GET | `/papers/{domain}/{pid}` (7 таблиц) | 15.4 | ML→BE/USER |
+| 133 | GET | `/results` | 15.4 | ML→BE/USER |
+| 134 | GET | `/issues` (строки `issues`) | 15.4 | BE/ML |
+| 135 | GET | `/issues/stats` | 15.4 | BE |
+| 136 | GET | `/compare` | 15.4 | BE |
+| 137 | GET | `/papers/{domain}/{pid}/pdf` | 15.5 | USER (файл) |
+| 138 | PATCH | `/papers/{domain}/{pid}/results/{rid}/review` | 15.6 | USER |
+| 139 | POST | `/reviews/batch` | 15.6 | USER |
+| 140 | GET | `/runs/{id}/submission.zip` | 15.7 | BE |
+| 141 | GET | `/runs/{id}/dataset.json`, `/runs/{id}/dataset.xlsx` | 15.7 | BE |
+| 142 | GET | `/results/summary` | 15.4 | BE |
+| 143 | GET | `/runs/{id}/messages` | 15.9 | USER/BE |
+| 144 | POST | `/runs/{id}/messages` (SSE) | 15.9 | USER→BE (ML опц.) |
+| 145 | GET | `/runs/{id}/suggestions` | 15.9 | BE |
+| 146 | GET | `/graph?run=&domain=&kinds=` | 15.10 | BE (канон — ML-2) |
+| 147 | GET | `/papers/{domain}/{pid}/related` | 15.10 | BE |
+| 148 | GET | `/papers/{domain}/{pid}/ocr` | 11, 15.5 | ML-2 |
+| 149 | PATCH | `/papers/{domain}/{pid}/issues/{iid}` `{state}` | 15.12 | USER |
+| 150 | GET | `/runs/{id}/submission/stats` | 15.7 | BE |
+| 151 | POST | `/runs/{id}/submission.zip` (выбранные значения) | 15.7 | BE |
 | 99 | GET | `/corpus/overview` | 13.8 | BE |
 | 100 | POST | `/corpora` | 13.4 | USER |
 | 101 | GET | `/corpora` | 13.4 | BE/USER |

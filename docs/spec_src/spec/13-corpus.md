@@ -4,9 +4,11 @@
 
 > **Это главный сценарий продукта.** По ТЗ (стр. 11–12) организаторы дают корпус PDF по каждой области и оценивают результат по эталонной разметке и **независимым проверочным примерам** — то есть систему прогонят на новых PDF. Программа берёт все PDF, находит значения по заданному списку полей (PCE, Voc, …), пишет их в связанные таблицы с указанием страницы и места, проверяет и отдаёт набор данных; интерфейс даёт искать и фильтровать по этой таблице.
 >
-> Чат и загрузка одной статьи (§4.5, §4.6) — дополнительные сценарии поверх того же конвейера.
+> **Связь с разбором (§15).** Интерфейс работает с **разборами** (`Run`: одна загрузка — N файлов, ветка `/run/:id`). Внутри бэка разбор — это корпус с одним прогоном (`Run.id` = `corpus_id`, `kind = ui`): конвейер, статусы, проверки и экспорт общие. Корпус в этом разделе — для CLI, сдачи (dev, test) и больших прогонов; экрана «Корпус» в интерфейсе нет (`/corpus` → `/facts`).
 >
-> Экраны «Корпус» (импорт, статусы файлов, «Прогнать всё») и «Таблица фактов» (вся таблица корпуса) — **в интерфейсе появится**. В прототипе их нет: ближайшие аналоги — очередь загрузки (`UploadQueue.vue`) и Обзор данных (`ExploreView.vue`).
+> Чат и загрузка одной статьи — **[В ФОНЕ]** (`FEATURES`).
+>
+> В интерфейсе вместо экрана «Корпус» — разборы (`/app`, `/run/:id`, §15); «Таблица фактов» — `/facts` (`GET /results`, §15.4). В прототипе их нет: ближайшие аналоги — очередь загрузки (`UploadQueue.vue`) и Обзор данных (`ExploreView.vue`).
 
 ## 13.1. Поток
 
@@ -192,11 +194,11 @@ ML получает список полей в задаче (`fields` вмест
 
 ### Команда
 ```
-faktura extract --domain solar --in ./pdfs --out ./dataset \
+faktura extract --domain solar|rag|auto --in ./pdfs --out ./out \
   [--profile tz-solar-v1 | --profile ./profile.json] \
   [--format csv,json,xlsx] [--concurrency 4] [--model latest] \
   [--extract-url http://faktura-extract:8000] [--parse-url http://faktura-parse:8000] \
-  [--no-dedupe] [--ocr auto|off|force] [--fail-fast] [--check tools/check_submission.py]
+  [--no-dedupe] [--ocr auto|off|force] [--fail-fast] [--check]   # запускает check_submission.py своей области (для rag — с --ocr --json-report)
 ```
 - `--domain solar|rag|auto`; `--in` — папка (рекурсивно) или ZIP или файл со списком URL (`.txt`).
 - Работает тем же кодом бэка (импорт → прогон → экспорт) с локальной БД SQLite/PostgreSQL во временной папке или против сервера: `--server https://api.faktura.ai --api-key $GEODE_KEY` (тогда это вызовы `POST /corpora`, `POST /corpora/{id}/files`, `POST /corpora/{id}/runs`, опрос, `POST /exports`).
@@ -206,27 +208,24 @@ faktura extract --domain solar --in ./pdfs --out ./dataset \
 
 Аналог через API одним вызовом: `POST /extract` (multipart `archive` + `domain` + `profile_id`) → 202 `{run_id}`; по готовности `GET /runs/{id}/output` → ZIP выходной папки.
 
-### Формат выходной папки (область 1 — по шаблону сдачи, §14)
+### Формат выходной папки (обе области — по шаблонам сдачи, §14)
 ```
-out/                        — это и есть папка сдачи: ровно 7 CSV шаблона
-  publications.csv          — строка на КАЖДЫЙ PDF, в т. ч. in_scope=false
-  materials.csv
-  devices.csv
-  layers.csv
-  measurements.csv
-  results.csv
-  issues.csv
-  _meta/                    — служебное, в сдачу не входит (скрипт проверки его не читает)
-    manifest.json           — что, чем и когда прогнали
-    passport.json, passport.md
-    files.csv               — по каждому входному файлу: имя, sha256, статус, publication_id, результатов, замечаний, ошибка
-    check_report.txt        — вывод check_submission.py (при --check)
-    facts_ui.json           — служебные поля для интерфейса: confidence, bbox, review_status (для импорта в корпус)
+out/
+  solar/                      — область 1: ровно 7 CSV шаблона docs/case5/submission_template
+    publications.csv  materials.csv  devices.csv  layers.csv  measurements.csv  results.csv  issues.csv
+  rag/                        — область 2: ровно 7 CSV шаблона docs/case5_area2/submission_template
+    publications.csv  configurations.csv  datasets.csv  tasks.csv  experiments.csv  results.csv  issues.csv
+  _meta/                      — служебное, в сдачу не входит
+    manifest.json             — что, чем и когда прогнали (по областям)
+    passport_solar.json/.md, passport_rag.json/.md
+    files.csv                 — по каждому входному файлу: область, имя, sha256, статус (в т. ч. скан/OCR), publication_id, результатов, замечаний, ошибка
+    check_report_solar.txt, check_report_rag.json — вывод check_submission.py каждой области (при --check)
+    facts_ui.json             — служебные поля для интерфейса: confidence, bbox, review, ocr_confidence
     errors.log
 ```
-CSV — точно как шаблон: те же колонки, UTF-8 (с BOM, как файлы шаблона; скрипт читает `utf-8-sig`), разделитель `,`, точка, `true`/`false`, несколько значений через `;`, пустая ячейка = нет в статье. `publication_id` — имя PDF без расширения. Проверка: `python docs/case5/tools/check_submission.py out test`.
+`--domain solar` или `rag` пишет только свою папку; `auto` — обе (область статьи — по классификатору; в каждой области строка `publications` есть для каждого PDF каталога этой области).
 
-Область 2 (`--domain rag`): формат сдачи уточнить, когда будет архив по области 2; пока — CSV по полям ТЗ (`publications`, `datasets_tasks`, `experiments`, `rag_configs`, `metric_results`, `issues`) в `out/rag/`.
+CSV — точно как шаблоны: колонки и порядок из шаблона (`schema.json` для RAG), UTF-8, разделитель `,`, точка, `true`/`false`, `;` в списках, пустая ячейка = нет в статье (не `NaN`/`null`). `publication_id` — имя PDF без расширения. Проверка: `python docs/case5/tools/check_submission.py out/solar test` и `python docs/case5_area2/tools/check_submission.py out/rag test --ocr --json-report out/_meta/check_report_rag.json`. Коды CLI: `0` — успех; `2` — есть файлы `error` или скрипт области 2 вернул 2 (нужна проверка источников); `3` — скрипт любой области нашёл ошибки (у области 2 — его код 1); `1` — ошибка запуска.
 
 `_meta/manifest.json`:
 ```json
@@ -292,7 +291,7 @@ CSV — точно как шаблон: те же колонки, UTF-8 (с BOM,
 ```
 `coverage` — по каждому полю профиля: в скольких статьях есть хотя бы одно значение; `not_found` — поля профиля, не найденные ни в одной статье (кандидаты на доработку ML или синонимы словаря).
 
-### `GET /corpus/overview` — лёгкая сводка для первого экрана
+### `GET /corpus/overview` — лёгкая сводка по корпусам (админка, CLI; первый экран интерфейса теперь `/app` с `GET /runs?limit=6`, §15)
 Фронт запрашивает **сразу после входа**, чтобы отрисовать экран «Корпус» (`/corpus`) без тяжёлых запросов. Только счётчики из кешированных агрегатов (обновляются по событиям), без списков файлов и фактов; ответ — до 100 мс. Параметр `collection` (опц.). Источник: [BE].
 ```json
 { "corpora": [

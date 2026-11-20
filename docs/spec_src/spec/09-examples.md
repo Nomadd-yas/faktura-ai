@@ -1,14 +1,10 @@
-# 9. Приложение: полный пример статьи
+# 9. Приложение: примеры статей в формате сдачи
 
 [← К оглавлению](../BACKEND_SPEC.md)
 
-Для области 1 — ровно формат сдачи (7 CSV шаблона, §14). Для области 2 — внутренний реляционный формат (§4.16), формат сдачи будет уточнён. Данные — из демо-статей прототипа (`src/data.ts`: `mapbi`, `hybrid`), идентификаторы условные. Источник каждого поля — §3.
+Для обеих областей — ровно формат сдачи (по 7 CSV шаблона, §14.A и §14.B). Область 1 — демо-статья прототипа (`mapbi`, id условный); область 2 — фрагмент настоящего эталона dev (D001). Источник каждого поля — §3.
 
-Что важно увидеть в примерах:
-- `raw_value` хранится как в статье, `normalized_value` — в канонической единице ТЗ (FF «0,77» → 77 %);
-- то, чего нет в статье, — `null` (DOI, площадь, направление развёртки, генератор RAG, язык);
-- общие для всех образцов факты — `row_id: "*"`;
-- замечания ссылаются на факты, записи ТЗ и якоря; исходные записи не изменены.
+Общее: `raw_value` — как в статье, `normalized_value` = `metric_value` — в целевой единице (область 1) или по установленной шкале без пересчёта (область 2); пустая ячейка — в статье нет; замечания ссылаются на `result_id`, исходные записи не меняются; в API статья — пара (`domain`, `publication_id`).
 
 ## 9.1. Солнечные элементы — «Перовскитный солнечный элемент с КПД 18,6 %» (формат сдачи)
 
@@ -84,7 +80,7 @@ DEMO1,I2,R004;R008,contradiction,"В тексте лучший — образе�
 ```
 `I1` — правило бэка; `I2` — находка ML (утверждение текста против таблицы).
 
-### Та же статья в API (фрагмент `GET /papers/DEMO1/facts`)
+### Та же статья в API (фрагмент `GET /papers/solar/DEMO1`)
 Строка `results` + служебные поля интерфейса (не выгружаются):
 ```json
 { "fact_id": "R008", "publication_id": "DEMO1", "row_id": "DV-B", "param": "PCE", "target": { "table": "results", "id": "R008" },
@@ -105,122 +101,146 @@ DEMO2,"Optimization and Numerical Modeling of TCO/SnO2/CdS/CdTe Solar Cells",202
 ```
 В остальных шести таблицах строк для `DEMO2` нет (как `D016` в `dev_gold`).
 
-## 9.2. RAG — «Гибридный поиск BM25 + плотные эмбеддинги для RAG»
+## 9.2. RAG — статья D001 из эталона dev (формат сдачи области 2)
 
-> **Формат сдачи для области 2 уточнить, когда будет архив по области 2.** Ниже — внутренний реляционный формат по полям ТЗ.
+Фрагмент **настоящего эталона** `docs/case5_area2/dev_gold/` для статьи D001 («Graph Topology Meets Energy-Driven Pathfinding…»): строки всех 7 таблиц шаблона области 2 (§14.B). Полностью в D001 — 430+ результатов; здесь — по несколько строк каждой таблицы.
 
-```json
-{
-  "format": "faktura-dataset",
-  "version": "1.0",
-  "collection": "rag",
-  "model_version": "extractor-2026.11",
-  "profile": { "id": "prf_rag_tz_v1", "version": 2 },
+Что видно в примере:
+- `raw_value` = `.204` без единицы, `normalized_value` = `0.204` / `fraction`: ведущий ноль дописан, шкала не пересчитывалась (пояснение в `note`);
+- один и тот же `RA-CoT` с разными генераторами — разные конфигурации `C01` и `C02`;
+- `source_fragment` — дословная многострочная строка таблицы из PDF; указание столбца — в `note`;
+- `R253` — повтор значения `R091` в тексте раздела 4.2 (`duplicate_of`);
+- замечание `I01` с описательным `check_name` (`percentage_vs_percentage_point`) ссылается на много результатов (`record_ids` укорочен);
+- нет декартова произведения: строки только для значений, напечатанных в статье.
 
-  "publications": [
-    { "publication_id": "pap_hybrid", "title": "Гибридный поиск BM25 + плотные эмбеддинги для RAG", "year": 2024, "DOI": null,
-      "authors": ["Соколов М. И.", "Дьячкова А. Р."], "authors_et_al": false, "journal": "Труды конференции «Диалог», 2024",
-      "keywords": ["гибридный", "BM25", "dense", "RRF"], "page_count": 11, "in_scope": true, "corpus_id": "crp_rag" }
-  ],
+**publications.csv**
+```
+publication_id,title,year,DOI,authors,in_scope,exclusion_reason
 
-  "rows": [
-    { "row_id": "bm25", "paper_id": "pap_hybrid", "label": "BM25", "order": 1, "entity": { "config_id": "cfg_hybrid_bm25", "experiment_id": "exp_hybrid_1", "dataset_id": "ds_hybrid_1", "task_id": "tsk_hybrid_1" } },
-    { "row_id": "dense", "paper_id": "pap_hybrid", "label": "Dense", "order": 2, "entity": { "config_id": "cfg_hybrid_dense", "experiment_id": "exp_hybrid_1", "dataset_id": "ds_hybrid_1", "task_id": "tsk_hybrid_1" } },
-    { "row_id": "hybrid", "paper_id": "pap_hybrid", "label": "Hybrid", "order": 3, "entity": { "config_id": "cfg_hybrid_hybrid", "experiment_id": "exp_hybrid_1", "dataset_id": "ds_hybrid_1", "task_id": "tsk_hybrid_1" } }
-  ],
+D001,Graph Topology Meets Energy-Driven Pathfinding: Preserving Contextual Consistency in Retrieval-Augmented Generation,2026,10.18653/2026.findings-emnlp.2324,Yufeng Li; Zaijing Li; Fuchen Zhang; Zongzong Wu; Ming Zhao; Fengxiao Tang,true,
+```
+**configurations.csv**
+```
+publication_id,config_id,rag_variant,retrieval_method,retriever_model,embedding_model,embedding_version,chunking_method,chunk_size,chunk_overlap,chunk_unit,index_type,vector_store,top_k,reranker_model,generator_model,generator_version,prompt_strategy,context_strategy,note
 
-  "datasets_tasks": [
-    { "dataset_id": "ds_hybrid_1", "publication_id": "pap_hybrid", "dataset_name": null, "dataset_description": "корпус из 12 тыс. документов", "dataset_version": null,
-      "task_id": "tsk_hybrid_1", "task_type": "retrieval", "language": null, "data_split": null, "scientific_domain": null }
-  ],
+D001,C01,RA-CoT,,,,,,,,,,,,,LLaMA3-8B-Instruct,,,,"PDF p. 6, Table 1 row RA-CoT, generator LLaMA3-8B-Instruct."
 
-  "experiments": [
-    { "experiment_id": "exp_hybrid_1", "publication_id": "pap_hybrid", "dataset_id": "ds_hybrid_1", "task_id": "tsk_hybrid_1", "evaluation_protocol": null, "baseline_name": null,
-      "hardware": null, "latency_ms": null, "tokens_per_query": null, "sample_size": null, "config_ids": ["cfg_hybrid_bm25", "cfg_hybrid_dense", "cfg_hybrid_hybrid"] }
-  ],
+D001,C02,RA-CoT,,,,,,,,,,,,,Qwen3.5 plus,,,,"PDF p. 6, Table 1 row RA-CoT, generator Qwen3.5 plus."
 
-  "rag_configs": [
-    { "config_id": "cfg_hybrid_bm25", "publication_id": "pap_hybrid", "row_id": "bm25", "rag_variant": "BM25", "retrieval_method": "sparse", "retriever_model": "BM25",
-      "embedding_model": null, "embedding_version": null, "chunking_method": null, "chunk_size": 512, "chunk_overlap": null, "chunk_unit": "tokens", "index_type": null, "vector_store": null, "top_k": null,
-      "reranker_model": null, "fusion_method": null, "generator_model": null, "generator_version": null, "prompt_strategy": null, "context_strategy": null, "fact_ids": ["fct_hybrid_c_bm25_chunk"] },
-    { "config_id": "cfg_hybrid_dense", "publication_id": "pap_hybrid", "row_id": "dense", "rag_variant": "Dense", "retrieval_method": "dense", "retriever_model": null,
-      "embedding_model": null, "embedding_version": null, "chunking_method": null, "chunk_size": 512, "chunk_overlap": null, "chunk_unit": "tokens", "index_type": null, "vector_store": null, "top_k": null,
-      "reranker_model": null, "fusion_method": null, "generator_model": null, "generator_version": null, "prompt_strategy": null, "context_strategy": null, "fact_ids": ["fct_hybrid_c_dense_chunk"] },
-    { "config_id": "cfg_hybrid_hybrid", "publication_id": "pap_hybrid", "row_id": "hybrid", "rag_variant": "Hybrid", "retrieval_method": "hybrid", "retriever_model": "BM25 + e5-large",
-      "embedding_model": "e5-large", "embedding_version": null, "chunking_method": null, "chunk_size": 512, "chunk_overlap": null, "chunk_unit": "tokens", "index_type": null, "vector_store": null, "top_k": null,
-      "reranker_model": null, "fusion_method": "RRF", "generator_model": null, "generator_version": null, "prompt_strategy": null, "context_strategy": null,
-      "fact_ids": ["fct_hybrid_c_hybrid_chunk", "fct_hybrid_t_hybrid_retriever"] }
-  ],
+D001,C16,HippoRAG,,,,,,,,,,,,,LLaMA3-8B-Instruct,,,,"PDF p. 6, Table 1 row HippoRAG, generator LLaMA3-8B-Instruct."
+```
+**datasets.csv**
+```
+publication_id,dataset_id,dataset_name,dataset_version,language,data_split,scientific_domain,note
 
-  "metric_results": [
-    { "result_id": "mr_hybrid_bm25_r5", "experiment_id": "exp_hybrid_1", "config_id": "cfg_hybrid_bm25", "dataset_id": "ds_hybrid_1", "task_id": "tsk_hybrid_1",
-      "metric_group": "retrieval", "metric_name": "Recall", "metric_variant": null, "metric_direction": "higher_is_better", "metric_k": 5, "metric_value": 0.61, "metric_unit": "fraction",
-      "baseline_value": null, "aggregation": null, "sample_size": null,
-      "publication_id": "pap_hybrid", "result_origin": "primary", "cited_publication_id": null, "source_page": 5, "source_section": "4. Эксперименты", "source_table": "Табл. 2", "source_figure": null,
-      "source_fragment": "Качество поиска на корпусе из 12 тыс. документов — BM25: 0,61",
-      "raw_value": "0,61", "raw_unit": "", "normalized_value": 0.61, "normalized_unit": "fraction", "extraction_status": "extracted", "fact_id": "fct_hybrid_c_bm25_r5", "review_status": "new",
-      "comparability_key": "retrieval|12k-docs@?|Recall|?|5|?" },
-    { "result_id": "mr_hybrid_bm25_r10", "config_id": "cfg_hybrid_bm25", "metric_name": "Recall", "metric_k": 10, "metric_value": 0.72, "metric_unit": "fraction", "metric_direction": "higher_is_better", "raw_value": "0,72", "extraction_status": "extracted", "source_page": 5, "source_table": "Табл. 2", "fact_id": "fct_hybrid_c_bm25_r10", "...": "остальное как выше" },
-    { "result_id": "mr_hybrid_bm25_mrr", "config_id": "cfg_hybrid_bm25", "metric_name": "MRR", "metric_k": null, "metric_value": 0.48, "metric_unit": "fraction", "metric_direction": "higher_is_better", "raw_value": "0,48", "extraction_status": "extracted", "source_page": 5, "source_table": "Табл. 2", "fact_id": "fct_hybrid_c_bm25_mrr" },
-    { "result_id": "mr_hybrid_dense_r5", "config_id": "cfg_hybrid_dense", "metric_name": "Recall", "metric_k": 5, "metric_value": 0.68, "metric_unit": "fraction", "raw_value": "0,68", "fact_id": "fct_hybrid_c_dense_r5" },
-    { "result_id": "mr_hybrid_dense_r10", "config_id": "cfg_hybrid_dense", "metric_name": "Recall", "metric_k": 10, "metric_value": 0.79, "metric_unit": "fraction", "raw_value": "0,79", "fact_id": "fct_hybrid_c_dense_r10" },
-    { "result_id": "mr_hybrid_dense_mrr", "config_id": "cfg_hybrid_dense", "metric_name": "MRR", "metric_k": null, "metric_value": 0.55, "metric_unit": "fraction", "raw_value": "0,55", "fact_id": "fct_hybrid_c_dense_mrr" },
-    { "result_id": "mr_hybrid_hybrid_r5", "config_id": "cfg_hybrid_hybrid", "metric_name": "Recall", "metric_k": 5, "metric_value": 0.74, "metric_unit": "fraction", "raw_value": "0,74", "fact_id": "fct_hybrid_c_hybrid_r5" },
-    { "result_id": "mr_hybrid_hybrid_r10", "config_id": "cfg_hybrid_hybrid", "metric_name": "Recall", "metric_k": 10, "metric_value": 0.85, "metric_unit": "fraction", "raw_value": "0,85", "fact_id": "fct_hybrid_c_hybrid_r10" },
-    { "result_id": "mr_hybrid_hybrid_mrr", "config_id": "cfg_hybrid_hybrid", "metric_name": "MRR", "metric_k": null, "metric_value": 0.61, "metric_unit": "fraction", "raw_value": "0,61", "fact_id": "fct_hybrid_c_hybrid_mrr" }
-  ],
+D001,DS1,HotpotQA,,English,,,"PDF pp. 6, 11. The evaluation split is referenced to earlier works but not named; sample count not inferred from dataset size."
 
-  "facts": [
-    { "fact_id": "fct_hybrid_c_hybrid_r5", "publication_id": "pap_hybrid", "row_id": "hybrid", "param": "r5", "param_raw": "Recall@5", "target": { "entity": "metric_result", "id": "mr_hybrid_hybrid_r5", "field": "metric_value" },
-      "raw_value": "0,74", "raw_unit": "", "normalized_value": 0.74, "normalized_unit": "fraction", "extraction_status": "extracted", "review_status": "new", "value": 0.74, "display": "0,74",
-      "confidence": 0.962, "added_by": "auto", "result_origin": "primary", "source_page": 5, "source_section": "4. Эксперименты", "source_table": "Табл. 2",
-      "source_fragment": "Качество поиска на корпусе из 12 тыс. документов — Hybrid: 0,74", "source_kind": "table", "source_ref": "Табл. 2", "source_where": "строка Hybrid",
-      "anchor_id": "anc_hybrid_c_hybrid_r5", "issue_ids": ["pap_hybrid:contradiction:clm_hybrid_eq"],
-      "cross": { "other_fact_id": "fct_hybrid_f_hybrid_r5", "fig": "0,72", "tbl": "0,74", "pct": 2.7, "over": false, "text": "на рисунке 0,72, в таблице 0,74 — расхождение 2,7 %" } },
-    { "fact_id": "fct_hybrid_t_hybrid_retriever", "publication_id": "pap_hybrid", "row_id": "hybrid", "param": "retriever", "target": { "entity": "rag_config", "id": "cfg_hybrid_hybrid", "field": "retriever_model" },
-      "raw_value": "BM25 + e5-large, слияние RRF", "raw_unit": null, "normalized_value": null, "normalized_text": "Hybrid", "extraction_status": "text", "review_status": "new", "display": "BM25 + e5-large, слияние RRF",
-      "confidence": 0.842, "added_by": "auto", "result_origin": "primary", "source_page": 5, "source_fragment": "Гибридный вариант объединяет BM25 + e5-large, слияние RRF.",
-      "source_kind": "text", "source_ref": "текст", "source_where": "абзац 1", "anchor_id": "anc_hybrid_t_hybrid_retriever", "issue_ids": [] },
-    { "fact_id": "fct_hybrid_f_hybrid_r5", "publication_id": "pap_hybrid", "row_id": "hybrid", "param": "r5", "raw_value": "0,72", "normalized_value": 0.72, "normalized_unit": "fraction", "extraction_status": "extracted",
-      "review_status": "new", "display": "0,72", "confidence": 0.683, "source_page": 5, "source_figure": "Рис. 2", "source_kind": "figure", "source_ref": "Рис. 2", "source_where": "столбец диаграммы", "anchor_id": "anc_hybrid_f_hybrid_r5" },
-    { "...": "ещё 11 табличных фактов (chunk, r5, r10, mrr для каждой строки) и 2 значения с рис. 2 (Recall@5 Dense и BM25)" }
-  ],
+D001,DS2,2WikiMultihopQA,,,,,"PDF pp. 6, 11. The evaluation split is referenced to earlier works but not named; sample count not inferred from dataset size."
+```
+**tasks.csv**
+```
+publication_id,task_id,task_type,note
 
-  "claims": [
-    { "claim_id": "clm_hybrid_best", "paper_id": "pap_hybrid", "row_id": "hybrid", "param": "r5", "kind": "best", "text": "Гибридный поиск оказался лучшим по всем метрикам", "place": "text", "anchor_id": "anc_hybrid_claim_best", "source_page": 5, "confidence": 0.9 },
-    { "claim_id": "clm_hybrid_eq", "paper_id": "pap_hybrid", "row_id": "hybrid", "param": "r5", "kind": "equals", "value": 0.76, "value_raw": "0,76", "text": "Recall@5 гибридного поиска достигает 0,76", "place": "abstract", "anchor_id": "anc_hybrid_claim_eq", "source_page": 1, "confidence": 0.86 }
-  ],
+D001,T1,open-domain multi-hop question answering,"PDF p. 6, section 4.1."
+```
+**experiments.csv**
+```
+publication_id,experiment_id,evaluation_protocol,baseline_name,hardware,latency_ms,tokens_per_query,sample_size,note
 
-  "issues": [
-    { "issue_id": "pap_hybrid:contradiction:clm_hybrid_eq", "check_name": "contradiction", "plugin": "claims", "scope": "paper", "collection": "rag", "paper_id": "pap_hybrid",
-      "severity": "error", "ui_level": "conflict", "title": "Аннотация расходится с таблицей", "text": "В тексте Recall@5 = 0,76, в таблице — 0,74.",
-      "row_id": "hybrid", "row_label": "Hybrid", "param": "r5", "param_label": "Recall@5", "value": "0,74",
-      "fact_ids": ["fct_hybrid_c_hybrid_r5"], "main_fact_id": "fct_hybrid_c_hybrid_r5", "anchor_ids": ["anc_hybrid_claim_eq", "anc_hybrid_c_hybrid_r5"],
-      "related": [ { "entity": "claim", "id": "clm_hybrid_eq" }, { "entity": "metric_result", "id": "mr_hybrid_hybrid_r5" } ],
-      "numbers": { "claimed": 0.76, "table": 0.74, "tolerance": 0.005 },
-      "status": "open", "touched_fact_ids": [], "computed_by": "backend", "rule_version": "1", "stale": false }
-  ],
+D001,E1,"Table 1 main evaluation. Retrieval corpus aggregates supporting and distractor passages; standard text normalization of predictions and gold answers before exact match and token-level F1. Same data splits as Trivedi et al. (2023) and Li and Du (2023), no explicit count. ToG and PoG adapted to the local KG used by LightRAG.",RA-CoT;ReAct;IRCoT;Self-Ask;Iter-RetGen;HippoRAG;LightRAG;CoTKR;EFSUM;ToG;PoG;ERA-CoT;knowtrace,4 NVIDIA A6000 GPUs,,,,"PDF p. 6, section 4.1. Model names preserve Table 1 notation; versions not independently inferred."
+```
+**results.csv**
+```
+publication_id,result_id,experiment_id,config_id,dataset_id,task_id,metric_group,metric_name,metric_variant,metric_direction,metric_k,metric_value,metric_unit,baseline_value,aggregation,sample_size,raw_value,raw_unit,normalized_value,normalized_unit,result_origin,cited_publication_id,source_page,source_section,source_table,source_figure,source_fragment,extraction_status,duplicate_of,note
 
-  "structure": {
-    "pipeline": [ { "row_id": "hybrid", "nodes": [
-      { "key": "data", "title": "Датасет", "value": "корпус из 12 тыс. документов", "sub": "подпись к табл. 2", "fact_id": null },
-      { "key": "chunk", "title": "Разбиение на чанки", "value": "512 ток.", "sub": "Табл. 2", "fact_id": "fct_hybrid_c_hybrid_chunk" },
-      { "key": "ret", "title": "Ретривер", "value": "BM25 + e5-large, слияние RRF", "sub": "текст", "fact_id": "fct_hybrid_t_hybrid_retriever" },
-      { "key": "rr", "title": "Переранжирование", "value": null, "fact_id": null },
-      { "key": "gen", "title": "Генератор", "value": null, "fact_id": null },
-      { "key": "met", "title": "Метрики", "items": [ { "label": "Recall@5", "value": "0,74", "fact_id": "fct_hybrid_c_hybrid_r5" }, { "label": "Recall@10", "value": "0,85", "fact_id": "fct_hybrid_c_hybrid_r10" }, { "label": "MRR", "value": "0,61", "fact_id": "fct_hybrid_c_hybrid_mrr" } ] } ] } ] },
+D001,R001,E1,C01,DS1,T1,answer quality,EM,exact match after standard text normalization,higher_is_better,,0.204,fraction,,,,.204,,0.204,fraction,primary,,6,4.1; 4.2,Table 1,,"RA-CoT
+.204
+.330
+.202
+.261
+.142
+.210
+.312
+.429
+.268
+.372
+.162
+.249
+.310
+.425
+.264
+.359
+.158
+.243",extracted,,"Table 1: row RA-CoT; generator LLaMA3-8B-Instruct; dataset HotpotQA; column EM. Leading zero added without scale conversion. No unit symbol is printed in the table, so raw_unit is blank. Fraction scale is consistent with the metric definitions and the absolute EM comparisons on p. 7. Table reproduced from authors experiments, including rerun baselines."
 
-  "references": [
-    { "paper_id": "pap_hybrid", "n": 1, "status": "ok", "key": "p:pap_chunks", "target_paper_id": "pap_chunks", "authors": "Захарова Н. В.", "title": "Размер чанка и качество ответов RAG-систем", "venue": "Информатика и её применения, 2023, т. 17, № 2", "year": 2023, "doi": null,
-      "mentions": ["Размер чанка выбран по результатам [1].", "Влияние длины фрагмента на полноту поиска — [1]."] },
-    { "paper_id": "pap_hybrid", "n": 5, "status": "ok", "key": "x:cormack2009", "external_id": "cormack2009", "authors": "Cormack G. V., Clarke C. L. A., Büttcher S.", "title": "Reciprocal rank fusion outperforms Condorcet and individual rank learning methods", "venue": "SIGIR 2009, 758–759", "year": 2009, "doi": "10.1145/1571941.1572114",
-      "mentions": ["Слияние списков выполнено по правилу RRF [5]."] },
-    { "...": "ещё 7 ссылок, одна нераспознанная (препринт 2023)" }
-  ],
+D001,R002,E1,C01,DS1,T1,answer quality,F1,token-level overlap after standard text normalization,higher_is_better,,0.330,fraction,,,,.330,,0.330,fraction,primary,,6,4.1; 4.2,Table 1,,"RA-CoT
+.204
+.330
+.202
+.261
+.142
+.210
+.312
+.429
+.268
+.372
+.162
+.249
+.310
+.425
+.264
+.359
+.158
+.243",extracted,,"Table 1: row RA-CoT; generator LLaMA3-8B-Instruct; dataset HotpotQA; column F1. Leading zero added without scale conversion. No unit symbol is printed in the table, so raw_unit is blank. Fraction scale is consistent with the metric definitions and the absolute EM comparisons on p. 7. Table reproduced from authors experiments, including rerun baselines."
 
-  "quality": { "total": 17, "sourced_pct": 100, "normalized_pct": 100, "accepted": 0, "issues": 1 },
-  "coverage_summary": { "filled": 15, "total": 15 }
-}
+D001,R003,E1,C01,DS2,T1,answer quality,EM,exact match after standard text normalization,higher_is_better,,0.202,fraction,,,,.202,,0.202,fraction,primary,,6,4.1; 4.2,Table 1,,"RA-CoT
+.204
+.330
+.202
+.261
+.142
+.210
+.312
+.429
+.268
+.372
+.162
+.249
+.310
+.425
+.264
+.359
+.158
+.243",extracted,,"Table 1: row RA-CoT; generator LLaMA3-8B-Instruct; dataset 2Wiki; column EM. Leading zero added without scale conversion. No unit symbol is printed in the table, so raw_unit is blank. Fraction scale is consistent with the metric definitions and the absolute EM comparisons on p. 7. Table reproduced from authors experiments, including rerun baselines."
+
+D001,R091,E1,C16,DS1,T1,answer quality,EM,exact match after standard text normalization,higher_is_better,,0.324,fraction,,,,.324,,0.324,fraction,primary,,6,4.1; 4.2,Table 1,,"HippoRAG
+.324
+.403
+.318
+.411
+.202
+.274
+.418
+.557
+.466
+.569
+.234
+.333
+.412
+.549
+.458
+.572
+.219
+.327",extracted,,"Table 1: row HippoRAG; generator LLaMA3-8B-Instruct; dataset HotpotQA; column EM. Leading zero added without scale conversion. No unit symbol is printed in the table, so raw_unit is blank. Fraction scale is consistent with the metric definitions and the absolute EM comparisons on p. 7. Table reproduced from authors experiments, including rerun baselines."
+
+D001,R253,E1,C16,DS1,T1,answer quality,EM,exact match after standard text normalization,higher_is_better,,0.324,fraction,,,,0.324,,0.324,fraction,primary,,6,4.2,,,0.324 vs. 0.304,extracted,R091,"Repeated comparison in section 4.2 on the same PDF page; same Table 1 experiment, generator and dataset."
+```
+**issues.csv**
+```
+publication_id,issue_id,record_ids,check_name,description,source_page,source_fragment
+
+D001,I01,R261;R263;R265;…,percentage_vs_percentage_point,"Table 2 labels absolute EM changes with %. For the first HotpotQA ablation 0.422-0.238=0.184, hence 18.4 percentage points, not a relative decrease of 18.4%. Original symbol retained; normalization explicitly documented.",7,Table 2: Ablation study
 ```
 
-В примере RAG видно правило «не восстанавливать по догадке»: название набора, язык, протокол, базовая линия, генератор, `top_k` — `null`, потому что статья их не называет; `dataset_description` хранит то, что сказано.
+
+В API та же статья — `GET /papers/rag/D001` (§15.4): эти 7 массивов строк + `reviews` + `meta`.
