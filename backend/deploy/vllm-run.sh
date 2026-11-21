@@ -8,6 +8,7 @@
 # VLLM_MAX_LEN (16384), VLLM_SPEC_TOKENS (1, MTP; 0 = выключить), VLLM_GPU_UTIL (0.9),
 # VLLM_BIND (172.17.0.1 - адрес docker0: ML-контейнер ходит через host.docker.internal:8123, из интернета порт
 # закрыт; 0.0.0.0 - открыть всем, только за файрволом или прокси).
+# ENTRYPOINT образа уже "vllm serve": первым аргументом идёт модель.
 # Веса модели качаются в ~/.cache/huggingface при первом запуске.
 set -euo pipefail
 NAME="${VLLM_NAME:-glm-ocr}"
@@ -17,7 +18,7 @@ MAX_LEN="${VLLM_MAX_LEN:-16384}"
 SPEC="${VLLM_SPEC_TOKENS:-1}"
 UTIL="${VLLM_GPU_UTIL:-0.9}"
 BIND="${VLLM_BIND:-172.17.0.1}"
-args=(serve zai-org/GLM-OCR --host 0.0.0.0 --port 8000 --max-model-len "$MAX_LEN" --gpu-memory-utilization "$UTIL")
+args=(zai-org/GLM-OCR --host 0.0.0.0 --port 8000 --max-model-len "$MAX_LEN" --gpu-memory-utilization "$UTIL")
 if [[ "$SPEC" != "0" ]]; then
   args+=(--speculative-config.method mtp --speculative-config.num_speculative_tokens "$SPEC")
 fi

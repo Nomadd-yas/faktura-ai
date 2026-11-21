@@ -23,8 +23,14 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 REV="$(git rev-parse HEAD)"
-echo "== git push server ($(git rev-parse --short HEAD))"
-git push -q server HEAD:main
+# git-remote этого сервера: тот, чей url начинается с "<host>:" (server -> hima-gpu, newsrv -> faktura-gpu)
+GIT_REMOTE="${GIT_REMOTE:-$(git remote -v | awk -v h="$HOST:" 'index($2, h) == 1 {print $1; exit}')}"
+if [[ -n "$GIT_REMOTE" ]]; then
+  echo "== git push $GIT_REMOTE ($(git rev-parse --short HEAD))"
+  git push -q "$GIT_REMOTE" HEAD:main
+else
+  echo "!! нет git-remote для $HOST: server-deploy.sh на нём работать не будет"
+fi
 
 echo "== код ($(git rev-parse --short HEAD)) -> $HOST:~/$REMOTE_DIR"
 ssh "$HOST" "bash -c 'mkdir -p ~/$REMOTE_DIR/deploy/case'"
