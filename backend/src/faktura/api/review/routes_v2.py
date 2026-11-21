@@ -11,6 +11,7 @@ GET    /issues/stats?run=
 """
 from __future__ import annotations
 
+import math
 from time import perf_counter
 from typing import Any, Literal
 
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 from ...domain.entities import CurrentUser
 from ...domain.errors import AppError
 from ...domain.services import Services
+from ...review import fixes as F
 from ...review import runs_v2 as V
 from ..base.deps import current_user, get_services, mutation_response
 from ..corpus.views import get_corpus, run_id_of
@@ -45,6 +47,17 @@ class BatchIn(BaseModel):
 
 class IssueStateIn(BaseModel):
     state: Literal["open", "fixed", "ok"]
+
+
+class FixItem(BaseModel):
+    rid: str
+    suggested: float | None = Field(None, allow_inf_nan=False)
+    action: Literal["reject", "note"] | None = None
+
+
+class FixApplyIn(BaseModel):
+    items: list[FixItem] = Field(default_factory=list)
+    issue_state: Literal["fixed", "ok"] = "fixed"
 
 
 # ------------------------------------------------------------------ помощники
@@ -161,20 +174,28 @@ def reset_reviews(run_id: str, user: CurrentUser = Depends(current_user), servic
     return mutation_response({"count": n}, action)
 
 
+def _review_view(uow, corpus, domain: str, pub: str, tables: dict) -> dict:
+    revs = {k[2]: v for k, v in V.reviews_of(uow.conn, corpus.id, domain, pub).items()}
+    states = {k[2]: v for k, v in V.states_of(uow.conn, corpus.id, domain, pub).items()}
+    extra = V.extra_of(uow.conn, corpus.id, domain, pub).get((domain, pub), [])
+    issues = V.effective_issues(tables, extra, states, revs)
+    eff = V._effective_results(tables.get("results") or [], revs)
+    meas = tables.get("measurements") or []
+    return {"reviews": {rid: V.review_out(r, rid) for rid, r in revs.items()},
+            "issues": [{"issue_id": i["issue_id"], "state": i["_state"], "auto": i["_auto"],
+                        "extra": i["issue_id"] in {e.get("issue_id") for e in extra},
+                        "fix_available": i["_state"] == "open" and F.fix_available(domain, i, eff, meas)}
+                       for i in issues],
+            "extra_issues": extra,
+            "open_issue_count": sum(1 for i in issues if i["_state"] == "open")}
+
+
 @router.get("/runs/{run_id}/papers/{domain}/{pid}/review", summary="Правки и состояния замечаний статьи (v2)")
 def paper_review(run_id: str, domain: str, pid: str, user: CurrentUser = Depends(current_user),
                  services: Services = Depends(get_services)):
     with services.db.uow() as uow:
         corpus, paper, tables, pub = _paper(uow, user, run_id, domain, pid)
-        revs = {k[2]: v for k, v in V.reviews_of(uow.conn, corpus.id, domain, pub).items()}
-        states = {k[2]: v for k, v in V.states_of(uow.conn, corpus.id, domain, pub).items()}
-        extra = V.extra_of(uow.conn, corpus.id, domain, pub).get((domain, pub), [])
-        issues = V.effective_issues(tables, extra, states, revs)
-    return {"reviews": {rid: V.review_out(r, rid) for rid, r in revs.items()},
-            "issues": [{"issue_id": i["issue_id"], "state": i["_state"], "auto": i["_auto"],
-                        "extra": i["issue_id"] in {e.get("issue_id") for e in extra}} for i in issues],
-            "extra_issues": extra,
-            "open_issue_count": sum(1 for i in issues if i["_state"] == "open")}
+        return _review_view(uow, corpus, domain, pub, tables)
 
 
 # ------------------------------------------------------------------ замечания
@@ -226,6 +247,87 @@ def issues_stats(run: str = Query(...), user: CurrentUser = Depends(current_user
                 a["count"] += 1
                 a["papers"].add(pub)
     data = sorted(({**a, "papers": len(a["papers"])} for a in agg.values()), key=lambda a: (-a["count"], a["check_name"]))
+    return {"data": data}
+
+
+# ------------------------------------------------------------------ исправления у замечаний
+def _issue_ctx(uow, user, run_id: str, domain: str, pid: str, iid: str):
+    """(corpus, paper, tables, pub, issue, действующие строки results) - замечание должно существовать."""
+    corpus, paper, tables, pub = _paper(uow, user, run_id, domain, pid)
+    revs = {k[2]: v for k, v in V.reviews_of(uow.conn, corpus.id, domain, pub).items()}
+    states = {k[2]: v for k, v in V.states_of(uow.conn, corpus.id, domain, pub).items()}
+    extra = V.extra_of(uow.conn, corpus.id, domain, pub).get((domain, pub), [])
+    issue = next((i for i in V.effective_issues(tables, extra, states, revs) if i["issue_id"] == iid), None)
+    if issue is None:
+        raise AppError("not_found", f"Замечание {iid} не найдено")
+    return corpus, paper, tables, pub, issue, V._effective_results(tables.get("results") or [], revs)
+
+
+def _fix_out(issue: dict, s: dict) -> dict:
+    return {"issue_id": issue["issue_id"], "check_name": issue.get("check_name") or "", "state": issue["_state"],
+            "suggestions": s["suggestions"], "alternatives": s["alternatives"], "resolution": s["resolution"],
+            "note": s["note"]}
+
+
+@router.get("/runs/{run_id}/papers/{domain}/{pid}/issues/{iid}/fix", summary="Предложения исправления замечания (v2)")
+def issue_fix(run_id: str, domain: str, pid: str, iid: str, user: CurrentUser = Depends(current_user),
+              services: Services = Depends(get_services)):
+    with services.db.uow() as uow:
+        _c, _p, tables, _pub, issue, eff = _issue_ctx(uow, user, run_id, domain, pid, iid)
+        return _fix_out(issue, F.suggest(domain, issue, eff, tables.get("measurements") or []))
+
+
+@router.post("/runs/{run_id}/papers/{domain}/{pid}/issues/{iid}/fix/apply", summary="Применить исправление (v2)")
+def issue_fix_apply(run_id: str, domain: str, pid: str, iid: str, body: FixApplyIn,
+                    user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
+    with services.db.uow() as uow:
+        corpus, paper, tables, pub, _issue, _eff = _issue_ctx(uow, user, run_id, domain, pid, iid)
+        known = {r.get("result_id") for r in tables.get("results") or []}
+        for it in body.items:
+            if it.rid not in known:
+                raise AppError("validation_error", f"Строка {it.rid} не принадлежит статье", field="items")
+            if (it.suggested is None) == (it.action is None):
+                raise AppError("validation_error", f"{it.rid}: нужно ровно одно из suggested / action", field="items")
+            if it.suggested is not None and not math.isfinite(it.suggested):
+                raise AppError("validation_error", f"{it.rid}: suggested - конечное число", field="items")
+        if not body.items and body.issue_state == "fixed":
+            raise AppError("validation_error", "Пустой items: для закрытия без правки укажите issue_state=ok",
+                           field="items")
+        tr = V.Tracker(uow.conn)
+        for it in body.items:
+            if it.suggested is not None:
+                _set_review(uow, tr, user, corpus, domain, pub, tables, it.rid, "accepted", it.suggested,
+                            set_value=True)
+            else:
+                _set_review(uow, tr, user, corpus, domain, pub, tables, it.rid,
+                            "rejected" if it.action == "reject" else "accepted", None, set_value=False)
+        V.recompute(uow.conn, tr, corpus.id, domain, pub, tables, user.id)
+        st = V.states_of(uow.conn, corpus.id, domain, pub).get((domain, pub, iid))
+        if not (st and st["state"] == body.issue_state):
+            tr.put("run_issue_states", {"corpus_id": corpus.id, "domain": domain, "publication_id": pub,
+                                        "issue_id": iid},
+                   {"state": body.issue_state, "auto": False, "at": V._now(), "who": user.id})
+        action = _record(uow, user, corpus.id, "fix", f"{pid} {iid}: исправление ({len(body.items)})",
+                         tr.changes(), paper.id)
+        view = _review_view(uow, corpus, domain, pub, tables)
+    return mutation_response(view, action)
+
+
+@router.get("/runs/{run_id}/fixes", summary="Предложения по всем открытым замечаниям статьи (v2)")
+def paper_fixes(run_id: str, domain: str = Query(...), pid: str = Query(...),
+                user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
+    with services.db.uow() as uow:
+        corpus, _p, tables, pub = _paper(uow, user, run_id, domain, pid)
+        revs = {k[2]: v for k, v in V.reviews_of(uow.conn, corpus.id, domain, pub).items()}
+        states = {k[2]: v for k, v in V.states_of(uow.conn, corpus.id, domain, pub).items()}
+        extra = V.extra_of(uow.conn, corpus.id, domain, pub).get((domain, pub), [])
+        eff = V._effective_results(tables.get("results") or [], revs)
+        data = []
+        for i in V.effective_issues(tables, extra, states, revs):
+            if i["_state"] == "open":
+                s = F.suggest(domain, i, eff, tables.get("measurements") or [])
+                if s["suggestions"] or s["resolution"]:
+                    data.append(_fix_out(i, s))
     return {"data": data}
 
 

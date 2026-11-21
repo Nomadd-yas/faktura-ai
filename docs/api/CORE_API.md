@@ -358,7 +358,7 @@ data: {"id": "run_7", "status": "done", "progress": 100, "eta_seconds": null, �
 
 ### Журнал и отмена
 Каждая мутация пишет действие с прежними значениями.
-- `GET /history?run=&limit=50` → `{ "data": [ { "id", "action": "review|batch|issue|reset", "label", "run_id", "undone", "at", "changes" } ] }`, новые сверху.
+- `GET /history?run=&limit=50` → `{ "data": [ { "id", "action": "review|batch|issue|fix|reset", "label", "run_id", "undone", "at", "changes" } ] }`, новые сверху.
 - `POST /actions/{id}/undo` и `POST /history/undo?run=` (последнее неотменённое) → `{ "undone": {…}, "undo_action_id": "…" }`. Уже отменённое → `409 conflict`; чужое / нет → `404`; нечего отменять → `404`.
 
 ### `POST /runs/{id}/files` — догрузить файлы
@@ -377,6 +377,52 @@ data: {"id": "run_7", "status": "done", "progress": 100, "eta_seconds": null, �
 ```
 - Подходят строки: `result_origin = primary`, `extraction_status = extracted`, не повтор, не отклонены (с учётом повышения повтора после отклонения основной записи).
 - Значение — исправленное, если есть, иначе `normalized_value`. Если у показателя есть champion-строки, выбирается среди них (champion важнее среднего); иначе среди всех. Для `Rs` и `HI` лучше меньшее, для остальных — большее. Ничья — по `pid`, затем `result_id`. Показатели без подходящих строк не входят. `pid` — `RunFile.id`.
+
+## 4f-1. Исправления у замечаний
+
+Кнопка «Исправить» у замечания: бэк детерминированно (без LLM) предлагает конкретное исправление, пользователь применяет его одним кликом. Применение идёт через те же правки v2 (§4f): исправленные значения, журнал, undo, автозакрытие. Чужой разбор → `404`; разбор не готов → `409`; нет замечания → `404`.
+
+### `GET /runs/{id}/papers/{domain}/{pid}/issues/{iid}/fix`
+```json
+{
+  "issue_id": "I3", "check_name": "jv_consistency", "state": "open",
+  "suggestions": [
+    { "rid": "R004", "metric": "FF", "current": 780.0, "suggested": 78.0, "unit": "%",
+      "reason": "FF, согласующийся с КПД 18.9 %, Voc и Jsc: 78.1 %; текущее значение отличается сдвигом запятой (×0.1)",
+      "method": "rule", "confidence": "high" }
+  ],
+  "alternatives": [
+    { "title": "Исправить PCE", "confidence": "medium", "items": [ { "rid": "R001", "metric": "PCE", "current": 18.9, "suggested": 188.0, "unit": "%", "reason": "…", "method": "rule", "confidence": "medium" } ] }
+  ],
+  "resolution": null,
+  "note": null
+}
+```
+- `suggestions` — основной вариант; все его элементы применяются **вместе** (например, обмен значений champion/mean — два элемента). Элемент либо с числом (`suggested`), либо без числа: `{ rid, metric, current, action: "reject" | "note", reason, … }` (`reject` — отклонить строку, `note` — отметить проверенной без изменения значения).
+- `alternatives` — другие варианты, когда неясно, какое число ошибочно (jv_consistency: ошибочны PCE, FF, Jsc или Voc; contradiction / eqe_consistency: исправить одно из двух). Основным выбран вариант, где правка похожа на опечатку (сдвиг запятой ×10^n); `confidence: "high"` — именно такой случай.
+- `resolution` — `{ "issue_state": "ok", "reason": "…" }`, когда числового исправления нет (`ambiguity`, `measurement_conditions`, `missing_conditions`, `comparability`, `plausibility`, `rounding`, `figure_only` и др.) или его не удалось определить: предложить закрыть замечание как проверенное.
+- Правила: `unit_inconsistency`, `range`, `voc_limit`, `metric_scale` (rag) — масштаб (доля ↔ %, мВ → В, А/см² и мкА/см² → мА/см²); `jv_consistency` — пересчёт по Voc·Jsc·FF/Pin; `champion_vs_mean` — обмен значений; `derived_values` — `reject`; `recall_k` — обмен значений. Неизвестная проверка → пустые `suggestions` и `alternatives`, `resolution: null`.
+- Значения берутся с учётом уже сделанных правок.
+
+### `POST /runs/{id}/papers/{domain}/{pid}/issues/{iid}/fix/apply`
+```json
+{ "items": [ { "rid": "R004", "suggested": 78.0 }, { "rid": "R009", "action": "reject" } ], "issue_state": "fixed" }
+```
+`issue_state`: `fixed` (по умолчанию) или `ok`. Элементы можно брать из `suggestions` или из выбранной альтернативы. Всё применяется **одним действием журнала**: отмена `POST /actions/{action_id}/undo` возвращает и значения, и состояние замечания.
+→ `200`, тело как у `GET /runs/{id}/papers/{domain}/{pid}/review` (§4f) + `action_id`. Пустой `items` допустим только с `issue_state: "ok"` (закрыть без правки).
+- `400 validation_error` с `field: "items"`: `rid` не из этой статьи; в элементе не одно из `suggested` / `action`; `suggested` не число (бесконечность, NaN); пустой `items` при `fixed`.
+
+### `GET /runs/{id}/fixes?domain=&pid=`
+Предложения по всем открытым замечаниям статьи (для «Исправить всё»): `{ "data": [ { issue_id, check_name, state, suggestions, alternatives, resolution, note } ] }`; замечания без предложений не входят.
+
+### `fix_available`
+В `GET /runs/{id}/papers/{domain}/{pid}/review` у каждого элемента `issues` и в ответе `…/fix/apply` есть `fix_available: bool` (открытое замечание, по которому есть предложение или `resolution`) — по нему показывать кнопку «Исправить».
+
+### Как использовать во фронте
+1. Кнопка «Исправить» (если `fix_available`) → `GET …/fix`.
+2. Показать для каждого элемента `suggestions`: `current → suggested unit` и `reason`; для `action` — «Отклонить строку» / «Отметить проверенной». Если есть `alternatives` — выбор варианта. Если только `resolution` — кнопка «Закрыть как проверенное».
+3. «Применить» → `POST …/fix/apply`; обновить статью по ответу (он содержит новые `reviews`, `issues`, `open_issue_count`).
+4. «Отменить» → `POST /actions/{action_id}/undo` (§4f).
 
 ## 4g. Экспорт: JSON, Excel, набор по всем разборам
 

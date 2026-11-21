@@ -19,6 +19,7 @@
 | «Настройки → Словарь нормализации» | `GET /dictionary`, свои синонимы на сервере (`POST`/`DELETE`), применяются при нормализации новых разборов | §4h |
 | «Вопросы по разбору» | `POST /runs/{id}/ask` → `CaseAnswer` (тот же формат, что рисует `CaseAnswer.vue`), `GET /runs/{id}/ask/suggestions` | §4i |
 | «Вопросы по разбору»: история | Несколько чатов на разбор, имя по первому вопросу, продолжить любой в любой момент (модель помнит обмены чата), дочитать ответ после закрытия вкладки; `/ask` без изменений пишет в текущий чат | §4k |
+| §9 | Исправления у замечаний: предложение (сдвиг запятой, масштаб единиц, пересчёт КПД, обмен champion/mean, отклонить производное, «проверено») и применение одним действием с undo; `fix_available` у замечаний | §4f-1 |
 | §11 | Скорость: `GET /runs/{id}` ≈ 25 мс, `/papers/rag/D014` ≈ 70 мс, `/results` (100 строк) ≈ 45 мс на 30 тыс. строк | `docs/eval/PERF_API.md` |
 
 ### Что можно включать во фронте уже сейчас (сейчас там `disabled` с подсказкой «В разработке»)
@@ -32,6 +33,7 @@
 | `case/runs.ts` | Догрузка файлов в разбор | `POST /runs/{id}/files` |
 | `PaperView.vue` | Принять / Исправить / Отклонить значение | `PATCH /runs/{id}/papers/{domain}/{pid}/results/{rid}/review` |
 | `PaperView.vue`, `IssuesList.vue` | Исправлено / Всё верно / Открыть замечание | `PATCH /runs/{id}/papers/{domain}/{pid}/issues/{iid}` |
+| `PaperView.vue`, `IssuesList.vue` | Исправить (текущее → предложенное, причина, Применить) | `GET …/issues/{iid}/fix`, `POST …/issues/{iid}/fix/apply` |
 | `/history` (сейчас `FrozenView`) | Журнал правок, отмена | `GET /history?run=`, `POST /actions/{id}/undo`, `POST /history/undo` |
 | `PassportView.vue` | Паспорт набора | `GET /runs/{id}/passport.json` |
 | «Вопросы по разбору» | История чатов: список, открыть, новый, переименовать, удалить | `GET/POST /runs/{id}/threads`, `GET/PATCH/DELETE /runs/{id}/threads/{tid}`, `thread_id` в `/ask` |
