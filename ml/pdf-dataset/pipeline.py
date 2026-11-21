@@ -312,6 +312,359 @@ def warm_parser():
 
 
 
+# ---------- [faktura-patch] R6: текстовый слой PDF вместо OCR там, где он надёжен ----------
+# TEXT_SOURCE: ocr (по умолчанию, как раньше — OCR всех страниц) | auto (по странице: текстовый слой или OCR)
+# | pdf (текстовый слой везде, для экспериментов; OCR не запускается). Решения пишутся в meta.text_source.
+TEXT_SOURCE_MODES = ("ocr", "auto", "pdf")
+RASTER_OCR_FRAC = 0.25        # доля страницы под растром, с которой «Table N» рядом с картинкой = таблица-картинка
+IMAGE_MIN_FRAC = 0.05         # картинка меньше этой доли страницы не считается кандидатом в таблицу-картинку
+CAPTION_NEAR_PT = 30.0        # подпись «рядом» с картинкой, если bbox картинки (расширенный на столько pt) её касается
+TABLE_MIN_ROWS = 2
+TABLE_MIN_COLS = 2
+TABLE_MAX_EMPTY_FRAC = 0.6    # доля пустых ячеек, выше которой таблица считается битой
+TABLE_MERGED_NUMS = 3         # ячейка с >= стольких чисел через пробел («0.42 0.51 0.63») — склейка столбцов
+TABLE_MERGED_FRAC = 0.15      # доля таких ячеек, выше которой таблица битая
+LOOSE_TABLE_ROWS, LOOSE_TABLE_COLS = 4, 3   # битая таблица без подписи, но такого размера — всё равно OCR
+HEADING_SIZE_RATIO = 1.12     # кегль / кегль основного текста -> заголовок
+MARGIN_BAND = 0.07            # верхняя/нижняя полоса страницы для колонтитулов
+RUNNING_MIN_PAGES = 3         # повтор колонтитула на >= стольких страницах (и >= RUNNING_FRAC от всех)
+RUNNING_FRAC = 0.4
+SPANNER_FRAC = 0.6            # блок шире этой доли страницы — на всю ширину (не колонка)
+TWO_COL_MIN_BLOCKS = 2        # блоков в каждой колонке, чтобы страница считалась двухколоночной
+TABLE_CAP_RX = _re.compile(r"^\s*(?:table|tab\.)\s*(?:[A-Z]?\d+|[IVXL]+)\b(?![ \t]+[a-z])", _re.I)
+_NUMTOK_RX = _re.compile(r"^[-+−]?\d[\d.,]*%?$|^[-+−]?\.\d+$")
+_TICK_RX = _re.compile(r"^[\d.,\-+−%\s]{1,8}$")
+_STRAY_PUNCT_RX = _re.compile(r"(?:^|\s)[.,](?:\s|$)")
+_LIGS = {"ﬃ": "ffi", "ﬄ": "ffl", "ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", " ": " ", " ": " "}
+
+
+def text_source_mode() -> str:
+    m = (os.environ.get("TEXT_SOURCE") or "ocr").strip().lower()
+    return m if m in TEXT_SOURCE_MODES else "ocr"
+
+
+def _clean_text(s):
+    for a, b in _LIGS.items():
+        s = s.replace(a, b)
+    return s
+
+
+def _join_lines(lines):
+    """Строки блока -> абзац; перенос «слово-<конец строки>продолжение» склеивается без дефиса."""
+    cur = ""
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        if not cur:
+            cur = ln
+        elif cur.endswith("-") and len(cur) > 1 and cur[-2].isalpha() and ln[:1].islower():
+            cur = cur[:-1] + ln
+        else:
+            cur += " " + ln
+    return _re.sub(r"[ \t]+", " ", cur).strip()
+
+
+def _page_text_blocks(page):
+    """Текстовые блоки страницы: {bbox, text, size, bold, nlines}."""
+    out = []
+    for b in page.get_text("dict").get("blocks", []):
+        if b.get("type") != 0:
+            continue
+        lines, sizes, bolds, nchars = [], [], 0, 0
+        for ln in b.get("lines", []):
+            t = "".join(s.get("text", "") for s in ln.get("spans", []))
+            if not t.strip():
+                continue
+            lines.append(_clean_text(t))
+            for s in ln.get("spans", []):
+                n = len(s.get("text", "").strip())
+                if n:
+                    sizes.append((s.get("size", 0.0), n))
+                    nchars += n
+                    if s.get("flags", 0) & 16 or "bold" in (s.get("font") or "").lower():
+                        bolds += n
+        text = _join_lines(lines)
+        if not text:
+            continue
+        size = sum(s * n for s, n in sizes) / max(nchars, 1)
+        out.append({"bbox": tuple(b["bbox"]), "text": text, "size": size,
+                    "bold": bolds >= 0.8 * max(nchars, 1), "nlines": len(lines), "lines": lines})
+    return out
+
+
+def _body_size(all_blocks):
+    """Кегль основного текста документа — самый частый (по символам)."""
+    from collections import Counter
+    c = Counter()
+    for blocks in all_blocks:
+        for b in blocks:
+            c[round(b["size"] * 2) / 2] += len(b["text"])
+    return c.most_common(1)[0][0] if c else 10.0
+
+
+def _running_key(text):
+    return _re.sub(r"\d+", "#", text.lower()).strip()
+
+
+def _in_margin(bbox, rect):
+    return bbox[1] < rect.y0 + MARGIN_BAND * rect.height or bbox[3] > rect.y1 - MARGIN_BAND * rect.height
+
+
+def _running_keys(all_blocks, page_rects):
+    """Ключи колонтитулов: тексты из верхней/нижней полосы, повторяющиеся (с точностью до цифр) на многих страницах."""
+    from collections import Counter
+    cnt = Counter()
+    for blocks, r in zip(all_blocks, page_rects):
+        cnt.update({_running_key(b["text"]) for b in blocks if _in_margin(b["bbox"], r)})
+    need = max(RUNNING_MIN_PAGES, RUNNING_FRAC * len(all_blocks))
+    return {k for k, v in cnt.items() if v >= need and k}
+
+
+def _cell_text(c):
+    if c is None:
+        return ""
+    c = _clean_text(str(c)).replace("\r", "")
+    c = _re.sub(r"(?<=[A-Za-z])-\n(?=[a-z])", "", c)
+    return "\n".join(x for x in (_re.sub(r"\s+", " ", ln).strip() for ln in c.split("\n")) if x)
+
+
+def _words_in(words, bbox):
+    """слова страницы (get_text('words')) с центром в bbox — в порядке чтения: блок, строка, номер слова.
+    Строки ячейки разделены «\\n» (нужно для проверки склейки строк таблицы; в HTML заменяется пробелом)."""
+    sel = [w for w in words if bbox[0] <= (w[0] + w[2]) / 2 <= bbox[2] and bbox[1] <= (w[1] + w[3]) / 2 <= bbox[3]]
+    sel.sort(key=lambda w: (w[5], w[6], w[7]))
+    out, prev = "", None
+    for w in sel:
+        t = w[4]
+        if not out:
+            out = t
+        elif out.endswith("-") and len(out) > 1 and out[-2].isalpha() and t[:1].islower():
+            out = out[:-1] + t
+        else:
+            new_line = prev is not None and abs(w[1] - prev[1]) > 0.5 * max(prev[3] - prev[1], 1.0)
+            out += ("\n" if new_line else " ") + t
+        prev = w
+    return out
+
+
+def _table_rows(tab, words=None):
+    """Строки таблицы find_tables() -> list[list[str]] без полностью пустых строк. Текст ячейки берём из слов страницы
+    (get_text('words'): десятичные точки и пробелы целы; многострочные ячейки склеены), иначе — tab.extract()."""
+    if words is not None:
+        try:
+            raw = [[(_words_in(words, c) if c is not None else "") for c in r.cells] for r in tab.rows]
+        except Exception:  # noqa: BLE001
+            raw = tab.extract()
+    else:
+        raw = tab.extract()
+    rows = [[_cell_text(c) for c in r] for r in raw]
+    return [r for r in rows if any(r)]
+
+
+def _table_problem(rows):
+    """None, если таблица из текстового слоя выглядит целой; иначе короткая причина."""
+    if len(rows) < TABLE_MIN_ROWS:
+        return "rows<%d" % TABLE_MIN_ROWS
+    if max((len(r) for r in rows), default=0) < TABLE_MIN_COLS:
+        return "cols<%d" % TABLE_MIN_COLS
+    cells = [c for r in rows for c in r]
+    if sum(1 for c in cells if not c) / len(cells) > TABLE_MAX_EMPTY_FRAC:
+        return "mostly_empty"
+    if sum(1 for c in rows[0] if c and not _NUMTOK_RX.match(c)) == 0:
+        return "no_header_row"
+    ne = [c for c in cells if c]
+
+    def _stacked(c):  # несколько значений-строк в одной ячейке: «0.93/0.91» или одинаковые «ZX Bank/ZX Bank»
+        ls = c.split("\n")
+        return len(ls) >= 2 and (sum(1 for ln in ls if _NUMTOK_RX.match(ln)) >= 2 or len(set(ls)) < len(ls))
+
+    merged = sum(1 for c in ne if sum(1 for t in c.split() if _NUMTOK_RX.match(t)) >= TABLE_MERGED_NUMS or _stacked(c))
+    if merged / max(len(ne), 1) > TABLE_MERGED_FRAC:
+        return "merged_numbers"
+    stray = sum(1 for c in ne if _STRAY_PUNCT_RX.search(c) and _re.search(r"\d", c))
+    if stray / max(len(ne), 1) > TABLE_MERGED_FRAC:
+        return "stray_decimal_points"  # десятичная точка вынесена из числа отдельным глифом: «682% .»
+    return None
+
+
+def _table_html(rows):
+    ncols = max(len(r) for r in rows)
+    trs = []
+    for r in rows:
+        r = list(r) + [""] * (ncols - len(r))
+        trs.append("<tr>" + "".join("<td>" + _html.escape(c.replace("\n", " "), quote=False) + "</td>" for c in r) + "</tr>")
+    return "<table>\n" + "\n".join(trs) + "\n</table>"
+
+
+def _big_images(page):
+    import figures
+    area = max(page.rect.width * page.rect.height, 1.0)
+    return [r for r in figures._image_rects(page) if (r[2] - r[0]) * (r[3] - r[1]) >= IMAGE_MIN_FRAC * area]
+
+
+def _overlaps_caption(img, cap_bbox):
+    x0, y0, x1, y1 = (img[0] - CAPTION_NEAR_PT, img[1] - CAPTION_NEAR_PT,
+                      img[2] + CAPTION_NEAR_PT, img[3] + CAPTION_NEAR_PT)
+    return cap_bbox[0] < x1 and cap_bbox[2] > x0 and cap_bbox[1] < y1 and cap_bbox[3] > y0
+
+
+def analyze_text_source(pdf, mode="auto") -> list:
+    """Решение по каждой странице: [{page, source: pdf|ocr, reason, tables: [(bbox, html)], blocks, ...}].
+    Признаки: текстовый слой (figures.page_state: ok/poor/none), подписи «Table N» против find_tables(),
+    целостность таблиц, таблица-картинка (растр >= RASTER_OCR_FRAC рядом с подписью). mode=pdf — всё pdf."""
+    import pymupdf
+    import figures
+    doc = pymupdf.open(str(pdf))
+    try:
+        all_blocks = [_page_text_blocks(p) for p in doc]
+        infos = []
+        for i, page in enumerate(doc):
+            blocks = all_blocks[i]
+            info = {"page": i + 1, "source": "pdf", "reason": "text_layer_ok", "tables": [], "blocks": blocks}
+            infos.append(info)
+            try:
+                st = figures.page_state(page)
+                caps = [b for b in blocks if any(TABLE_CAP_RX.match(ln) for ln in b["lines"])]  # подпись может идти в середине блока
+                good, broken = [], []
+                try:
+                    words = page.get_text("words")
+                    for tab in page.find_tables().tables:
+                        rows = _table_rows(tab, words)
+                        prob = _table_problem(rows)
+                        if prob is None:
+                            good.append((tuple(tab.bbox), _table_html(rows)))
+                        else:
+                            broken.append((prob, len(rows), max((len(r) for r in rows), default=0)))
+                except Exception as e:  # noqa: BLE001
+                    broken.append((f"find_tables_error:{type(e).__name__}", 0, 0))
+                info["tables"] = good
+                reason = None
+                if st["text_layer"] in ("none", "poor"):
+                    reason = f"text_layer_{st['text_layer']}"
+                elif caps and st["raster_frac"] >= RASTER_OCR_FRAC and any(
+                        _overlaps_caption(im, c["bbox"]) for im in _big_images(page) for c in caps):
+                    reason = "image_table"
+                elif caps and not good:
+                    reason = "table_caption_without_text_table" + (f"({broken[0][0]})" if broken else "")
+                elif caps and len(caps) > len(good):
+                    reason = "table_caption_count_gt_tables"
+                else:
+                    bad = [b for b in broken if caps or (b[1] >= LOOSE_TABLE_ROWS and b[2] >= LOOSE_TABLE_COLS)]
+                    if bad:
+                        reason = f"broken_table({bad[0][0]})"
+                if mode == "pdf":
+                    info["reason"] = "mode_pdf" + (f"; {reason}" if reason else "")
+                elif reason:
+                    info["source"], info["reason"] = "ocr", reason
+            except Exception as e:  # noqa: BLE001
+                if mode != "pdf":
+                    info["source"], info["reason"] = "ocr", f"analyze_error:{type(e).__name__}"
+        bsize = _body_size([inf["blocks"] for inf in infos])
+        run = _running_keys(all_blocks, [p.rect for p in doc])
+        for inf, page in zip(infos, doc):
+            inf["body_size"], inf["running"], inf["rect"] = bsize, run, tuple(page.rect)
+        return infos
+    finally:
+        doc.close()
+
+
+def _reading_order(items, pw):
+    """items: [{bbox,...}] -> порядок чтения. Двухколоночная страница: блоки на всю ширину делят её на полосы,
+    внутри полосы сначала левая колонка по y, потом правая. Иначе — по y, затем по x."""
+    mid = pw / 2.0
+
+    def spans(b):
+        x0, _, x1, _ = b["bbox"]
+        return (x1 - x0) > SPANNER_FRAC * pw or (x0 < mid - 10 and x1 > mid + 10)
+
+    cols = [b for b in items if not spans(b)]
+    left = [b for b in cols if (b["bbox"][0] + b["bbox"][2]) / 2 < mid]
+    right = [b for b in cols if (b["bbox"][0] + b["bbox"][2]) / 2 >= mid]
+    if len(left) < TWO_COL_MIN_BLOCKS or len(right) < TWO_COL_MIN_BLOCKS:
+        return sorted(items, key=lambda b: (round(b["bbox"][1]), b["bbox"][0]))
+    sp = sorted((b for b in items if spans(b)), key=lambda b: b["bbox"][1])
+    lid = {id(b) for b in left}
+
+    def key(b):
+        if spans(b):
+            return (sp.index(b), 2, b["bbox"][1])
+        band = sum(1 for s in sp if s["bbox"][1] < b["bbox"][1])
+        return (band, 0 if id(b) in lid else 1, b["bbox"][1])
+
+    return sorted(items, key=key)
+
+
+def build_pdf_page_markdown(info) -> str:
+    """Markdown страницы из текстового слоя: блоки в порядке чтения, заголовки «## », таблицы find_tables() как HTML
+    (как у glmocr), без колонтитулов и без блоков внутри таблиц."""
+    rect = info["rect"]
+    pw, ph = rect[2] - rect[0], rect[3] - rect[1]
+    tabs = info["tables"]
+    n_tick = sum(1 for b in info["blocks"] if _TICK_RX.match(b["text"]))
+    items = []
+    for b in info["blocks"]:
+        x0, y0, x1, y1 = b["bbox"]
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if any(t[0][0] <= cx <= t[0][2] and t[0][1] <= cy <= t[0][3] for t in tabs):
+            continue
+        text = b["text"]
+        if (y0 < rect[1] + MARGIN_BAND * ph or y1 > rect[3] - MARGIN_BAND * ph) and (
+                _running_key(text) in info["running"] or _re.fullmatch(r"(?:page\s*)?\d{1,4}", text.strip(), _re.I)):
+            continue  # колонтитул / номер страницы
+        if n_tick >= 5 and _TICK_RX.match(text) and b["size"] < info["body_size"] * 0.95:
+            continue  # подписи делений осей в векторных рисунках
+        head = (b["nlines"] <= 2 and len(text) <= 150 and not TABLE_CAP_RX.match(text)
+                and not _re.match(r"\s*fig(?:ure|\.)?\s*\d", text, _re.I)
+                and (b["size"] >= info["body_size"] * HEADING_SIZE_RATIO
+                     or (b["bold"] and len(text) <= 100 and not text.endswith("."))))
+        items.append({"bbox": b["bbox"], "md": ("## " + text) if head else text})
+    for bbox, html_ in tabs:
+        items.append({"bbox": bbox, "md": html_})
+    return "\n\n".join(it["md"] for it in _reading_order(items, pw))
+
+
+def _ocr_page_texts(json_result):
+    """list[str] по страницам из json_result glmocr или None, если форма неожиданная."""
+    if not (isinstance(json_result, list) and json_result and all(isinstance(pg, list) for pg in json_result)):
+        return None
+    out = []
+    for blocks in json_result:
+        texts = []
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            content = b.get("content")
+            if b.get("label") == "image" or not isinstance(content, str) or not content.strip():
+                continue
+            texts.append(content.strip())
+        out.append("\n\n".join(texts))
+    return out
+
+
+def _ocr_subset(parser, pdf, pages, work, stem):
+    """glmocr только на страницах `pages` (номера с 1): под-PDF через insert_pdf, parse(), страницы результата
+    возвращаются к номерам исходного PDF. -> {page: text}."""
+    import pymupdf
+    sub, src = pymupdf.open(), pymupdf.open(str(pdf))
+    sub_path = Path(work) / f"{stem}.ocr_subset.pdf"
+    try:
+        for p in pages:
+            sub.insert_pdf(src, from_page=p - 1, to_page=p - 1)
+        sub.save(str(sub_path))
+    finally:
+        sub.close()
+        src.close()
+    result = parser.parse(str(sub_path))
+    result.save(output_dir=str(work))
+    texts = _ocr_page_texts(getattr(result, "json_result", None))
+    if texts is None or len(texts) != len(pages):
+        raise PipelineError("ml_error", f"glmocr: под-PDF из {len(pages)} страниц вернул "
+                                        f"{None if texts is None else len(texts)} страниц результата")
+    return dict(zip(pages, texts))
+
+
+
 # ---------- [faktura-patch] качество: проверка значений по тексту PDF и кандидаты для дозаполнения ----------
 import html as _html
 
@@ -645,14 +998,26 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
         raise PipelineError("not_configured",
                             "Нет ROUTERAI_API_KEY в окружении — извлечение датасета будет невозможным.")
     config = config_path()
-    if not config.exists():
-        raise PipelineError("not_configured",
-                            f"Нет конфига glmocr: {config} (задайте GLMOCR_CONFIG=/path/to/config.yaml)")
     # [faktura-patch] проверяем PDF и доступность OCR ДО тяжёлой работы
     check_pdf(pdf)
-    if not ocr_reachable(config):
-        raise PipelineError("ocr_unavailable", f"OCR-сервер недоступен ({ocr_endpoint(config)})",
-                            retryable=True)
+    # [faktura-patch] R6: решение по страницам (auto/pdf) до обращения к OCR; ocr — как раньше, без анализа
+    ts_mode = text_source_mode()
+    ts_infos = None
+    if ts_mode != "ocr":
+        try:
+            ts_infos = analyze_text_source(pdf, ts_mode)
+        except Exception as e:  # noqa: BLE001
+            print(f"[!] анализ текстового слоя не удался ({type(e).__name__}: {e}) — OCR всех страниц", flush=True)
+            ts_mode, ts_infos = "ocr", None
+    ocr_pages = ([i["page"] for i in ts_infos if i["source"] == "ocr"] if ts_infos is not None else None)
+    need_ocr = ts_infos is None or (ts_mode == "auto" and bool(ocr_pages))
+    if need_ocr:
+        if not config.exists():
+            raise PipelineError("not_configured",
+                                f"Нет конфига glmocr: {config} (задайте GLMOCR_CONFIG=/path/to/config.yaml)")
+        if not ocr_reachable(config):
+            raise PipelineError("ocr_unavailable", f"OCR-сервер недоступен ({ocr_endpoint(config)})",
+                                retryable=True)
 
     out_dir = Path(out_dir)
     work = out_dir / "work"
@@ -661,34 +1026,65 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
     pub_id = publication_id or stem
 
     # ---------- 1. glmocr: PDF -> markdown ----------
-    try:
-        import glmocr  # noqa: F401
-    except ImportError as e:
-        raise PipelineError("ml_error", "glmocr не установлен в образе (pip install 'glmocr[selfhosted]')") from e
+    if need_ocr:
+        try:
+            import glmocr  # noqa: F401
+        except ImportError as e:
+            raise PipelineError("ml_error", "glmocr не установлен в образе (pip install 'glmocr[selfhosted]')") from e
 
-    print(f"[1/3] glmocr: {pdf.name} -> markdown (config={config})", flush=True)
-    t0 = time.time()
-    try:
-        parser = _get_parser(config)  # [faktura-patch] переиспользуем прогретый парсер
-        result = parser.parse(str(pdf))
-        result.save(output_dir=str(work))
-    except PipelineError:
-        raise
-    except Exception as e:
-        if _PARSER is not None and not _is_connection_error(e):
-            _close_parser()  # неизвестный сбой — пересоздадим парсер на следующей статье
-        if _is_connection_error(e):
-            raise PipelineError("ocr_unavailable", f"OCR-сервер недоступен: {e}", retryable=True) from e
-        raise PipelineError("ml_error", f"glmocr: {type(e).__name__}: {e}") from e
-    ocr_seconds = round(time.time() - t0, 2)
+    ocr_seconds = 0.0
+    text_source_meta = None
+    if ts_infos is None:
+        print(f"[1/3] glmocr: {pdf.name} -> markdown (config={config})", flush=True)
+        t0 = time.time()
+        try:
+            parser = _get_parser(config)  # [faktura-patch] переиспользуем прогретый парсер
+            result = parser.parse(str(pdf))
+            result.save(output_dir=str(work))
+        except PipelineError:
+            raise
+        except Exception as e:
+            if _PARSER is not None and not _is_connection_error(e):
+                _close_parser()  # неизвестный сбой — пересоздадим парсер на следующей статье
+            if _is_connection_error(e):
+                raise PipelineError("ocr_unavailable", f"OCR-сервер недоступен: {e}", retryable=True) from e
+            raise PipelineError("ml_error", f"glmocr: {type(e).__name__}: {e}") from e
+        ocr_seconds = round(time.time() - t0, 2)
 
-    md_orig = work / stem / f"{stem}.md"
-    if not md_orig.exists():
-        raise PipelineError("ml_error", f"glmocr не создал {md_orig} — смотрите лог выше")
-    raw_md = md_orig.read_text(encoding="utf-8", errors="replace")
-    # [faktura-patch] markdown для LLM — постранично, с маркерами <!-- page N -->
-    md_text, paged = build_paged_markdown(getattr(result, "json_result", None),
-                                          getattr(result, "markdown_result", None) or raw_md)
+        md_orig = work / stem / f"{stem}.md"
+        if not md_orig.exists():
+            raise PipelineError("ml_error", f"glmocr не создал {md_orig} — смотрите лог выше")
+        raw_md = md_orig.read_text(encoding="utf-8", errors="replace")
+        # [faktura-patch] markdown для LLM — постранично, с маркерами <!-- page N -->
+        md_text, paged = build_paged_markdown(getattr(result, "json_result", None),
+                                              getattr(result, "markdown_result", None) or raw_md)
+    else:
+        # [faktura-patch] R6: страницы из текстового слоя + OCR только там, где нужно
+        print(f"[1/3] text_source={ts_mode}: {len(ts_infos) - len(ocr_pages)} стр. из PDF, "
+              f"{len(ocr_pages)} стр. через glmocr", flush=True)
+        ocr_texts = {}
+        if need_ocr:
+            t0 = time.time()
+            try:
+                ocr_texts = _ocr_subset(_get_parser(config), pdf, ocr_pages, work, stem)
+            except PipelineError:
+                raise
+            except Exception as e:
+                if _PARSER is not None and not _is_connection_error(e):
+                    _close_parser()
+                if _is_connection_error(e):
+                    raise PipelineError("ocr_unavailable", f"OCR-сервер недоступен: {e}", retryable=True) from e
+                raise PipelineError("ml_error", f"glmocr: {type(e).__name__}: {e}") from e
+            ocr_seconds = round(time.time() - t0, 2)
+        parts = []
+        for inf in ts_infos:
+            body = ocr_texts.get(inf["page"], "") if inf["source"] == "ocr" else build_pdf_page_markdown(inf)
+            parts.append(f"<!-- page {inf['page']} -->\n\n{body}")
+        md_text, paged = "\n\n".join(parts), True
+        text_source_meta = {
+            "mode": ts_mode,
+            "pages": [{"page": i["page"], "source": i["source"], "reason": i["reason"]} for i in ts_infos],
+            "ocr_pages": len(ocr_pages), "pdf_pages": len(ts_infos) - len(ocr_pages)}
     md_src = work / f"{stem}.paged.md"
     md_src.write_text(md_text, encoding="utf-8")
     print(f"      готово за {ocr_seconds}s, markdown {len(md_text)} символов "
@@ -782,7 +1178,8 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
         "ocr_seconds": ocr_seconds,
         "markdown_chars": len(md_text),
         "glmocr_config": str(config),
-        "glmocr_config_text": config.read_text(encoding="utf-8", errors="replace"),
+        "glmocr_config_text": config.read_text(encoding="utf-8", errors="replace") if config.exists() else None,
+        "text_source": text_source_meta or {"mode": "ocr", "pages": None, "ocr_pages": pages, "pdf_pages": 0},  # [faktura-patch] R6
         "strip_tail": strip_info,
         "quote_snap": snap_stats,
         "total_seconds": round(time.time() - _t_start, 2),
