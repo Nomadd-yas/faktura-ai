@@ -1185,15 +1185,19 @@ def chartish(rec):
 # =====================================================================================================
 VISION_PROMPT = """You are digitizing ONE scientific figure from a paper. Caption: {caption}
 
-Decide whether the picture is a data chart (line/scatter/bar plot with numeric axes or labelled bars). If it is not
-(diagram, photo, architecture sketch, table image, schematic), answer {{"is_chart": false, "panels": []}}.
+Decide whether the picture is a data chart: line/scatter/bar plot with numeric axes or labelled bars, or a heatmap /
+annotated matrix whose cells show numbers. If it is not (diagram, photo, architecture sketch, schematic), answer
+{{"is_chart": false, "panels": []}}.
 Otherwise estimate the plotted values from the picture using the printed axis tick labels. Return ONLY JSON:
 {{"is_chart": true, "panels": [{{"title": str|null,
   "x_axis": {{"label": str|null, "scale": "linear"|"log"|"categorical", "min": number|null, "max": number|null}},
   "y_axis": {{"label": str|null, "scale": "linear"|"log", "min": number|null, "max": number|null}},
-  "series": [{{"label": str|null (legend text), "kind": "line"|"scatter"|"bar", "points": [[x, y], ...]}}]}}]}}
+  "series": [{{"label": str|null (legend text), "kind": "line"|"scatter"|"bar"|"heatmap", "points": [[x, y], ...]}}]}}]}}
 Rules: x is a string for categorical axes (the category label), otherwise a number. One entry per visible data
-point/bar/vertex, at most 60 points per series. Values are approximate; do NOT invent points you cannot see."""
+point/bar/vertex, at most 60 points per series. Values are approximate; do NOT invent points you cannot see.
+Heatmap / annotated matrix: kind "heatmap", one series per ROW (label = the row label, prefixed by the y-axis name if
+any, e.g. "Lower Threshold=0.3"), points [[column label as string, cell value]] using the number PRINTED in the cell
+(skip empty cells); x_axis scale "categorical". Bars with printed value labels: use the printed numbers."""
 
 
 def render_region_png(pdf, page_no, bbox, dpi=170, max_side=2000):
@@ -1212,10 +1216,16 @@ def render_region_png(pdf, page_no, bbox, dpi=170, max_side=2000):
 def _loose_json(raw):
     s = (raw or "").strip()
     s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s)
-    a, b = s.find("{"), s.rfind("}")
-    if a < 0 or b <= a:
+    a = s.find("{")
+    if a < 0:
         raise ValueError("no JSON object")
-    return json.loads(s[a:b + 1])
+    try:  # [faktura-patch] first complete object; models sometimes append a second object or text after it
+        return json.JSONDecoder().raw_decode(s[a:])[0]
+    except json.JSONDecodeError:
+        b = s.rfind("}")
+        if b <= a:
+            raise
+        return json.loads(s[a:b + 1])
 
 
 def _fnum(v):
@@ -1254,7 +1264,7 @@ def panels_from_vision(js):
                     continue
                 pts.append((x, y))
             if pts:
-                kind = s.get("kind") if s.get("kind") in ("line", "scatter", "bar") else "line"
+                kind = s.get("kind") if s.get("kind") in ("line", "scatter", "bar", "heatmap") else "line"
                 series.append({"color": None, "kind": kind, "legend_label": s.get("label"), "points": pts})
         if series:
             panels.append({"bbox": None, "title": p.get("title"), "x_axis": ax(p.get("x_axis")),
@@ -1569,7 +1579,7 @@ def generate_rows(rec, mapping, ids, pub_id, *, max_rows=12000, start=1):
                 continue
             tol = None if vision else _tol(maxis)
             vals = [v for _, v in pts]
-            constant = len(pts) >= 2 and (max(vals) - min(vals)) <= (tol or 1e-9 * (abs(vals[0]) + 1))
+            constant = s.get("kind") == "line" and len(pts) >= 2 and (max(vals) - min(vals)) <= (tol or 1e-9 * (abs(vals[0]) + 1))
             if constant:
                 pts = pts[:1]
             meaning = m.get("other_axis_meaning") or "none"
