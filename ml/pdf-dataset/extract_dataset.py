@@ -729,6 +729,10 @@ RAG_METRIC_DIRECTIONS = ["higher_is_better", "lower_is_better", "target"]  # р�
 RAG_TABLE_CELLS = int(os.environ.get("RAG_TABLE_CELLS", "150"))      # числовых ячеек таблицы на один вызов
 RAG_RESULTS_MAX_TOKENS = int(os.environ.get("RAG_RESULTS_MAX_TOKENS", "32768"))
 RAG_WORKERS = 4
+# [faktura-patch] экономия: перенос ячеек таблицы в строки не требует рассуждения (85 % стоимости RAG — рассуждение results)
+RAG_TABLE_REASONING = os.environ.get("RAG_TABLE_REASONING", "off").strip().lower() not in ("off", "0", "false", "no")
+RAG_SMALL_TABLE_CELLS = int(os.environ.get("RAG_SMALL_TABLE_CELLS", "40"))  # целые таблицы не больше — склеиваются
+RAG_BATCH_CELLS = int(os.environ.get("RAG_BATCH_CELLS", "150"))             # потолок числовых ячеек в склейке
 
 RAG_PUB = PUB
 
@@ -1334,6 +1338,14 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
             label = "results:prose"
             task = RAG_RESULTS_PROSE_TASK
             body = f"Текст статьи (Markdown; таблицы заменены пометками):\n{ch['text']}\n\n"
+        elif ch.get("batch"):  # [faktura-patch] несколько мелких таблиц одним вызовом
+            label = "results:batch#" + "+".join(f"{c['label'] or 'table'}" for c in ch["batch"])
+            task = RAG_RESULTS_TABLE_TASK + ("\nВ этом задании НЕСКОЛЬКО таблиц: для каждой строки results укажи source_table и "
+                                             "source_page той таблицы, из которой взято значение (как в заголовке таблицы ниже).")
+            body = "".join(f"=== Таблица: {c['label'] or 'номер не определён'}; страница PDF (source_page) = {c['page']}\n"
+                           f"Подпись: {c['caption'] or 'не найдена'}\nТекст перед таблицей:\n{c['before'][-600:]}\n"
+                           f"Текст после таблицы:\n{c['after'][:300]}\nHTML таблицы:\n{_rag_chunk_html(c)}\n\n"
+                           for c in ch["batch"])
         else:
             rng = f"{ch['lo']}-{ch['hi']}"
             label = f"results:{ch['label'] or 'table'}#{ch['index']}:{rng}"
@@ -1349,12 +1361,18 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
         messages = [{"role": "system", "content": RAG_COMMON_RULES}, {"role": "user", "content": user}]
         raw_path = src.with_name(f"{src.name}.{re.sub(r'[^A-Za-z0-9_.-]+', '_', label)}.raw_response.txt")
         try:
+            rt = None if (prose or RAG_TABLE_REASONING) else 0  # 0 = рассуждение выключено
             res = nullify_empties(call_llm(client, args, messages, "table_results", rag_table_schema("results"),
-                                           max(max_tokens, RAG_RESULTS_MAX_TOKENS), label, raw_path, report))
+                                           max(max_tokens, RAG_RESULTS_MAX_TOKENS), label, raw_path, report,
+                                           reasoning_tokens=rt))
             rows = res.get("results", []) if isinstance(res, dict) else []
+            pages_by_label = {c["label"]: c["page"] for c in ch.get("batch", []) if c.get("label")}
             for r in rows:
                 r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
-                if not prose:  # детерминированно: страница и номер таблицы известны
+                if ch.get("batch"):  # склейка: страница — по таблице, которую указала модель
+                    if r.get("source_page") is None and r.get("source_table") in pages_by_label:
+                        r["source_page"] = pages_by_label[r["source_table"]]
+                elif not prose:  # детерминированно: страница и номер таблицы известны
                     if r.get("source_page") is None:
                         r["source_page"] = ch["page"]
                     if r.get("source_table") is None and ch["label"]:
@@ -1373,13 +1391,33 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
 
     def run_results():
         chunks, prose_text = rag_plan_results(text)
-        jobs = [(ch, False) for ch in chunks] + [({"text": prose_text}, True)]
+        # [faktura-patch] экономия: таблицы без чисел — без вызова; мелкие целые таблицы — склейкой
+        for c in [c for c in chunks if not c.get("cells")]:
+            rag_meta["chunks"].append({"label": f"{c['label'] or 'table'}#{c['index']}", "cells": 0, "results": 0,
+                                       "skipped": "no_numeric_cells"})
+        chunks = [c for c in chunks if c.get("cells")]
+        small = [c for c in chunks if c["cells"] <= RAG_SMALL_TABLE_CELLS and c["lo"] == 1 and c["hi"] == c["total"]]
+        big = [c for c in chunks if c not in small]
+        batches, cur = [], []
+        for c in small:
+            if cur and sum(x["cells"] for x in cur) + c["cells"] > RAG_BATCH_CELLS:
+                batches.append(cur)
+                cur = []
+            cur.append(c)
+        if cur:
+            batches.append(cur)
+        units = big + [b[0] if len(b) == 1 else {"batch": b, "index": b[0]["index"], "label": None, "page": b[0]["page"],
+                                                 "lo": 1, "hi": 1, "total": 1, "rows": [],
+                                                 "cells": sum(x["cells"] for x in b)} for b in batches]
+        jobs = [(ch, False) for ch in units] + [({"text": prose_text}, True)]
         with ThreadPoolExecutor(max_workers=RAG_WORKERS) as pool:
             futs = [pool.submit(run_chunk, ch, p) for ch, p in jobs]
             done = [f.result() for f in futs]
         merged, nrows = [], 0
         for ji, ((ch, is_prose), (rows, err)) in enumerate(zip(jobs, done)):
-            label = "prose" if is_prose else f"{ch['label'] or 'table'}#{ch['index']}:{ch['lo']}-{ch['hi']}"
+            label = "prose" if is_prose else (
+                "batch:" + "+".join(c["label"] or "table" for c in ch["batch"]) if ch.get("batch")
+                else f"{ch['label'] or 'table'}#{ch['index']}:{ch['lo']}-{ch['hi']}")
             if err is not None:
                 print(f"[!] results {label}: {err}", flush=True)
                 failed.append(f"results[{label}]")

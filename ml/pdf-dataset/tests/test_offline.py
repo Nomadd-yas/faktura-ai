@@ -198,6 +198,7 @@ def test_rag_chunking_three_tables_and_renumber(monkeypatch, tmp_path):
     calls, lock = [], threading.Lock()
     monkeypatch.setattr(ed, "call_llm", _rag_fake(calls, lock))
     monkeypatch.setattr(ed, "OpenAI", lambda **kw: object())
+    monkeypatch.setattr(ed, "RAG_SMALL_TABLE_CELLS", 0)  # без склейки мелких таблиц: вызов на таблицу
     md = tmp_path / "a.md"
     md.write_text(_RAG_MD, encoding="utf-8")
     res = ed.extract(md, publication_id="P1", out=str(tmp_path / "o.json"), api_key="k", domain="rag",
@@ -258,3 +259,36 @@ def test_extract_endpoint_rejects_unknown_domain():
     import api
     r = TestClient(api.app).post("/extract", files={"file": ("a.pdf", b"%PDF-1.4")}, data={"domain": "chem"})
     assert r.status_code == 422 and r.json()["code"] == "domain_not_supported"
+
+
+def test_rag_small_tables_batched_without_reasoning(monkeypatch, tmp_path):
+    """[faktura-patch] экономия: мелкие таблицы — одним вызовом, таблицы — без рассуждения, prose — с ним."""
+    import re as _re
+    import threading
+    seen = []
+
+    def fake(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None,
+             retry=True, reasoning_tokens=None):
+        seen.append((label, reasoning_tokens))
+        if label == "publications":
+            return {"publications": [{"in_scope": True}]}
+        if label == "configurations":
+            return {"configurations": [{"config_id": "C1"}]}
+        if label.startswith("results:batch"):
+            tabs = _re.findall(r"=== Таблица: (Table \d); страница PDF \(source_page\) = (\d)", messages[1]["content"])
+            return {"results": [{"result_id": f"R{i}", "config_id": "C1", "metric_name": "EM", "raw_value": str(i),
+                                 "normalized_value": i, "source_table": t, "extraction_status": "extracted"}
+                                for i, (t, _) in enumerate(tabs, start=1)]}
+        return {schema_name.replace("table_", ""): []}
+
+    monkeypatch.setattr(ed, "call_llm", fake)
+    monkeypatch.setattr(ed, "OpenAI", lambda **kw: object())
+    md = tmp_path / "a.md"
+    md.write_text(_RAG_MD, encoding="utf-8")
+    res = ed.extract(md, publication_id="P1", out=str(tmp_path / "o.json"), api_key="k", domain="rag")
+    rcalls = [(l, rt) for l, rt in seen if l.startswith("results:")]
+    batch = [x for x in rcalls if x[0].startswith("results:batch")]
+    assert len(batch) == 1 and batch[0][1] == 0                    # одна склейка, рассуждение выключено
+    assert ("results:prose", None) in rcalls                       # текст — с рассуждением
+    pages = {r["source_table"]: r["source_page"] for r in res["dataset"]["results"]}
+    assert pages == {"Table 1": 1, "Table 2": 2, "Table 3": 3}     # страницы — по меткам таблиц
