@@ -643,7 +643,9 @@ def test_pid_validation_and_ask_through_agent_frontend_shape(client, auth, run_t
     assert "looking at paper D001" in llm.calls[0]["messages"][0]["content"]
     assert a["meta"]["cost"] == pytest.approx(0.0004) and a["meta"]["cost_currency"] == "RUB"
     assert a["meta"]["tool_calls"] == 1 and a["meta"]["model"] == "fake" and a["meta"]["dropped"] == 0
-    assert not [m for m in messages(client, auth, rid) if m["role"] == "assistant"]  # ветка не ведётся
+    saved = [m for m in messages(client, auth, rid) if m["role"] == "assistant"]  # /ask пишет в текущий чат
+    assert len(saved) == 1 and saved[0]["source"] == "ask" and saved[0]["answer"]["text"] == a["text"]
+    assert a["thread_id"] == saved[0]["thread_id"] and a["message_id"] == saved[0]["id"]
     # clarify проходит: текст + варианты в suggestions
     actx.llm_client = ScriptedLLM(call("clarify", question="Какой показатель?", options=["КПД", "Voc"]))
     c = client.post(f"{API}/runs/{rid}/ask", json={"question": "лучшее"}, headers=auth).json()

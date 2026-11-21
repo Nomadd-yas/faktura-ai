@@ -26,7 +26,7 @@ CORS_ALLOW_HEADERS = ("Authorization", "Content-Type", "X-Request-Id", "Last-Eve
                       "If-None-Match", "If-Range")
 CORS_EXPOSE_HEADERS = ("X-Action-Id", "X-Request-Id", "Content-Disposition", "X-Check-Status", "X-Faktura-Stub",
                        "Retry-After", "ETag", "Content-Range", "Accept-Ranges", "Content-Length", "X-Export-Tables",
-                       "X-Export-Results", "X-Export-Papers", "X-Export-Filename", "X-Export-Rejected")
+                       "X-Export-Results", "X-Export-Papers", "X-Export-Filename", "X-Export-Rejected", "X-Thread-Id")
 CORS_MAX_AGE = 600
 
 

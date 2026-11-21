@@ -103,11 +103,11 @@ def _is_cancelled(services, mid: str) -> Callable[[], bool]:
 
 
 def answer_in_thread(actx: Any, corpus_id: str, mid: str, question: str, stream: store.Stream,
-                     pid: str | None = None) -> None:
+                     pid: str | None = None, thread_id: str | None = None) -> None:
     """Рабочий поток ответа: всё, что случилось, - в БД и в `stream`; исключения наружу не выходят."""
     emit = stream.emit
     try:
-        _answer(actx, corpus_id, mid, question, emit, pid)
+        _answer(actx, corpus_id, mid, question, emit, pid, thread_id)
     except Exception as e:  # noqa: BLE001
         log.exception("Агент разбора упал")
         try:
@@ -135,17 +135,21 @@ def _ask_client(actx) -> Any:
 
 
 def run_agent(actx, corpus_id: str, question: str, *, pid: str | None = None, only: set[str] | None = None,
-              mid: str | None = None, emit: Callable[[str, dict], None] = lambda *_: None,
+              mid: str | None = None, thread_id: str | None = None,
+              emit: Callable[[str, dict], None] = lambda *_: None,
               is_cancelled: Callable[[], bool] = lambda: False) -> dict:
     """Агент -> проверка -> (запасной базовый вариант). -> {status, answer, clarify, meta, tool_log}.
-    С `mid` берёт историю ветки из run_messages (чат); без него - один вопрос без истории и без записи в БД (/ask)."""
+    История - прошлые обмены чата `thread_id` (у ответа `mid` - его чат); без обоих - один вопрос без истории."""
     services = actx.get_services()
     t0 = time.monotonic()
     emit("step", {"text": "Разбираю вопрос"})
     with services.db.uow() as uow:
         corpus = uow.corpora.get(corpus_id)
         run = load_ctx(uow, corpus, only)
-        rows = store.list_all(uow, corpus_id) if mid else []
+        if thread_id is None and mid:
+            m = store.get(uow, corpus_id, mid)
+            thread_id = m.get("thread_id") if m else None
+        rows = store.list_all(uow, corpus_id, thread_id) if (mid or thread_id) else []
         partial = _partial(uow, corpus)
     qa = store.thread_qa(rows, exclude=mid)
     asked = [q for q, _ in qa] + [question]
@@ -226,9 +230,10 @@ def run_agent(actx, corpus_id: str, question: str, *, pid: str | None = None, on
 
 
 def _answer(actx, corpus_id: str, mid: str, question: str, emit: Callable[[str, dict], None],
-            pid: str | None = None) -> None:
+            pid: str | None = None, thread_id: str | None = None) -> None:
     services = actx.get_services()
-    r = run_agent(actx, corpus_id, question, pid=pid, mid=mid, emit=emit, is_cancelled=_is_cancelled(services, mid))
+    r = run_agent(actx, corpus_id, question, pid=pid, mid=mid, thread_id=thread_id, emit=emit,
+                  is_cancelled=_is_cancelled(services, mid))
     status, answer, clarify = r["status"], r["answer"], r["clarify"]
     with services.db.uow() as uow:
         saved = store.finish(uow, mid, status=status, answer=answer, clarify=clarify, meta=r["meta"],
@@ -290,14 +295,16 @@ def ask_card(card: dict) -> dict:
     return card
 
 
-def ask_via_agent(actx, corpus_id: str, question: str, pid: str | None, only: set[str] | None) -> dict | None:
-    """Ответ /ask агентом: CaseAnswer {text, cards, cites, suggestions, meta[, clarify]}; None - агент недоступен."""
+def ask_via_agent(actx, corpus_id: str, question: str, pid: str | None, only: set[str] | None,
+                  thread_id: str | None = None) -> dict | None:
+    """Ответ /ask агентом: CaseAnswer {text, cards, cites, suggestions, meta[, clarify]}; None - агент недоступен.
+    С `thread_id` модель видит прошлые обмены этого чата."""
     if _llm(actx) is None:
         return None
     services = actx.get_services()
     with services.db.uow() as uow:
         run = load_ctx(uow, uow.corpora.get(corpus_id), only)
-    r = run_agent(actx, corpus_id, question, pid=pid, only=only)
+    r = run_agent(actx, corpus_id, question, pid=pid, only=only, thread_id=thread_id)
     a = r["answer"]
     if a is None:
         return None

@@ -624,6 +624,24 @@ run_messages = sa.Table(
     sa.Column("cost", sa.Float, nullable=True),  # стоимость ответа в валюте cost_currency
     sa.Column("cost_currency", sa.String(8), nullable=True),  # RUB
     sa.Column("created_at", UTCDateTime, nullable=False),
+    sa.Column("thread_id", sa.String(64), nullable=True),  # чат (run_threads.id); NULL - старые сообщения до чатов
+    sa.Column("source", sa.String(16), nullable=True),  # messages (ответ агента §15.9) | ask (CaseAnswer фронта)
     sa.Index("ix_run_messages_corpus", "corpus_id", "seq"),
+    sa.Index("ix_run_messages_thread", "thread_id", "seq"),
 )
-LATE_COLUMNS[run_messages] = (run_messages.c.cost, run_messages.c.cost_currency)
+LATE_COLUMNS[run_messages] = (run_messages.c.cost, run_messages.c.cost_currency, run_messages.c.thread_id,
+                              run_messages.c.source)
+LATE_INDEXES[run_messages] = ("ix_run_messages_thread",)
+
+# Чаты разбора: история вопросов, к любому можно вернуться и продолжить (CORE_API §4k)
+run_threads = sa.Table(
+    "run_threads", metadata,
+    _seq(), _id(),
+    sa.Column("corpus_id", sa.String(64), sa.ForeignKey("corpora.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("user_id", sa.String(64), nullable=True),
+    sa.Column("title", sa.String(200), nullable=True),  # NULL - ещё нет вопросов; иначе первый вопрос или имя от пользователя
+    sa.Column("title_auto", sa.Boolean, nullable=False, default=True),  # False - переименован пользователем
+    sa.Column("created_at", UTCDateTime, nullable=False),
+    sa.Column("updated_at", UTCDateTime, nullable=False),  # последнее сообщение
+    sa.Index("ix_run_threads_corpus", "corpus_id", "updated_at"),
+)

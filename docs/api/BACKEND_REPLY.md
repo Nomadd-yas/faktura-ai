@@ -18,6 +18,7 @@
 | экран «Экспорт», «Настройки» | `GET /runs/{id}/dataset.json`, `dataset.xlsx` (форматы как у ваших «Один файл JSON» / «Файл Excel»); `GET /submission.zip?domain=` — набор по всем разборам | §4g |
 | «Настройки → Словарь нормализации» | `GET /dictionary`, свои синонимы на сервере (`POST`/`DELETE`), применяются при нормализации новых разборов | §4h |
 | «Вопросы по разбору» | `POST /runs/{id}/ask` → `CaseAnswer` (тот же формат, что рисует `CaseAnswer.vue`), `GET /runs/{id}/ask/suggestions` | §4i |
+| «Вопросы по разбору»: история | Несколько чатов на разбор, имя по первому вопросу, продолжить любой в любой момент (модель помнит обмены чата), дочитать ответ после закрытия вкладки; `/ask` без изменений пишет в текущий чат | §4k |
 | §11 | Скорость: `GET /runs/{id}` ≈ 25 мс, `/papers/rag/D014` ≈ 70 мс, `/results` (100 строк) ≈ 45 мс на 30 тыс. строк | `docs/eval/PERF_API.md` |
 
 ### Что можно включать во фронте уже сейчас (сейчас там `disabled` с подсказкой «В разработке»)
@@ -33,6 +34,7 @@
 | `PaperView.vue`, `IssuesList.vue` | Исправлено / Всё верно / Открыть замечание | `PATCH /runs/{id}/papers/{domain}/{pid}/issues/{iid}` |
 | `/history` (сейчас `FrozenView`) | Журнал правок, отмена | `GET /history?run=`, `POST /actions/{id}/undo`, `POST /history/undo` |
 | `PassportView.vue` | Паспорт набора | `GET /runs/{id}/passport.json` |
+| «Вопросы по разбору» | История чатов: список, открыть, новый, переименовать, удалить | `GET/POST /runs/{id}/threads`, `GET/PATCH/DELETE /runs/{id}/threads/{tid}`, `thread_id` в `/ask` |
 | `RunView.vue` | Прогресс без опроса | SSE `GET /runs/{id}/events?access_token=` |
 
 Вкладку «Связи» в карточке статьи (`PaperView.vue`, «4. Связи» → `CaseLinks`) стоит убрать: это похожие статьи по общим материалам (`/related`), их вычеркнули вместе с экраном «Связи».
