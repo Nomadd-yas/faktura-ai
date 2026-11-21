@@ -1693,6 +1693,10 @@ def generate_rows(rec, mapping, ids, pub_id, *, max_rows=12000, start=1):
                     "extraction_status": "extracted", "duplicate_of": None, "note": note,
                     "_tol": tol, "_v": v,
                 })
+                if (not constant and meaning in ("hyperparameter", "training_size")
+                        and isinstance(o, (int, float))):  # [faktura-patch] swept setting -> own configuration later
+                    rows[-1]["_sweep"] = {"name": oname or meaning, "value": _sig(o, 4), "raw": o,
+                                          "base": rows[-1]["config_id"], "series": sname, "figure": rec["label"]}
                 if band:  # [faktura-patch] shaded band around the series -> two more rows (lower / upper endpoint)
                     rows[-1]["aggregation"] = bk["main"]
                     base = rows[-1]

@@ -361,3 +361,24 @@ def test_figure_rows_take_k_from_axis_label():
     m = {"p0s0": {"is_result": True, "metric_axis": "y", "metric_name": "NDCG", "other_axis_meaning": "hyperparameter"}}
     rows, _ = F.generate_rows(rec, m, {"configs": set(), "datasets": set(), "tasks": set(), "experiments": set()}, "X")
     assert {r["metric_k"] for r in rows} == {5}
+
+
+def test_swept_setting_gets_own_configuration():
+    import extract_dataset as E
+    import figures as F
+    rec = {"label": "Figure 3", "page": 2, "caption": "Figure 3: Accuracy vs tokens. Shaded: 95% confidence interval.",
+           "state": "vector_ok", "confidence": 0.9, "method": None,
+           "band_kind": F.band_kind("Shaded: 95% confidence interval."),
+           "use_panels": [{"title": None, "x_axis": {"step": 10, "scale": "linear", "label_text": "Top-k"},
+                           "y_axis": {"step": 10, "scale": "linear", "label_text": "Accuracy (%)"},
+                           "series": [{"points": [(5.0, 50.0), (10.0, 55.0)], "legend_label": "Ours",
+                                       "bands": [[48.0, 52.0], [53.0, 57.0]]}]}]}
+    m = {"p0s0": {"is_result": True, "metric_axis": "y", "metric_name": "Accuracy", "config_id": "C1",
+                  "other_axis_meaning": "hyperparameter", "other_axis_name": "Top-k"}}
+    rows, _ = F.generate_rows(rec, m, {"configs": {"C1"}, "datasets": set(), "tasks": set(), "experiments": set()}, "X")
+    configs = [{"config_id": "C1", "rag_variant": "Ours", "generator_model": "G", "note": "base"}]
+    assert E.rag_sweep_configs(rows, configs) == 2
+    assert [r["config_id"] for r in rows] == ["C2"] * 3 + ["C3"] * 3  # value + band endpoints share the config
+    assert [c["top_k"] for c in configs[1:]] == [5, 10]
+    assert configs[1]["generator_model"] == "G" and "Top-k=5" in configs[1]["note"]
+    assert not any("_sweep" in r for r in rows)

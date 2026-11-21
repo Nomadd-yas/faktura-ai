@@ -1320,6 +1320,46 @@ def rag_normalize_metric_names(rows: list, datasets: list) -> int:
     return changed
 
 
+_SWEEP_FIELDS = [  # swept parameter name -> configuration column it sets (number)
+    (re.compile(r"(?i)top[\s_-]*k|retrieved (?:doc|passage|chunk)|number of (?:retrieved )?(?:doc|passage|chunk|context)"), "top_k"),
+    (re.compile(r"(?i)chunk[\s_-]*size"), "chunk_size"),
+    (re.compile(r"(?i)chunk[\s_-]*overlap|overlap"), "chunk_overlap"),
+]
+
+
+def rag_sweep_configs(rows: list, configs: list) -> int:
+    """[faktura-patch] A figure that sweeps a setting (training tokens, threshold, top-k, noise level...) reports one
+    configuration per swept value: copy of the series' base configuration (or a minimal one named after the series)
+    + "<parameter>=<value>" in note (and top_k / chunk_size when that is the parameter). Rows of the same point
+    (value and its band endpoints) share the configuration. Returns the number of configurations added."""
+    def cid_num(c):
+        m = re.search(r"(\d+)$", c or "")
+        return int(m.group(1)) if m else 0
+    by_id = {c.get("config_id"): c for c in configs}
+    nxt = max([cid_num(c.get("config_id")) for c in configs] + [0]) + 1
+    made: dict = {}
+    for r in rows:
+        sw = r.pop("_sweep", None)
+        if not sw:
+            continue
+        key = (sw["base"], sw["series"] if not sw["base"] else None, sw["figure"], sw["name"], sw["value"])
+        if key not in made:
+            base = by_id.get(sw["base"])
+            new = {k: v for k, v in (base or {}).items()} if base else {"rag_variant": sw["series"]}
+            new["config_id"] = f"C{nxt}"
+            nxt += 1
+            for rx, col in _SWEEP_FIELDS:
+                if rx.search(sw["name"] or "") and isinstance(sw["raw"], (int, float)):
+                    new[col] = int(round(sw["raw"])) if abs(sw["raw"] - round(sw["raw"])) < 1e-6 else sw["raw"]
+                    break
+            tag = f"{sw['name']}={sw['value']} ({sw['figure']}, series '{sw['series']}')"
+            new["note"] = f"{new['note']}; {tag}" if new.get("note") else tag
+            configs.append(new)
+            made[key] = new["config_id"]
+        r["config_id"] = made[key]
+    return len(made)
+
+
 def rag_link_duplicates(rows) -> int:
     """Одно и то же значение (эксперимент, конфигурация, набор, задача, метрика, вариант, k, значение), найденное в РАЗНЫХ
     местах (страница/таблица), — повтор: у более позднего duplicate_of -> основная запись (предпочтительно из таблицы).
@@ -1579,6 +1619,8 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
                 except Exception as e:  # noqa: BLE001
                     fig_box["error"] = fig_box["error"] or f"{type(e).__name__}: {e}"[:300]
                     print(f"[!] графики (строки): {fig_box['error']}", flush=True)
+            # [faktura-patch] swept settings on figures -> own configurations (after duplicate linking with tables)
+            rag_meta["sweep_configs_added"] = rag_sweep_configs(rows, state["configurations"])
             # перенумерация R001.. + ссылки; id вне извлечённых таблиц -> null
             rag_renumber(rows)
             ids = {t: {r.get(RAG_KEYS[t]) for r in state[t]} for t in ("experiments", "configurations", "datasets", "tasks")}
