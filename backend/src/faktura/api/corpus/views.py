@@ -12,6 +12,7 @@ from typing import Any
 from ...domain.entities import CorpusFile, CorpusFileStatus, CurrentUser, PaperStatus, Run, RunStatus
 from ...domain.errors import AppError
 from ...domain.registry import DOMAINS, get_domain
+from ...pipeline import progress as P
 from ..base.serializers import iso
 
 DOMAIN = "solar"
@@ -22,7 +23,8 @@ _LABELS = {"queued": "в очереди", "running": "разбор", "done": "г
            "error": "ошибка", "ocr": "скан, распознано OCR"}
 RAG_TOP_METRICS = 20  # coverage сводки rag: топ метрик по числу статей
 _IN_PROGRESS = (RunStatus.queued, RunStatus.running, RunStatus.cancelling)
-SHORT_FILE_KEYS = ("id", "name", "status", "has_data", "results", "issues", "reason")
+SHORT_FILE_KEYS = ("id", "name", "status", "has_data", "results", "issues", "reason", "stage", "progress",
+                   "eta_seconds", "pages", "started_at")
 
 
 # --- идентификаторы ----------------------------------------------------------------------------
@@ -96,7 +98,8 @@ class RunData:
         return {
             "id": self.file_ids[f.id], "name": f.source or f.name, "status": status, "status_label": label,
             "stage": (f.stage or "Извлечение") if status == "running" else None,
-            "progress": _progress(f, status),
+            "progress": _progress(f, status), "eta_seconds": None, "pages": f.page_count,
+            "started_at": iso(f.started_at),
             "has_data": results > 0, "results": results, "issues": issues, "reason": reason or None,
             "size": f.size_bytes, "sha256": f.sha256,
         }
@@ -173,16 +176,61 @@ def file_status(f: CorpusFile, paper, results: int, pub: tuple[str, str] | None)
     return ("done", "") if results > 0 else ("nodata", "")
 
 
-def run_view(uow, corpus, *, files: str = "full") -> dict[str, Any]:
-    """files: full | short | none."""
+def apply_progress(uow, d: RunData, views: list[dict], status: str, cap: int | None = None) -> dict[str, Any]:
+    """Проставляет `progress`/`eta_seconds` файлам и возвращает `progress`/`eta_seconds`/`started_at` прогона.
+
+    Конечные статусы: прогресс 100, ETA null. Подробности расчёта - `pipeline/progress.py`."""
+    run = d.run
+    key = run_id_of(d.corpus.id)
+    firsts = [f.started_at for f in d.files if f.started_at]
+    started = (run.started_at if run is not None and run.started_at else None) or (min(firsts) if firsts else None)
+    final_run = status not in ("queued", "running")
+    now = P.utcnow()
+    states: list[P.FileState] = []
+    by_key: dict[str, dict] = {}
+    for f, v in zip(d.files, views):
+        st = "queued" if v["status"] == "queued" else "running" if v["status"] == "running" else "final"
+        since = f.stage_started_at or f.started_at
+        states.append(P.FileState(key=f.id, status="final" if final_run else st, pages=f.page_count,
+                                  stage=f.stage, elapsed=P.elapsed_since(since, now)))
+        by_key[f.id] = v
+    if final_run:
+        est = P.estimate(states, P.speeds_for(corpus_domain(d), None), 1)
+    else:
+        workers = run.concurrency if run is not None else 1
+        est = P.estimate(states, P.speeds_for(corpus_domain(d), uow.speeds.averages(corpus_domain(d))),
+                         min(workers, cap) if cap else workers)
+    final_keys = {s.key for s in states if s.status == "final"}
+    for k, v in by_key.items():
+        fin = k in final_keys
+        sm = P.SMOOTHER
+        v["progress"] = sm.progress(k, est.progress[k], final=fin)
+        v["eta_seconds"] = None if fin else sm.eta(k, est.eta[k])
+        if fin:
+            sm.forget(k)
+    if final_run:
+        P.SMOOTHER.forget(key)
+        return {"progress": 100 if views else 0, "eta_seconds": None, "started_at": iso(started)}
+    return {"progress": P.SMOOTHER.progress(key, est.run_progress), "eta_seconds": P.SMOOTHER.eta(key, est.run_eta),
+            "started_at": iso(started)}
+
+
+def corpus_domain(d: RunData) -> str:
+    return d.corpus.collection
+
+
+def run_view(uow, corpus, *, files: str = "full", cap: int | None = None) -> dict[str, Any]:
+    """files: full | short | none. cap - предел параллелизма (вызовов ML) для ETA."""
     d = RunData(uow, corpus)
     views = [d.file_view(f) for f in d.files]
     n = len(views)
+    run_status = d.status(views)
+    prog = apply_progress(uow, d, views, run_status, cap)
     out: dict[str, Any] = {
         "id": run_id_of(corpus.id),
         "title": corpus.name or default_title(n, corpus.created_at or datetime.now()),
         "domain": corpus.collection,
-        "status": d.status(views),
+        "status": run_status, **prog,
         "created_at": iso(corpus.created_at),
         "updated_at": iso(d.updated_at()),
         "counts": d.counts(views),

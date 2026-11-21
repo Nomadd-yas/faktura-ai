@@ -247,6 +247,36 @@ class CorporaRepo(_Repo):
         return len(ids)
 
 
+# --- скорость этапов -----------------------------------------------------------------------------
+
+SPEED_WINDOW = 50  # скользящее среднее по последним N файлам
+SPEED_KEEP = 200  # столько последних замеров хранится на (область, этап)
+
+
+class StageSpeedsRepo(_Repo):
+    def add(self, domain: str, stage: str, spp: float) -> None:
+        if not (spp > 0) or spp != spp or spp == float("inf"):
+            return
+        t = S.stage_speeds
+        self.c.execute(t.insert().values(domain=domain, stage=stage, spp=float(spp), created_at=self.now()))
+        old = self.c.execute(sa.select(t.c.seq).where(t.c.domain == domain, t.c.stage == stage)
+                             .order_by(t.c.seq.desc()).offset(SPEED_KEEP).limit(1)).first()
+        if old is not None:
+            self.c.execute(t.delete().where(t.c.domain == domain, t.c.stage == stage, t.c.seq <= old.seq))
+
+    def averages(self, domain: str) -> dict[str, float]:
+        """{этап: среднее секунд на страницу по последним SPEED_WINDOW замерам}; этапов без данных нет."""
+        t = S.stage_speeds
+        out: dict[str, float] = {}
+        for stage in [r.stage for r in self.c.execute(sa.select(t.c.stage).where(t.c.domain == domain).distinct())]:
+            vals = [float(r.spp) for r in self.c.execute(
+                sa.select(t.c.spp).where(t.c.domain == domain, t.c.stage == stage)
+                .order_by(t.c.seq.desc()).limit(SPEED_WINDOW))]
+            if vals:
+                out[stage] = sum(vals) / len(vals)
+        return out
+
+
 # --- файлы корпуса -----------------------------------------------------------------------------
 
 _FILE_CREATE = set(CorpusFile.model_fields) - {"id", "created_at"}
@@ -258,7 +288,8 @@ def _file(r) -> CorpusFile:
                       size_bytes=r.size_bytes, page_count=r.page_count, status=r.status, error_code=r.error_code,
                       error_message=r.error_message, paper_id=r.paper_id, duplicate_of=r.duplicate_of,
                       dup_kind=r.dup_kind, storage_key=r.storage_key, source=r.source, stage=r.stage,
-                      progress=r.progress, is_scan=r.is_scan, created_at=r.created_at)
+                      progress=r.progress, is_scan=r.is_scan, created_at=r.created_at,
+                      started_at=r.started_at, stage_started_at=r.stage_started_at)
 
 
 class FilesRepo(_Repo):

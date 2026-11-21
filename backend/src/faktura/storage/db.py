@@ -30,7 +30,7 @@ from . import schema as S
 from ._types import DEFAULT_WORKSPACE_ID, DEFAULT_WORKSPACE_NAME
 from .repos import (ActionsRepo, AnchorsRepo, CorporaRepo, ExportsRepo, FactsRepo, FilesRepo, GoldRepo,
                     IdempotencyRepo, IssuesRepo, LoginAttemptsRepo, PapersRepo, ProfilesRepo, RunsRepo, SessionsRepo,
-                    StatsRepo, SynonymsRepo, UsersRepo, WorkspacesRepo)
+                    StageSpeedsRepo, StatsRepo, SynonymsRepo, UsersRepo, WorkspacesRepo)
 from .sub_rows import SubRowsRepo, _num as _sub_num, _page as _sub_page
 
 log = logging.getLogger(__name__)
@@ -77,6 +77,7 @@ class UnitOfWork:
     login_attempts: LoginAttemptsRepo
     synonyms: SynonymsRepo
     sub: SubRowsRepo
+    speeds: StageSpeedsRepo
 
     def __init__(self, db: "Database") -> None:
         self.db = db
@@ -102,6 +103,7 @@ class UnitOfWork:
         self.login_attempts = LoginAttemptsRepo(self)
         self.synonyms = SynonymsRepo(self)
         self.sub = SubRowsRepo(self)
+        self.speeds = StageSpeedsRepo(self)
 
     # --- жизненный цикл -------------------------------------------------------------------------
 

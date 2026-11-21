@@ -122,14 +122,28 @@ corpus_files = sa.Table(
     sa.Column("progress", sa.Integer, nullable=True),
     sa.Column("is_scan", sa.Boolean, nullable=True),
     sa.Column("created_at", UTCDateTime, nullable=False),
+    sa.Column("started_at", UTCDateTime, nullable=True),  # начало разбора файла (первый запуск этапа)
+    sa.Column("stage_started_at", UTCDateTime, nullable=True),  # начало текущего этапа
     sa.Index("ix_files_corpus", "corpus_id", "seq"),
     sa.Index("ix_files_sha", "sha256"),
 )
 
 # колонки, добавленные позже первого развёртывания: Database.create_all добавляет их в существующие БД
 LATE_COLUMNS: dict[sa.Table, tuple[sa.Column, ...]] = {
-    corpus_files: (corpus_files.c.stage, corpus_files.c.progress, corpus_files.c.is_scan),
+    corpus_files: (corpus_files.c.stage, corpus_files.c.progress, corpus_files.c.is_scan,
+                   corpus_files.c.started_at, corpus_files.c.stage_started_at),
 }
+
+# скорость этапов (секунд на страницу) по завершённым файлам: скользящее среднее для оценки хода и ETA
+stage_speeds = sa.Table(
+    "stage_speeds", metadata,
+    _seq(),
+    sa.Column("domain", sa.String(32), nullable=False),
+    sa.Column("stage", sa.String(32), nullable=False),
+    sa.Column("spp", sa.Float, nullable=False),
+    sa.Column("created_at", UTCDateTime, nullable=False),
+    sa.Index("ix_stage_speeds_ds", "domain", "stage", "seq"),
+)
 
 runs = sa.Table(
     "runs", metadata,

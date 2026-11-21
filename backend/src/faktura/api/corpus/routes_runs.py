@@ -158,10 +158,16 @@ def create_run(request: Request, file: list[UploadFile] | None = File(default=No
     finally:
         shutil.rmtree(work, ignore_errors=True)
     with services.db.uow() as uow:
-        body = run_view(uow, uow.corpora.get(corpus.id))
+        body = run_view(uow, uow.corpora.get(corpus.id), cap=_cap(services))
     body["rejected"] = rejected
     return JSONResponse(body, status_code=202, media_type=JSON_MEDIA_TYPE,
                         headers={"Location": f"/api/v1/runs/{run_id_of(corpus.id)}"})
+
+
+def _cap(services: Services) -> int | None:
+    """Предел параллелизма разбора для ETA: одновременных вызовов ML (мок не ограничен)."""
+    st = services.settings
+    return None if st.extractor == "mock" else max(1, int(st.extract_concurrency))
 
 
 def _intake_code(r) -> str:
@@ -191,7 +197,7 @@ def list_runs(limit: int = Query(20, ge=1, le=200), cursor: str | None = None, f
     with services.db.uow() as uow:
         corpora = user_corpora(uow, user)
         page = corpora[offset:offset + limit]
-        data = [run_view(uow, c, files="short" if files else "none") for c in page]
+        data = [run_view(uow, c, files="short" if files else "none", cap=_cap(services)) for c in page]
     nxt = encode_cursor(["runs", offset + limit]) if offset + limit < len(corpora) else None
     return {"data": data, "total": len(corpora), "next_cursor": nxt}
 
@@ -199,7 +205,7 @@ def list_runs(limit: int = Query(20, ge=1, le=200), cursor: str | None = None, f
 @router.get("/runs/{run_id}", summary="Разбор целиком")
 def get_run(run_id: str, user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
     with services.db.uow() as uow:
-        return run_view(uow, get_corpus(uow, user, run_id))
+        return run_view(uow, get_corpus(uow, user, run_id), cap=_cap(services))
 
 
 @router.get("/runs/{run_id}/summary", summary="Сводка разбора")

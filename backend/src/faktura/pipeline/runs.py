@@ -32,6 +32,7 @@ from ..domain.ports import CancelToken
 from ..domain.profile import BUILTIN_SOLAR_ID, ExtractionProfile, builtin_solar_profile
 from ..domain.services import Services
 from .processor import PaperProcessor, refresh_semantic_duplicate
+from .progress import EXTRACT, NORMALIZE, VALIDATE
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ class _Ctx:
         self.run_id = run.id
         self.corpus_id = run.corpus_id
         self.workspace_id = corpus.workspace_id
+        self.domain = corpus.collection
         self.kind = run.kind
         self.keep_review = run.keep_review
         self.profile = profile
@@ -286,7 +288,8 @@ class RunService:
                 if f.status != CorpusFileStatus.queued and not (k in NO_ML_KINDS):
                     if f.status == CorpusFileStatus.failed and not f.storage_key:
                         continue  # отклонён при приёме: останется failed
-                    uow.files.update_status(f.id, CorpusFileStatus.queued, stage=None, progress=0)
+                    uow.files.update_status(f.id, CorpusFileStatus.queued, stage=None, progress=0,
+                                           started_at=None, stage_started_at=None)
             ids = [f.id for f in files]
             counts = RunCounts(total=len(ids), queued=len(ids))
             return uow.runs.create(corpus_id=corpus_id, kind=k, status=RunStatus.queued, profile_id=profile_id,
@@ -517,15 +520,18 @@ class RunService:
             self._file_done(ctx, f, None, "failed", code, f.error_message)
             return
         with db.uow() as uow:
+            now = uow.now()
             uow.files.update_status(file_id, CorpusFileStatus.processing, error_code=None, error_message=None,
-                                    stage="Извлечение", progress=10)
+                                    stage=EXTRACT, progress=10, started_at=now, stage_started_at=now)
         abort = threading.Event()
+        marks: dict[str, float] = {EXTRACT: time.monotonic()}  # начало этапов (для замера скорости)
 
         def on_stage(name: str, progress: int) -> None:
             if abort.is_set():
                 return
+            marks[name] = time.monotonic()
             with db.uow() as uow2:
-                uow2.files.update(file_id, stage=name, progress=progress)
+                uow2.files.update(file_id, stage=name, progress=progress, stage_started_at=uow2.now())
 
         timeout = float(self.services.settings.file_timeout_s or 0)
         spent = 0.0
@@ -569,6 +575,10 @@ class RunService:
                 if e.code == "ml_unavailable" and gate is not None and attempts < MAX_FILE_RETRIES \
                         and gate.on_unavailable(seen):
                     attempts += 1
+                    marks.clear()
+                    marks[EXTRACT] = time.monotonic()
+                    with db.uow() as uow:
+                        uow.files.update(file_id, stage=EXTRACT, stage_started_at=uow.now())
                     continue
                 break
             except AppError as e:
@@ -580,6 +590,8 @@ class RunService:
                 code, message = "internal_error", INTERNAL_REASON
                 break
         if outcome is not None and outcome.status == PaperStatus.done:
+            if mode == "full" and not outcome.from_cache:
+                self._record_speeds(ctx, f.page_count, marks)
             with db.uow() as uow:
                 f = uow.files.update_status(file_id, CorpusFileStatus.done, error_code=None, error_message=None,
                                             stage=None, progress=100)
@@ -604,6 +616,22 @@ class RunService:
         self._file_done(ctx, f, outcome, "failed", code, message)
         if ctx.fail_fast:
             ctx.stop = True
+
+    def _record_speeds(self, ctx: _Ctx, pages: int | None, marks: dict[str, float]) -> None:
+        """Скорость этапов (с/стр) завершённого файла - в скользящее среднее для хода и ETA."""
+        if not pages or EXTRACT not in marks or NORMALIZE not in marks:
+            return
+        end = time.monotonic()
+        spans = {EXTRACT: marks[NORMALIZE] - marks[EXTRACT]}
+        if VALIDATE in marks:  # без проверки (вне темы) время нормализации не отделить от хвоста
+            spans[NORMALIZE] = marks[VALIDATE] - marks[NORMALIZE]
+            spans[VALIDATE] = end - marks[VALIDATE]
+        try:
+            with self.services.db.uow() as uow:
+                for stage, sec in spans.items():
+                    uow.speeds.add(ctx.domain, stage, sec / pages)
+        except Exception:  # noqa: BLE001 - статистика не роняет разбор
+            log.debug("stage_speeds", exc_info=True)
 
     @staticmethod
     def _call_with_deadline(fn: Callable[[], Any], timeout_s: float) -> tuple[bool, Any]:
@@ -757,7 +785,8 @@ class RunService:
                 if r.status == RunStatus.running:
                     for f in uow.files.list(r.corpus_id, ids=r.file_ids or []):
                         if f.status == CorpusFileStatus.processing:
-                            uow.files.update_status(f.id, CorpusFileStatus.queued, stage=None, progress=0)
+                            uow.files.update_status(f.id, CorpusFileStatus.queued, stage=None, progress=0,
+                                           started_at=None, stage_started_at=None)
                     uow.runs.update(r.id, status=RunStatus.queued, paused=False)
                 ids.append(r.id)
         for rid in ids:

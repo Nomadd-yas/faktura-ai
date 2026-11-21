@@ -17,13 +17,14 @@ def test_running_file_returns_persisted_stage_and_progress(client, auth, service
     cid, run = _corpus_and_run(services, body["id"])
     with services.db.uow() as uow:
         f1, f2 = uow.files.list(cid)[:2]
-        uow.files.update_status(f1.id, CorpusFileStatus.processing, stage="Проверка", progress=85)
+        uow.files.update_status(f1.id, CorpusFileStatus.processing, stage="Проверка", progress=85,
+                                stage_started_at=uow.now())
         uow.files.update_status(f2.id, CorpusFileStatus.queued, stage=None, progress=0)
         uow.runs.update(run.id, status=RunStatus.running)
     r = client.get(f"{API}/runs/{body['id']}", headers=auth).json()
     by = {f["name"]: f for f in r["files"]}
     running = [f for f in r["files"] if f["status"] == "running"][0]
-    assert running["stage"] == "Проверка" and running["progress"] == 85
+    assert running["stage"] == "Проверка" and 85 <= running["progress"] < 100  # ход считается по времени этапа
     queued = [f for f in r["files"] if f["status"] == "queued"][0]
     assert queued["stage"] is None and queued["progress"] == 0
     assert r["status"] == "running" and len(by) == 2

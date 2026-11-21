@@ -137,6 +137,8 @@ class CorpusFile(BaseModel):
     progress: int | None = None  # 0..100
     is_scan: bool | None = None  # у PDF нет текстового слоя (определяется при приёме для rag)
     created_at: datetime | None = None
+    started_at: datetime | None = None  # начало разбора файла
+    stage_started_at: datetime | None = None  # начало текущего этапа
 
 
 class RunCounts(BaseModel):

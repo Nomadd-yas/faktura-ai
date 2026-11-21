@@ -95,7 +95,8 @@ def test_title_default_and_list(client, auth, pdfs):
     b = upload(client, auth, [pdfs["D001"]]).json()
     lst = client.get(f"{API}/runs", headers=auth).json()
     assert [x["id"] for x in lst["data"]] == [b["id"], a["id"]] and lst["next_cursor"] is None
-    assert set(lst["data"][0]["files"][0]) == {"id", "name", "status", "has_data", "results", "issues", "reason"}
+    assert set(lst["data"][0]["files"][0]) == {"id", "name", "status", "has_data", "results", "issues", "reason", "stage", "progress",
+                                                "eta_seconds", "pages", "started_at"}
     nofiles = client.get(f"{API}/runs", params={"files": "false"}, headers=auth).json()
     assert "files" not in nofiles["data"][0]
     p1 = client.get(f"{API}/runs", params={"limit": 1}, headers=auth).json()
