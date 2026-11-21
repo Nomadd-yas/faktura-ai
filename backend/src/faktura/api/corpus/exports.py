@@ -90,7 +90,41 @@ def collect_tables(uow, corpora: list, partial: bool = False) -> Collected:
             for t, rows in export_paper_tables(uow, corpus.id, spec.name, paper.id).items():
                 col.tables[t].extend(rows)
     canon_results(col.tables.get("results") or [])
+    safe_publication_ids(col)
     return col
+
+
+SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")  # как в check_submission.py
+
+
+def safe_id(pid: str) -> str:
+    """«D019 (2)» -> «D019_2»: publication_id = имя файла, но только из [A-Za-z0-9_-] и не с «_»/«-»."""
+    if SAFE_ID.fullmatch(pid or ""):
+        return pid
+    t = re.sub(r"[^A-Za-z0-9_-]+", "_", pid or "").strip("_-")
+    return t or "paper"
+
+
+def safe_publication_ids(col: Collected) -> None:
+    """Небезопасные publication_id (повторная загрузка «D019 (2).pdf») заменяются одинаково во всех таблицах и в
+    списке PDF для проверки; занятое имя получает суффикс _2, _3…"""
+    used = {str(r.get("publication_id") or "") for r in col.tables.get("publications") or []}
+    remap: dict[str, str] = {}
+    for pid in sorted(used):
+        if SAFE_ID.fullmatch(pid):
+            continue
+        base = new = safe_id(pid)
+        i = 2
+        while new in used or new in remap.values():
+            new, i = f"{base}_{i}", i + 1
+        remap[pid] = new
+    if not remap:
+        return
+    for rows in col.tables.values():
+        for r in rows:
+            if r.get("publication_id") in remap:
+                r["publication_id"] = remap[r["publication_id"]]
+    col.pdf_keys = [(remap.get(pid, pid), key) for pid, key in col.pdf_keys]
 
 
 def canon_results(rows: list[dict]) -> list[dict]:
@@ -99,6 +133,14 @@ def canon_results(rows: list[dict]) -> list[dict]:
     «metric_value differs from normalized_value»). Исходная запись из статьи остаётся только в raw_value/raw_unit;
     если raw пуст, туда уходит прежнее metric_* до замены. Нет normalized_unit - единица статьи считается целевой."""
     for r in rows:
+        # primary = получено в этой работе: ссылка у такой строки - на метод (бейзлайн «CLIP (Radford et al., 2021)»),
+        # а не на источник числа; cited_publication_id бывает только у cited (check_submission RAG)
+        if r.get("result_origin") == "primary" and str(r.get("cited_publication_id") or "").strip():
+            ref = str(r["cited_publication_id"]).strip()
+            note = str(r.get("note") or "").strip()
+            if ref not in note:
+                r["note"] = f"{note}; метод: {ref}".strip("; ") if note else f"метод: {ref}"
+            r["cited_publication_id"] = ""
         nv = str(r.get("normalized_value") or "").strip()
         if not nv:
             continue
