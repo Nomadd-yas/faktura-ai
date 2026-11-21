@@ -25,7 +25,7 @@ CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 CORS_ALLOW_HEADERS = ("Authorization", "Content-Type", "X-Request-Id", "Last-Event-ID", "Idempotency-Key", "Range",
                       "If-None-Match", "If-Range")
 CORS_EXPOSE_HEADERS = ("X-Action-Id", "X-Request-Id", "Content-Disposition", "X-Check-Status", "X-Faktura-Stub",
-                       "Retry-After", "ETag", "Content-Range", "Accept-Ranges", "X-Export-Tables",
+                       "Retry-After", "ETag", "Content-Range", "Accept-Ranges", "Content-Length", "X-Export-Tables",
                        "X-Export-Results", "X-Export-Papers", "X-Export-Filename", "X-Export-Rejected")
 CORS_MAX_AGE = 600
 
