@@ -45,6 +45,7 @@ def _cells(rows, table, drop=()):
                          else tuple(parse_cell(table, c, r.get(c, ""))) for c in cols) for r in rows)
 
 
+@pytest.mark.slow
 def test_check_submission_zero_errors(pipeline_out, check_script, dev_dir):
     out, _, _ = pipeline_out
     rep = run_check_script(check_script, out, dev_dir)

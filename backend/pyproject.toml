@@ -44,10 +44,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = ["--import-mode=importlib", "-m", "not perf"]
+addopts = ["--import-mode=importlib", "-m", "not perf and not slow"]
 markers = [
   "data: нужны данные кейса (data/caseB_kejs5)",
-  "slow: дольше 10 с",
+  "slow: дольше 10 с (полный прогон dev, check_submission.py); по умолчанию исключён, запуск -m \"slow or not slow\" или -m slow",
   "perf: замер времени; по умолчанию исключён, запуск -m perf (допуск x3 к порогу спеки)",
   "pg: нужен FAKTURA_TEST_PG_URL",
   "s3: нужен FAKTURA_TEST_S3_URL",

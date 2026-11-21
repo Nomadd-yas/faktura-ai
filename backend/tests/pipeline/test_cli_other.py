@@ -136,9 +136,13 @@ def test_users_create_duplicate_email_exit_1(run_cli, db_url):
     assert run_cli("users", "create", "ann@example.com", "--password", "long-enough-2", "--db", db_url).exit_code == 1
 
 
-def test_users_create_generates_password_when_omitted(run_cli, db_url):
-    r = run_cli("users", "create", "gen@example.com", "--db", db_url)
+def test_users_create_generates_password_with_flag(run_cli, db_url):
+    r = run_cli("users", "create", "gen@example.com", "--generate", "--db", db_url)
     assert r.exit_code == 0 and len(r.output.strip()) >= 8
+
+
+def test_users_create_requires_password_or_generate(run_cli, db_url):
+    assert run_cli("users", "create", "nopw@example.com", "--db", db_url).exit_code == 1
 
 
 def test_users_admin_flag_listed(run_cli, db_url):

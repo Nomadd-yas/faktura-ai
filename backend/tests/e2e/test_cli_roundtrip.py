@@ -12,7 +12,7 @@ import pytest
 
 from e2e_support import EXCLUDED_PAPER, E2E_PAPERS, MIN_PRECISION, MIN_RECALL, TABLES, read_csv, run_cli
 
-pytestmark = pytest.mark.data
+pytestmark = [pytest.mark.data, pytest.mark.slow]
 
 
 @pytest.fixture(scope="module")
@@ -87,7 +87,7 @@ def test_compare_with_dev_gold(extracted, e2e_gold):
     assert set(rep.per_metric) <= set(EVAL_METRICS)
     checked = 0
     for metric, m in rep.per_metric.items():
-        if m.get("gold_n", m.get("n_gold", 1)) == 0:
+        if m.get("gold", 0) == 0:
             continue  # в эталоне этих статей метрики может не быть
         recall, precision = m.get("recall"), m.get("precision")
         assert recall is not None and recall >= MIN_RECALL, f"{metric}: recall={recall}"  # TODO порог

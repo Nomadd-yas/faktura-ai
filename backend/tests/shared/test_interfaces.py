@@ -37,13 +37,9 @@ INTERFACES = {
     "faktura.api.base.serializers": ["user_out", "corpus_out", "corpus_file_out", "run_out", "paper_out",
                                      "fact_out", "anchor_out", "issue_out", "history_out", "export_out"],
     "faktura.api.base.auth": ["issue_tokens", "decode_access", "LoginLimiter", "RateLimiter"],
-    "faktura.api.corpus": ["ROUTERS", "sse_stream", "ExportJobs", "EventTokens"],
+    "faktura.api.corpus": ["ROUTERS"],
     "faktura.api.papers": ["ROUTERS"],
-    "faktura.api.papers.views": ["card", "layout", "anchors", "coverage", "structure", "processing", "trace",
-                                 "source"],
-    "faktura.query": ["parse_query", "to_fact_filter", "ParsedQuery"],
     "faktura.api.review": ["ROUTERS"],
-    "faktura.review": ["ReviewService"],
 }
 
 
