@@ -44,6 +44,10 @@ OUTPUT_KEY = "runs/{run_id}/output.zip"
 # прогоны, взятые в работу этим процессом (submit/resume): повторный submit и resume_active не дублируют выполнение
 _INFLIGHT: set[str] = set()
 _INFLIGHT_LOCK = threading.Lock()
+STOP_CODE = "stopped"
+STOP_REASON = "остановлено"
+# флаги отмены выполняющихся файлов (file_id -> abort): `stop` взводит их, и результат файла отбрасывается
+_ABORTS: dict[str, threading.Event] = {}
 
 
 def _timeout_text(timeout_s: float) -> str:
@@ -387,6 +391,41 @@ class RunService:
                                                             "counts": run.counts.model_dump(), "output": None})
         return run
 
+    def stop(self, run_id: str) -> Run:
+        """Остановка по просьбе пользователя: незаконченные файлы -> failed/«остановлено», прогон -> cancelled.
+        Выполняющиеся файлы получают флаг abort: их результат отбрасывается, новые файлы не берутся.
+        Завершённый прогон возвращается как есть."""
+        with self.services.db.uow() as uow:
+            run = uow.runs.get(run_id)
+            if run is None:
+                raise AppError("not_found", f"Прогон {run_id} не найден")
+            if run.status in FINAL:
+                return run
+            corpus = uow.corpora.get(run.corpus_id)
+            stopped: list[str] = []
+            for f in uow.files.list(run.corpus_id, ids=run.file_ids or []):
+                if f.status in (CorpusFileStatus.pending, CorpusFileStatus.queued, CorpusFileStatus.downloading,
+                                CorpusFileStatus.processing):
+                    uow.files.update_status(f.id, CorpusFileStatus.failed, error_code=STOP_CODE,
+                                            error_message=STOP_REASON, stage=None, progress=100)
+                    stopped.append(f.id)
+                    if f.paper_id:
+                        p = uow.papers.get(f.paper_id)
+                        if p is not None and p.status == PaperStatus.processing:
+                            uow.papers.update(f.paper_id, status=PaperStatus.queued)
+            files = uow.files.list(run.corpus_id, ids=run.file_ids or [])
+            run = uow.runs.update(run_id, status=RunStatus.cancelled, counts=_counts(files), paused=False,
+                                  pause_reason=None, finished_at=uow.now())
+        for fid in stopped:
+            ev = _ABORTS.pop(fid, None)
+            if ev is not None:
+                ev.set()
+        if corpus is not None:
+            self._publish(corpus.workspace_id, "run.done", {"run_id": run.id, "corpus_id": run.corpus_id,
+                                                            "status": run.status.value,
+                                                            "counts": run.counts.model_dump(), "output": None})
+        return run
+
     @staticmethod
     def _cancel_rest(uow, run: Run, skip: set[str] | None = None) -> None:
         for f in uow.files.list(run.corpus_id, ids=run.file_ids or []):
@@ -497,7 +536,7 @@ class RunService:
             return True
         with self.services.db.uow() as uow:
             r = uow.runs.get(ctx.run_id)
-            if r is not None and r.status == RunStatus.cancelling:
+            if r is not None and r.status in (RunStatus.cancelling, RunStatus.cancelled):
                 ctx.stop = ctx.cancelled = True
                 return True
         return False
@@ -519,11 +558,15 @@ class RunService:
                                             error_message=f.error_message)
             self._file_done(ctx, f, None, "failed", code, f.error_message)
             return
+        abort = threading.Event()
         with db.uow() as uow:
+            cur = uow.files.get(file_id)
+            if cur is None or (cur.status == CorpusFileStatus.failed and cur.error_code == STOP_CODE):
+                return  # остановлен пользователем (POST /runs/{id}/stop)
             now = uow.now()
             uow.files.update_status(file_id, CorpusFileStatus.processing, error_code=None, error_message=None,
                                     stage=EXTRACT, progress=10, started_at=now, stage_started_at=now)
-        abort = threading.Event()
+            _ABORTS[file_id] = abort
         marks: dict[str, float] = {EXTRACT: time.monotonic()}  # начало этапов (для замера скорости)
 
         def on_stage(name: str, progress: int) -> None:
@@ -589,6 +632,14 @@ class RunService:
                               ctx.run_id, type(e).__name__, e)
                 code, message = "internal_error", INTERNAL_REASON
                 break
+        if _ABORTS.get(file_id) is abort:
+            del _ABORTS[file_id]
+        if abort.is_set() and code != "file_timeout":
+            return  # файл остановлен пользователем, пока шёл разбор: результат отбрасывается
+        with db.uow() as uow:
+            cur = uow.files.get(file_id)
+        if cur is not None and cur.status == CorpusFileStatus.failed and cur.error_code == STOP_CODE:
+            return
         if outcome is not None and outcome.status == PaperStatus.done:
             if mode == "full" and not outcome.from_cache:
                 self._record_speeds(ctx, f.page_count, marks)
@@ -719,8 +770,9 @@ class RunService:
     def _finish(self, ctx: _Ctx) -> Run:
         with self.services.db.uow() as uow:
             run = uow.runs.get(ctx.run_id)
-            cancelled = ctx.cancelled or run.status == RunStatus.cancelling
-            if ctx.stop:
+            stopped_early = run.status == RunStatus.cancelled  # остановлен через `stop`: файлы уже размечены
+            cancelled = ctx.cancelled or run.status in (RunStatus.cancelling, RunStatus.cancelled)
+            if ctx.stop and not stopped_early:
                 self._cancel_rest(uow, run)
             files = uow.files.list(run.corpus_id, ids=run.file_ids or [])
             counts = _counts(files)

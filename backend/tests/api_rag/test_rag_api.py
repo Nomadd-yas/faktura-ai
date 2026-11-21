@@ -121,10 +121,9 @@ def test_submission_zip_and_check(client, auth, rag_run, gold):
         assert list(rows[0].keys()) == list(cols)
         assert len(rows) == sum(len(gold[t].get(p, [])) for p in SMALL), t
     passport = json.loads(zf.read("passport.json"))
-    assert passport["collection"] == "rag" and len(passport["tables"]) == 7
-    assert "results.result_origin" in passport["vocabularies"]["closed"]
-    assert "не пересчитываются" in passport["normalization"] and passport["versions"]["model"]
-    assert "Нормализация" in zf.read("PASSPORT.md").decode("utf-8")
+    assert [d["id"] for d in passport["domains"]] == ["rag"] and len(passport["domains"][0]["entities"]) == 7
+    assert passport["versions"]["model"] and passport["domains"][0]["normalization"]
+    assert "### Нормализация" in zf.read("PASSPORT.md").decode("utf-8")
 
     c = client.get(f"{API}/runs/{rid}/submission.zip", params={"check": "true"}, headers=auth)
     assert c.status_code == 200, c.text[:500]
@@ -199,3 +198,26 @@ def test_scan_gets_ocr_status(client, auth, tmp_path, gold):
     assert all(x["meta"]["quote_found"] is None for x in res["data"])  # у скана цитаты не проверяются
     s = client.get(f"{API}/runs/{rid}/summary", headers=auth).json()
     assert s["papers_in_scope"] == 2
+
+
+def test_rag_out_paper_and_pdf(client, auth, rag_run, services):
+    """Статья rag вне области: PDF отдаётся, статья - 200 с paper_status out и in_scope=false (§7а.3)."""
+    import sqlalchemy as sa
+
+    from faktura.storage import schema as S
+
+    rid = rag_run["id"]
+    with services.db.uow() as uow:
+        for r in uow.conn.execute(sa.select(S.sub_rows).where(S.sub_rows.c.publication_id == "D004",
+                                                                S.sub_rows.c.table_name == "publications")).all():
+            uow.conn.execute(S.sub_rows.update().where(S.sub_rows.c.id == r.id).values(
+                data={**r.data, "in_scope": "false", "exclusion_reason": "Не относится к RAG"}))
+    files = {f["id"]: f for f in client.get(f"{API}/runs/{rid}", headers=auth).json()["files"]}
+    assert files["D004"]["status"] == "out"
+    r = client.get(f"{API}/papers/rag/D004", params={"run": rid}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["paper_status"] == "out" and r.json()["publication"]["in_scope"] == "false"
+    assert r.json()["publication"]["exclusion_reason"] and r.json()["issues"] == []
+    assert r.json()["metrics"] == [] and r.json()["counts"]["results"] == 0
+    p = client.get(f"{API}/papers/rag/D004/pdf", params={"run": rid}, headers=auth)
+    assert p.status_code == 200 and p.headers["content-type"].startswith("application/pdf")

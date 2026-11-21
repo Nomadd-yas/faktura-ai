@@ -115,6 +115,7 @@ class Corpus(BaseModel):
     created_by: str | None = None
     created_at: datetime | None = None
     deleted_at: datetime | None = None
+    pinned: bool = False
 
 
 class CorpusFile(BaseModel):

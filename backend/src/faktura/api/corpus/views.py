@@ -63,11 +63,14 @@ def get_corpus(uow, user: CurrentUser, run_id: str):
     return c
 
 
-def user_corpora(uow, user: CurrentUser) -> list:
-    """Разборы пользователя, новые сверху."""
+def user_corpora(uow, user: CurrentUser, *, pinned_first: bool = False) -> list:
+    """Разборы пользователя, новые сверху; `pinned_first` - закреплённые выше остальных (список GET /runs)."""
     items = [c for c in uow.corpora.list(user.workspace_id, kind=CORPUS_KIND)
              if c.created_by == user.id and c.collection in DOMAINS]
-    return sorted(items, key=lambda c: (c.created_at or datetime.min.replace(tzinfo=None), c.id), reverse=True)
+    items.sort(key=lambda c: (c.created_at or datetime.min.replace(tzinfo=None), c.id), reverse=True)
+    if pinned_first:
+        items.sort(key=lambda c: not c.pinned)  # устойчивая: порядок «новые сверху» внутри групп сохраняется
+    return items
 
 
 # --- данные разбора ----------------------------------------------------------------------------
@@ -102,6 +105,7 @@ class RunData:
             "started_at": iso(f.started_at),
             "has_data": results > 0, "results": results, "issues": issues, "reason": reason or None,
             "size": f.size_bytes, "sha256": f.sha256,
+            "suggested_domain": None,  # модель пока не говорит, из какой области статья «не по теме»
         }
 
     def counts(self, views: list[dict]) -> dict[str, int]:
@@ -230,6 +234,7 @@ def run_view(uow, corpus, *, files: str = "full", cap: int | None = None) -> dic
         "id": run_id_of(corpus.id),
         "title": corpus.name or default_title(n, corpus.created_at or datetime.now()),
         "domain": corpus.collection,
+        "pinned": bool(corpus.pinned),
         "status": run_status, **prog,
         "created_at": iso(corpus.created_at),
         "updated_at": iso(d.updated_at()),

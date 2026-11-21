@@ -4,6 +4,8 @@ from __future__ import annotations
 from .build import (METRIC_LABELS, PASSPORT_VERSION, SCHEMA_VERSION, build_passport, build_versions,
                     passport_markdown)
 from .rag import build_rag_passport, build_rag_versions
+from .run_passport import build_run_passport, passport_json_bytes, passport_md_bytes
 
 __all__ = ["build_passport", "build_versions", "passport_markdown", "build_rag_passport", "build_rag_versions",
-           "METRIC_LABELS", "PASSPORT_VERSION", "SCHEMA_VERSION"]
+           "METRIC_LABELS", "PASSPORT_VERSION", "SCHEMA_VERSION", "build_run_passport", "passport_json_bytes",
+           "passport_md_bytes"]

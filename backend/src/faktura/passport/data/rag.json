@@ -1,0 +1,961 @@
+{
+ "id": "rag",
+ "name": "RAG и поиск",
+ "entities": [
+  {
+   "id": "publications",
+   "title": "Публикации",
+   "row": "статья корпуса (в том числе исключённая)",
+   "key": "publication_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Название статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "year",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Год публикации",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "DOI",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "DOI, если известен из источника; иначе пусто",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "authors",
+     "type": "list",
+     "unit": null,
+     "required": false,
+     "description": "Авторы через «;»",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "in_scope",
+     "type": "bool",
+     "unit": null,
+     "required": true,
+     "description": "Относится ли статья к предметной области: система находит сведения во внешней коллекции документов и использует их при ответе",
+     "values": [
+      "true",
+      "false"
+     ],
+     "ref": null
+    },
+    {
+     "name": "exclusion_reason",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Почему исключена; обязательна при in_scope = false, при true пуста",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "configurations",
+   "title": "Конфигурации",
+   "row": "конфигурация RAG или сравниваемый baseline",
+   "key": "publication_id + config_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "config_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Идентификатор конфигурации внутри статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "rag_variant",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Название или вариант системы (baseline) из статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "retrieval_method",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Способ поиска в исходной формулировке: BM25, dense, hybrid",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "retriever_model",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Название поисковой модели",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "embedding_model",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Модель эмбеддингов",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "embedding_version",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Версия эмбеддингов, если указана отдельно",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "chunking_method",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Как текст режут на фрагменты",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "chunk_size",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Размер фрагмента, если указан числом",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "chunk_overlap",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Перекрытие фрагментов, если указано числом",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "chunk_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Единица размера фрагмента по источнику: tokens, characters и т. п.",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "index_type",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Тип индекса; не выводится из хранилища",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "vector_store",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Векторное хранилище; не выводится из типа индекса",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "top_k",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Сколько документов система достаёт из базы. Это настройка конфигурации, не k метрики",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "reranker_model",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Модель повторного ранжирования",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "generator_model",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Модель, которая пишет ответ",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "generator_version",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Версия генератора, если указана явно",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "prompt_strategy",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Стратегия промпта",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "context_strategy",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Как подаётся контекст",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "datasets",
+   "title": "Датасеты",
+   "row": "набор данных, его версия и разбиение",
+   "key": "publication_id + dataset_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "dataset_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Идентификатор датасета внутри статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "dataset_name",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Название датасета",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "dataset_version",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Версия датасета",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "language",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Язык",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "data_split",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Разбиение: train, dev, test и т. п.; разные разбиения не сливаются",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "scientific_domain",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Научная область датасета",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "tasks",
+   "title": "Задачи",
+   "row": "задача",
+   "key": "publication_id + task_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "task_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Идентификатор задачи внутри статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "task_type",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Тип задачи, например multi-hop question answering; закрытого словаря нет",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "experiments",
+   "title": "Эксперименты",
+   "row": "протокол и условия эксперимента",
+   "key": "publication_id + experiment_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "experiment_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Идентификатор эксперимента внутри статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "evaluation_protocol",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Протокол: условия оценки, способ расчёта, ограничения сравнения",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "baseline_name",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "С чем сравнивают (baseline), если статья называет его прямо",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "hardware",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Железо и число устройств по статье",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "latency_ms",
+     "type": "number",
+     "unit": "ms",
+     "required": false,
+     "description": "Задержка",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "tokens_per_query",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Токенов на запрос",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "sample_size",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Размер оценочной выборки, не всего датасета",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "results",
+   "title": "Результаты",
+   "row": "одно значение одной метрики в одном эксперименте",
+   "key": "publication_id + result_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "result_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Идентификатор записи внутри статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "experiment_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Эксперимент",
+     "values": null,
+     "ref": "experiments.experiment_id"
+    },
+    {
+     "name": "config_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Конфигурация",
+     "values": null,
+     "ref": "configurations.config_id"
+    },
+    {
+     "name": "dataset_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Датасет",
+     "values": null,
+     "ref": "datasets.dataset_id"
+    },
+    {
+     "name": "task_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Задача",
+     "values": null,
+     "ref": "tasks.task_id"
+    },
+    {
+     "name": "metric_group",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Группа метрик по смыслу источника (свободный текст)",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "metric_name",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Название метрики: Recall, MRR, nDCG, EM, F1",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "metric_variant",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Вариант метрики: token-level F1, macro, micro, judge-based",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "metric_direction",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Что лучше; неизвестное направление — пусто",
+     "values": [
+      "higher_is_better",
+      "lower_is_better",
+      "target"
+     ],
+     "ref": null
+    },
+    {
+     "name": "metric_k",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "k самой метрики (Recall@5, nDCG@10); это не top_k конфигурации",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "metric_value",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Нормализованное значение, если нормализация обоснована",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "metric_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Единица нормализованного значения",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "baseline_value",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Значение baseline, только если задача, датасет, метрика, шкала и протокол сопоставимы",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "aggregation",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Среднее, медиана и т. п. — только при явном указании",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "sample_size",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Размер выборки для этого результата, если отличается",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "raw_value",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Значение дословно, как в статье, со знаками и диапазонами",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "raw_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Единица дословно",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "normalized_value",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Нормализованное значение; согласовано с metric_value",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "normalized_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Нормализованная единица; согласована с metric_unit",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "result_origin",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "primary — число получено в этой работе; cited — перенесено из другой",
+     "values": [
+      "primary",
+      "cited"
+     ],
+     "ref": null
+    },
+    {
+     "name": "cited_publication_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Для cited: ссылка в статье, например [12]; это не ключ к таблице публикаций",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_page",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Номер страницы PDF, считая с 1; для извлечённого значения обязателен",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_section",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Раздел статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_table",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Таблица",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_figure",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Рисунок; способ чтения графика пояснять в note",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_fragment",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Дословная цитата со страницы source_page",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "extraction_status",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Удалось ли извлечь значение",
+     "values": [
+      "extracted",
+      "present_not_extractable",
+      "absent"
+     ],
+     "ref": null
+    },
+    {
+     "name": "duplicate_of",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "result_id основной записи, если значение повторено в другом месте",
+     "values": null,
+     "ref": "results.result_id"
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "issues",
+   "title": "Замечания",
+   "row": "замечание проверки",
+   "key": "publication_id + issue_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "issue_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Идентификатор замечания внутри статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "record_ids",
+     "type": "list",
+     "unit": null,
+     "required": false,
+     "description": "result_id связанных значений через «;»",
+     "values": null,
+     "ref": "results.result_id"
+    },
+    {
+     "name": "check_name",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Название правила (открытый список: metric_scale, metric_k, protocol_mismatch, normalization, contradiction)",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "description",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Что не согласуется, с числами и условиями",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_page",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Страница PDF, где проверялось",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_fragment",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Дословная цитата с места проверки",
+     "values": null,
+     "ref": null
+    }
+   ]
+  }
+ ],
+ "rules": [
+  {
+   "id": "metric_scale",
+   "title": "Допустимая шкала",
+   "description": "Значение метрики вне её шкалы: Recall, MRR, nDCG, EM, F1 — от 0 до 1",
+   "level": "error",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "metric_k_missing",
+   "title": "Нет k у метрики @k",
+   "description": "Для Recall@k, Precision@k и подобных не указан k",
+   "level": "warn",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "recall_k",
+   "title": "Recall по k",
+   "description": "Recall@k1 больше Recall@k2 при k1 < k2",
+   "level": "error",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "mrr",
+   "title": "MRR против Recall",
+   "description": "MRR больше Recall@10 той же конфигурации",
+   "level": "error",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "contradiction",
+   "title": "Противоречие",
+   "description": "Результат в тексте и в таблице расходится",
+   "level": "error",
+   "computed_by": "бэк + ML"
+  },
+  {
+   "id": "f1",
+   "title": "Неизвестное",
+   "description": "Фиксируются только параметры, приведённые в публикации; неизвестное не восстанавливается по догадке",
+   "level": "format",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "f2",
+   "title": "Сопоставление",
+   "description": "Результаты сравниваются при совпадении задачи, набора данных, определения метрики и протокола; разные эксперименты и варианты метрик не объединяются",
+   "level": "format",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "f3",
+   "title": "Сохранение исходного",
+   "description": "Сохраняются исходная и нормализованная запись; исходный результат при замечании не удаляется",
+   "level": "format",
+   "computed_by": "бэк"
+  }
+ ],
+ "guides": [
+  {
+   "id": "inclusion",
+   "title": "Критерии отбора статей",
+   "description": "Решение принимается по содержанию статьи, а не по слову RAG в названии.",
+   "items": [
+    "Система находит сведения во внешней коллекции документов и использует найденный контекст при ответе.",
+    "В публикации описаны конфигурация системы и результаты её оценки.",
+    "Если в названии есть слово RAG, а поиска по внешней коллекции или оценки в статье нет, статья не входит: in_scope = false, причина — в exclusion_reason.",
+    "И наоборот: статья без слова RAG в названии входит, если система устроена так, как описано выше."
+   ]
+  },
+  {
+   "id": "comparability",
+   "title": "Критерии сопоставимости",
+   "description": "Результаты сравнивают, только если совпадают все пункты. Разные эксперименты не объединяются.",
+   "items": [
+    "Совпадает задача (tasks).",
+    "Совпадает набор данных (datasets).",
+    "Совпадает определение метрики: вариант и параметр k (например, Recall@5 и Recall@10 — разные метрики).",
+    "Совпадает шкала: доли или проценты.",
+    "Совпадает протокол оценки.",
+    "Результаты разных экспериментов не объединяются и не усредняются; при расхождении сохраняются обе записи и создаётся замечание."
+   ]
+  },
+  {
+   "id": "extraction",
+   "title": "Правила извлечения",
+   "description": "Короткая выжимка из шаблона сдачи организаторов.",
+   "items": [
+    "Пустая ячейка означает, что в статье этого нет. Неизвестные значения не восстанавливаются по догадке.",
+    "source_page — целый номер страницы PDF, с 1, а не печатная нумерация журнала.",
+    "source_fragment — дословный фрагмент указанной страницы. Пересказ не подходит.",
+    "Повтор значения записывается отдельной строкой со своим result_id; в duplicate_of указывается основная запись. Циклы, ссылки на себя и объединение разных экспериментов недопустимы.",
+    "Результат из другой работы: result_origin = cited, в cited_publication_id — ссылка из статьи. Чужой метод, заново воспроизведённый авторами, — primary.",
+    "extraction_status: extracted; present_not_extractable; absent."
+   ]
+  }
+ ],
+ "normalization": [
+  {
+   "quantity": "Recall, MRR, nDCG, EM, F1",
+   "from": "%",
+   "to": "доля (fraction)",
+   "factor": 0.01,
+   "note": "только при известной шкале"
+  },
+  {
+   "quantity": "Задержка",
+   "from": "s",
+   "to": "ms",
+   "factor": 1000,
+   "note": null
+  },
+  {
+   "quantity": "Размер чанка",
+   "from": "tokens",
+   "to": "tokens",
+   "factor": 1,
+   "note": "символы и слова не переводятся в токены: chunk_unit = chars | words"
+  }
+ ]
+}

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import io
-import json
 import logging
 import re
 import shutil
@@ -22,6 +21,7 @@ from ...domain.registry import DOMAINS, get_domain
 from ...pdfio.inputs import CollectResult, ZipLimits, collect_inputs
 from ...storage import decode_cursor, encode_cursor
 from ..base.deps import JSON_MEDIA_TYPE, current_user, get_services, upload_rate_limit
+from .passports import run_passport
 from .views import (DOMAIN, CORPUS_KIND, RunData, corpus_id_of, default_title, get_corpus, run_id_of, run_summary,
                     run_view, user_corpora)
 
@@ -195,7 +195,7 @@ def list_runs(limit: int = Query(20, ge=1, le=200), cursor: str | None = None, f
             raise AppError("validation_error", "Некорректный курсор", field="cursor")
         offset = cur[1]
     with services.db.uow() as uow:
-        corpora = user_corpora(uow, user)
+        corpora = user_corpora(uow, user, pinned_first=True)
         page = corpora[offset:offset + limit]
         data = [run_view(uow, c, files="short" if files else "none", cap=_cap(services)) for c in page]
     nxt = encode_cursor(["runs", offset + limit]) if offset + limit < len(corpora) else None
@@ -253,10 +253,8 @@ def _run_check(services: Services, tables: dict[str, list[dict]], pdf_keys: list
 @router.get("/runs/{run_id}/submission.zip", summary="Набор для сдачи: 7 CSV, PASSPORT.md, passport.json")
 def submission_zip(run_id: str, partial: bool = False, check: bool = False,
                    user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
-    from ...domain.profile import builtin_solar_profile
     from ...export import check_status, table_bytes
-    from ...passport import (build_passport, build_rag_passport, build_rag_versions, build_versions,
-                             passport_markdown)
+    from ...passport import passport_json_bytes, passport_md_bytes
 
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run_id)
@@ -270,8 +268,6 @@ def submission_zip(run_id: str, partial: bool = False, check: bool = False,
         any_scan = False
         seen: set[str] = set()
         papers_n = 0
-        model_versions: set[str] = set()
-        versions: dict[str, str] = {}
         pdf_keys: list[tuple[str, str]] = []
         for f in d.files:
             if f.publication_id in seen:
@@ -293,23 +289,10 @@ def submission_zip(run_id: str, partial: bool = False, check: bool = False,
             if f.storage_key:
                 pdf_keys.append((f.publication_id, f.storage_key))
             any_scan = any_scan or bool(f.is_scan)
-            if paper.model_version:
-                model_versions.add(paper.model_version)
-            for k in ("norm", "dictionary", "rules"):
-                v = (paper.versions or {}).get(k)
-                if v:
-                    versions.setdefault(k, v)
             for t, rows in uow.sub.paper_tables(paper.id, spec.name).items():
                 tables[t].extend(rows)
         title = corpus.name
-    norm = services.normalizer
-    if spec.name == "solar":
-        passport = build_passport(builtin_solar_profile(), build_versions(
-            model_versions, rules=versions.get("rules"),
-            normalization=versions.get("norm") or str(getattr(norm, "version", "") or "") or None,
-            dictionary=versions.get("dictionary") or str(getattr(norm, "dictionary_version", "") or "") or None))
-    else:
-        passport = build_rag_passport(spec, build_rag_versions(model_versions))
+        passport = run_passport(services, d)
     headers = {}
     report = None
     if check:
@@ -326,8 +309,8 @@ def submission_zip(run_id: str, partial: bool = False, check: bool = False,
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
         for t, cols in TABLES.items():
             z.writestr(f"{t}.csv", table_bytes(t, tables[t], cols))
-        z.writestr("PASSPORT.md", passport_markdown(passport).encode("utf-8"))
-        z.writestr("passport.json", (json.dumps(passport, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        z.writestr("PASSPORT.md", passport_md_bytes(passport))
+        z.writestr("passport.json", passport_json_bytes(passport))
         if report is not None:
             z.writestr("check_report.txt", (report.raw_output or "").encode("utf-8"))
     filename = _export_name(title)

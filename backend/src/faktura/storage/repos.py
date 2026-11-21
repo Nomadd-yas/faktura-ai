@@ -143,13 +143,13 @@ class ProfilesRepo(_Repo):
 # --- корпуса -----------------------------------------------------------------------------------
 
 _CORPUS_CREATE = set(Corpus.model_fields) - {"id", "created_at", "deleted_at"}
-_CORPUS_UPDATE = {"name", "collection", "kind", "profile_id", "project_id", "deleted_at"}
+_CORPUS_UPDATE = {"name", "collection", "kind", "profile_id", "project_id", "deleted_at", "pinned"}
 
 
 def _corpus(r) -> Corpus:
     return Corpus(id=r.id, workspace_id=r.workspace_id, name=r.name, collection=r.collection, kind=r.kind,
                   profile_id=r.profile_id, project_id=r.project_id, created_by=r.created_by,
-                  created_at=r.created_at, deleted_at=r.deleted_at)
+                  created_at=r.created_at, deleted_at=r.deleted_at, pinned=bool(r.pinned))
 
 
 def _sync_corpus_visibility(uow: "UnitOfWork", corpus_id: str) -> None:

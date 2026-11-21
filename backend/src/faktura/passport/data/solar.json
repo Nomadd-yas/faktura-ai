@@ -1,0 +1,1386 @@
+{
+ "id": "solar",
+ "name": "Солнечные элементы",
+ "entities": [
+  {
+   "id": "publications",
+   "title": "Публикации",
+   "row": "статья корпуса (в том числе исключённая)",
+   "key": "publication_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Название статьи как в выходных данных",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "year",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Год публикации из выходных данных",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "DOI",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Цифровой идентификатор статьи: 10.xxxx/…",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "authors",
+     "type": "list",
+     "unit": null,
+     "required": false,
+     "description": "Авторы через «;»",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "in_scope",
+     "type": "bool",
+     "unit": null,
+     "required": true,
+     "description": "Относится ли статья к предметной области",
+     "values": [
+      "true",
+      "false"
+     ],
+     "ref": null
+    },
+    {
+     "name": "exclusion_reason",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Почему исключена; только если in_scope = false",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "materials",
+   "title": "Материалы",
+   "row": "материал поглотителя",
+   "key": "publication_id + material_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "material_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "M1, M2…, уникален внутри статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "material_name_raw",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Название как в статье",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "formula_normalized",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Для перовскита — вид A-B-X с раскрытыми MA, FA, Cs",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "material_class",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Класс материала",
+     "values": [
+      "perovskite",
+      "CIGS",
+      "CdTe",
+      "kesterite",
+      "Sb2Se3",
+      "thin-film Si",
+      "other"
+     ],
+     "ref": null
+    },
+    {
+     "name": "dimensionality",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Размерность",
+     "values": [
+      "3D",
+      "2D",
+      "2D-3D"
+     ],
+     "ref": null
+    },
+    {
+     "name": "additives",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Добавки",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "bandgap_value",
+     "type": "number",
+     "unit": "eV",
+     "required": false,
+     "description": "Ширина запрещённой зоны",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "bandgap_unit",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Единица ширины зоны",
+     "values": [
+      "eV"
+     ],
+     "ref": null
+    },
+    {
+     "name": "bandgap_method",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Способ определения; cited — значение взято из литературы",
+     "values": [
+      "Tauc",
+      "EQE",
+      "PL",
+      "cited"
+     ],
+     "ref": null
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "devices",
+   "title": "Приборы",
+   "row": "прибор",
+   "key": "publication_id + device_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "device_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "DV1, DV2…",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "absorber_material_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Поглотитель прибора",
+     "values": null,
+     "ref": "materials.material_id"
+    },
+    {
+     "name": "device_label",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Название прибора в статье",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "device_role",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Роль в статье",
+     "values": [
+      "control",
+      "target",
+      "record"
+     ],
+     "ref": null
+    },
+    {
+     "name": "device_type",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Тип",
+     "values": [
+      "cell",
+      "minimodule",
+      "module"
+     ],
+     "ref": null
+    },
+    {
+     "name": "architecture",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Архитектура",
+     "values": [
+      "n-i-p",
+      "p-i-n",
+      "substrate",
+      "superstrate"
+     ],
+     "ref": null
+    },
+    {
+     "name": "substrate_type",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Подложка",
+     "values": [
+      "rigid",
+      "flexible"
+     ],
+     "ref": null
+    },
+    {
+     "name": "active_area",
+     "type": "number",
+     "unit": "cm2",
+     "required": false,
+     "description": "Площадь",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "area_unit",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Единица площади",
+     "values": [
+      "cm2"
+     ],
+     "ref": null
+    },
+    {
+     "name": "area_definition",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Как определена площадь",
+     "values": [
+      "designated illumination",
+      "aperture",
+      "total"
+     ],
+     "ref": null
+    },
+    {
+     "name": "encapsulation",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Инкапсуляция",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "layers",
+   "title": "Слои",
+   "row": "слой прибора (подложка не записывается)",
+   "key": "publication_id + layer_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "layer_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "L1, L2…",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "device_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Прибор",
+     "values": null,
+     "ref": "devices.device_id"
+    },
+    {
+     "name": "layer_order",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Порядковый номер слоя, считая от подложки: 1, 2…",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "layer_function",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Функция слоя",
+     "values": [
+      "front_contact",
+      "ETL",
+      "absorber",
+      "passivation",
+      "HTL",
+      "interlayer",
+      "recombination",
+      "back_contact"
+     ],
+     "ref": null
+    },
+    {
+     "name": "layer_material",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Материал слоя",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "layer_thickness",
+     "type": "number",
+     "unit": "nm",
+     "required": false,
+     "description": "Толщина; микрометры переводятся в нанометры",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "thickness_unit",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Единица толщины",
+     "values": [
+      "nm"
+     ],
+     "ref": null
+    },
+    {
+     "name": "deposition_method",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Метод нанесения",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "annealing_temperature",
+     "type": "number",
+     "unit": "°C",
+     "required": false,
+     "description": "Температура отжига",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "annealing_time",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Время отжига с единицей: «10 min»",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "atmosphere",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Атмосфера",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "measurements",
+   "title": "Измерения",
+   "row": "условия измерения",
+   "key": "publication_id + measurement_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "measurement_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "MS1, MS2…",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "device_id",
+     "type": "list",
+     "unit": null,
+     "required": false,
+     "description": "Приборы через «;»",
+     "values": null,
+     "ref": "devices.device_id"
+    },
+    {
+     "name": "measurement_type",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Тип измерения; тёмная ВАХ — J-V с примечанием",
+     "values": [
+      "J-V",
+      "MPP tracking",
+      "EQE",
+      "stability"
+     ],
+     "ref": null
+    },
+    {
+     "name": "spectrum",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Например, AM1.5G",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "light_intensity",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Мощность освещения",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "intensity_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Например, mW/cm2",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "scan_direction",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Направление развёртки; прямой и обратный ход — разные измерения",
+     "values": [
+      "reverse",
+      "forward",
+      "average"
+     ],
+     "ref": null
+    },
+    {
+     "name": "scan_rate",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Скорость развёртки с единицей",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "mask_used",
+     "type": "bool",
+     "unit": null,
+     "required": false,
+     "description": "Использована маска",
+     "values": [
+      "true",
+      "false"
+     ],
+     "ref": null
+    },
+    {
+     "name": "certified",
+     "type": "bool",
+     "unit": null,
+     "required": false,
+     "description": "Сертифицированное измерение",
+     "values": [
+      "true",
+      "false"
+     ],
+     "ref": null
+    },
+    {
+     "name": "certification_lab",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Лаборатория",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "temperature",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Температура измерения",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "stability_protocol",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Протокол; если ISOS не назван — other",
+     "values": [
+      "ISOS-D",
+      "ISOS-L",
+      "ISOS-T",
+      "other"
+     ],
+     "ref": null
+    },
+    {
+     "name": "stress_conditions",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Условия старения",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "results",
+   "title": "Результаты",
+   "row": "одно значение одного показателя одного прибора при одних условиях",
+   "key": "publication_id + result_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "result_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "R001, R002…",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "device_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Прибор; у cited-записей пусто",
+     "values": null,
+     "ref": "devices.device_id"
+    },
+    {
+     "name": "measurement_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Измерение; у cited-записей пусто",
+     "values": null,
+     "ref": "measurements.measurement_id"
+    },
+    {
+     "name": "material_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Материал",
+     "values": null,
+     "ref": "materials.material_id"
+    },
+    {
+     "name": "metric_name",
+     "type": "enum",
+     "unit": null,
+     "required": true,
+     "description": "Показатель; прочие (дефицит Voc, Jmpp…) можно писать понятным названием, в оценку они не идут",
+     "values": [
+      "PCE",
+      "Voc",
+      "Jsc",
+      "FF",
+      "Rs",
+      "Rsh",
+      "HI",
+      "Jsc_EQE",
+      "stabilized_PCE",
+      "T80",
+      "retained_PCE"
+     ],
+     "ref": null
+    },
+    {
+     "name": "metric_value",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Совпадает с normalized_value",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "metric_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Совпадает с normalized_unit",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "aggregation",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "Пусто, если в статье не сказано, лучший это прибор или среднее",
+     "values": [
+      "champion",
+      "mean",
+      "median"
+     ],
+     "ref": null
+    },
+    {
+     "name": "spread_value",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Разброс (± или стандартное отклонение)",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "n_devices",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Число приборов",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "time_point",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Момент измерения для стабильности",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "time_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Единица момента",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "raw_value",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Значение дословно как в статье",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "raw_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Единица дословно как в статье: mV, fraction",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "normalized_value",
+     "type": "number",
+     "unit": null,
+     "required": false,
+     "description": "Значение в целевой единице",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "normalized_unit",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Целевая единица: % · V · mA/cm2 · Ohm*cm2 · h",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "result_origin",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "primary — собственный результат; cited — из другой работы",
+     "values": [
+      "primary",
+      "cited"
+     ],
+     "ref": null
+    },
+    {
+     "name": "cited_publication_id",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Для cited: ссылка в статье, например [12] или [19–21]",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_page",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Номер страницы в PDF, считая с 1",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_section",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Раздел статьи",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_table",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Таблица",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_figure",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Рисунок",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_fragment",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Короткая дословная цитата со страницы source_page",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "extraction_status",
+     "type": "enum",
+     "unit": null,
+     "required": false,
+     "description": "present_not_extractable — значение есть, но извлечь нельзя (только в supplementary или на графике)",
+     "values": [
+      "extracted",
+      "present_not_extractable",
+      "absent"
+     ],
+     "ref": null
+    },
+    {
+     "name": "duplicate_of",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "result_id основной записи, если то же значение упомянуто ещё раз; у основной пусто",
+     "values": null,
+     "ref": "results.result_id"
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Свободное примечание; сюда уходит исходная формулировка, не вошедшая в словарь",
+     "values": null,
+     "ref": null
+    }
+   ]
+  },
+  {
+   "id": "issues",
+   "title": "Замечания",
+   "row": "замечание проверки (отметки «Отметить исправленным» и «Это не ошибка» в файл не попадают: формат организаторов фиксирован и столбца статуса в нём нет; исправленные значения уже исправлены в results, отклонённые не выгружаются и убраны из record_ids)",
+   "key": "publication_id + issue_id",
+   "fields": [
+    {
+     "name": "publication_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Имя файла статьи без расширения: D001, P017",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "issue_id",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "I1, I2…",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "record_ids",
+     "type": "list",
+     "unit": null,
+     "required": false,
+     "description": "result_id записей через «;»",
+     "values": null,
+     "ref": "results.result_id"
+    },
+    {
+     "name": "check_name",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Какое правило сработало (каталог ниже)",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "description",
+     "type": "string",
+     "unit": null,
+     "required": true,
+     "description": "Что не согласуется: числа с обеих сторон",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_page",
+     "type": "int",
+     "unit": null,
+     "required": false,
+     "description": "Страница PDF, где это видно",
+     "values": null,
+     "ref": null
+    },
+    {
+     "name": "source_fragment",
+     "type": "string",
+     "unit": null,
+     "required": false,
+     "description": "Дословная цитата",
+     "values": null,
+     "ref": null
+    }
+   ]
+  }
+ ],
+ "rules": [
+  {
+   "id": "jv_consistency",
+   "title": "КПД против Voc·Jsc·FF/Pвх",
+   "description": "Расчёт по Voc, Jsc, FF и мощности освещения расходится с КПД больше чем на 3 %",
+   "level": "warn",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "voc_limit",
+   "title": "Voc не выше Eg/q",
+   "description": "Voc в вольтах не меньше ширины зоны поглотителя в эВ",
+   "level": "error",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "range",
+   "title": "Физические пределы",
+   "description": "КПД вне (0; 100), FF вне (0; 100], Jsc ≤ 0 или > 50 мА/см², Voc ≤ 0 или > 3 В, Rs и Rsh ≤ 0, сохранённый КПД > 150 %",
+   "level": "error",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "eqe_consistency",
+   "title": "Jsc по EQE и по ВАХ",
+   "description": "Jsc по EQE и Jsc по ВАХ одного прибора расходятся больше чем на 5 %",
+   "level": "warn",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "champion_vs_mean",
+   "title": "Лучший против среднего",
+   "description": "У одного прибора значение лучшего прибора меньше среднего или медианы того же показателя",
+   "level": "error",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "hysteresis_index",
+   "title": "Индекс гистерезиса",
+   "description": "HI = (КПД обр. − КПД прям.) / КПД обр.; расхождение с указанным в статье больше 1 п.п. или HI < 0",
+   "level": "info",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "contradiction",
+   "title": "Противоречие",
+   "description": "Одно значение в разных местах статьи расходится; утверждение текста против таблицы",
+   "level": "error",
+   "computed_by": "бэк + ML"
+  },
+  {
+   "id": "missing_conditions",
+   "title": "Нет условий измерения",
+   "description": "Не указаны спектр, интенсивность, площадь или направление развёртки",
+   "level": "warn",
+   "computed_by": "бэк + ML"
+  },
+  {
+   "id": "measurement_conditions",
+   "title": "Нестандартные условия",
+   "description": "«1 солнце» с поправкой, выдержка на свету перед измерением, двустороннее освещение",
+   "level": "info",
+   "computed_by": "ML"
+  },
+  {
+   "id": "comparability",
+   "title": "Несопоставимо",
+   "description": "Нестандартный источник света, мини-модуль, нет спектра AM1.5G",
+   "level": "warn",
+   "computed_by": "бэк + ML"
+  },
+  {
+   "id": "ambiguity",
+   "title": "Неоднозначность",
+   "description": "Нельзя понять число приборов, тип развёртки, момент времени или к какому прибору относится значение",
+   "level": "info",
+   "computed_by": "ML"
+  },
+  {
+   "id": "unit_inconsistency",
+   "title": "Единица не согласуется",
+   "description": "Единица не совпадает со значением («FF 0.71 %», хотя это доля) или не распознана",
+   "level": "warn",
+   "computed_by": "бэк + ML"
+  },
+  {
+   "id": "derived_values",
+   "title": "Производные числа",
+   "description": "В тексте разности и относительные приросты — не записываются как значения показателя",
+   "level": "info",
+   "computed_by": "ML"
+  },
+  {
+   "id": "typo",
+   "title": "Опечатка",
+   "description": "Опечатка в формуле или обозначении",
+   "level": "info",
+   "computed_by": "ML"
+  },
+  {
+   "id": "possible_swap",
+   "title": "Возможна перестановка",
+   "description": "Значения, вероятно, перепутаны местами",
+   "level": "warn",
+   "computed_by": "ML"
+  },
+  {
+   "id": "figure_mismatch",
+   "title": "Рисунок и таблица",
+   "description": "Точки на рисунке не совпадают со значениями таблицы больше чем на 3 %",
+   "level": "warn",
+   "computed_by": "бэк + ML"
+  },
+  {
+   "id": "figure_only",
+   "title": "Только на графике",
+   "description": "Чисел нет, результаты видны лишь на графиках (статус «есть в статье, но не извлечь»)",
+   "level": "info",
+   "computed_by": "ML"
+  },
+  {
+   "id": "cited_in_table",
+   "title": "Чужие строки в таблице",
+   "description": "В таблице результатов есть строки из других работ (источник — «из цитаты»)",
+   "level": "info",
+   "computed_by": "ML"
+  },
+  {
+   "id": "dedup_trap",
+   "title": "Ловушка дубликатов",
+   "description": "Одинаковые значения у разных приборов или одна строка в двух таблицах",
+   "level": "info",
+   "computed_by": "бэк + ML"
+  },
+  {
+   "id": "rounding",
+   "title": "Округление",
+   "description": "Расхождение объясняется округлением последнего знака",
+   "level": "info",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "plausibility",
+   "title": "Правдоподобие",
+   "description": "Значение у уровня мировых рекордов или выше рекорда класса материала",
+   "level": "warn",
+   "computed_by": "бэк + ML"
+  },
+  {
+   "id": "voc_deficit_consistency",
+   "title": "Дефицит Voc",
+   "description": "Указанный дефицит не равен Eg/q − Voc",
+   "level": "warn",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "f1",
+   "title": "Пустая ячейка",
+   "description": "Пустая ячейка означает, что в статье этого нет; неизвестное не восстанавливается по догадке",
+   "level": "format",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "f2",
+   "title": "Страницы",
+   "description": "Страница — номер страницы в PDF, считая с 1",
+   "level": "format",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "f3",
+   "title": "Повторы",
+   "description": "Повтор того же значения того же прибора — отдельная строка со ссылкой на основную (duplicate_of)",
+   "level": "format",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "f4",
+   "title": "Исключённые статьи",
+   "description": "У статьи не по теме (in_scope = false) в остальных таблицах строк нет",
+   "level": "format",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "f5",
+   "title": "Формат файла",
+   "description": "UTF-8 с BOM, запятая-разделитель, точка в числах, true и false, списки через «;»",
+   "level": "format",
+   "computed_by": "бэк"
+  },
+  {
+   "id": "f6",
+   "title": "Сравнение статей",
+   "description": "Статьи попарно не сравниваются; все правила работают внутри статьи",
+   "level": "format",
+   "computed_by": "бэк"
+  }
+ ],
+ "guides": [
+  {
+   "id": "inclusion",
+   "title": "Критерии отбора статей",
+   "description": "Статья входит в набор, если она описывает тонкоплёночные солнечные элементы и в ней есть изготовленный прибор.",
+   "items": [
+    "Материалы: тонкоплёночные солнечные элементы — перовскитные, халькогенидные (CIGS, CdTe, кестериты, Sb₂Se₃), тонкоплёночный кремний.",
+    "Только однопереходные приборы, без тандемов.",
+    "Только экспериментальные работы: описан изготовленный прибор и приведены его фотоэлектрические характеристики.",
+    "Расчётные работы без образцов не включаются: у такой статьи in_scope = false, а причина записывается в exclusion_reason. В publications остаётся только её строка."
+   ]
+  },
+  {
+   "id": "comparability",
+   "title": "Критерии сопоставимости",
+   "description": "Два результата сравнивают друг с другом, только если совпадают все условия из списка. Иначе это разные группы.",
+   "items": [
+    "Класс материала поглотителя (material_class).",
+    "Тип прибора (device_type): элемент, минимодуль или модуль.",
+    "Условия измерения: спектр AM1.5G, мощность 100 мВт/см².",
+    "Сопоставимая площадь прибора.",
+    "Агрегация (aggregation): champion, mean или median.",
+    "Направление развёртки (scan_direction): прямой и обратный ход не смешиваются.",
+    "Сертифицированные значения и стабильность сравниваются отдельно от остальных."
+   ]
+  },
+  {
+   "id": "extraction",
+   "title": "Правила извлечения",
+   "description": "Короткая выжимка из шаблона сдачи организаторов.",
+   "items": [
+    "Пустая ячейка означает, что в статье этого нет. Неизвестные значения не восстанавливаются по догадке.",
+    "source_page — номер страницы в PDF, считая с 1, а не номер в журнале.",
+    "source_fragment — короткая дословная цитата со страницы source_page. Пересказ не подходит.",
+    "Повтор того же значения того же прибора (аннотация, текст, другая таблица) записывается отдельной строкой со своим source_*; в duplicate_of указывается result_id основной записи.",
+    "Значение из другой работы: result_origin = cited, в cited_publication_id — ссылка из статьи, например [12]. device_id и measurement_id у такой строки пустые.",
+    "extraction_status: extracted; present_not_extractable (значение есть, но извлечь нельзя: только в supplementary или только на графике); absent."
+   ]
+  }
+ ],
+ "normalization": [
+  {
+   "quantity": "PCE",
+   "from": "%",
+   "to": "%",
+   "factor": 1,
+   "note": null
+  },
+  {
+   "quantity": "PCE",
+   "from": "доля (fraction)",
+   "to": "%",
+   "factor": 100,
+   "note": "только если шкала известна"
+  },
+  {
+   "quantity": "FF",
+   "from": "доля (fraction)",
+   "to": "%",
+   "factor": 100,
+   "note": null
+  },
+  {
+   "quantity": "HI",
+   "from": "доля (fraction)",
+   "to": "%",
+   "factor": 100,
+   "note": null
+  },
+  {
+   "quantity": "retained_PCE",
+   "from": "доля (fraction)",
+   "to": "%",
+   "factor": 100,
+   "note": null
+  },
+  {
+   "quantity": "Voc",
+   "from": "mV",
+   "to": "V",
+   "factor": 0.001,
+   "note": null
+  },
+  {
+   "quantity": "Jsc, Jsc_EQE",
+   "from": "A/m2",
+   "to": "mA/cm2",
+   "factor": 0.1,
+   "note": null
+  },
+  {
+   "quantity": "Rs, Rsh",
+   "from": "kOhm*cm2",
+   "to": "Ohm*cm2",
+   "factor": 1000,
+   "note": null
+  },
+  {
+   "quantity": "Ширина зоны",
+   "from": "eV",
+   "to": "eV",
+   "factor": 1,
+   "note": "нм края поглощения не пересчитываются"
+  },
+  {
+   "quantity": "Толщина",
+   "from": "µm",
+   "to": "nm",
+   "factor": 1000,
+   "note": null
+  },
+  {
+   "quantity": "Толщина",
+   "from": "mm",
+   "to": "nm",
+   "factor": 1000000,
+   "note": null
+  },
+  {
+   "quantity": "Толщина",
+   "from": "Å",
+   "to": "nm",
+   "factor": 0.1,
+   "note": null
+  },
+  {
+   "quantity": "Площадь",
+   "from": "mm2",
+   "to": "cm2",
+   "factor": 0.01,
+   "note": null
+  },
+  {
+   "quantity": "Площадь",
+   "from": "m2",
+   "to": "cm2",
+   "factor": 10000,
+   "note": null
+  },
+  {
+   "quantity": "Время (T80, старение)",
+   "from": "min",
+   "to": "h",
+   "factor": 0.016666666666666666,
+   "note": null
+  },
+  {
+   "quantity": "Время (T80, старение)",
+   "from": "s",
+   "to": "h",
+   "factor": 0.0002777777777777778,
+   "note": null
+  },
+  {
+   "quantity": "Время (T80, старение)",
+   "from": "d",
+   "to": "h",
+   "factor": 24,
+   "note": null
+  },
+  {
+   "quantity": "Мощность освещения",
+   "from": "W/m2",
+   "to": "mW/cm2",
+   "factor": 0.1,
+   "note": null
+  },
+  {
+   "quantity": "Мощность освещения",
+   "from": "1 sun",
+   "to": "mW/cm2",
+   "factor": null,
+   "note": "1 sun = 100"
+  },
+  {
+   "quantity": "Температура",
+   "from": "K",
+   "to": "°C",
+   "factor": null,
+   "note": "вычесть 273,15"
+  }
+ ]
+}

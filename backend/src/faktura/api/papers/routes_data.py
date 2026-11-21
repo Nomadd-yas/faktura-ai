@@ -13,7 +13,7 @@ from ...domain.errors import AppError
 from ...domain.services import Services
 from ...domain.registry import get_domain
 from ..base.deps import current_user, get_services
-from ..corpus.views import RunData, file_status, get_corpus, run_id_of, user_corpora
+from ..corpus.views import RunData, _file_ids, file_status, get_corpus, run_id_of, user_corpora
 
 log = logging.getLogger("faktura.api")
 router = APIRouter(tags=["data"])
@@ -27,16 +27,21 @@ TABLES = _SOLAR.tables
 # --- поиск статьи ------------------------------------------------------------------------------
 
 def _find(uow, user: CurrentUser, pid: str, run: str | None, domain: str = "solar"):
-    """(корпус, статья, файл корпуса) или 404. Без `run` - последний разбор пользователя этой области, где есть статья."""
+    """(корпус, статья | None, файл корпуса) или 404. Без `run` - последний разбор пользователя этой области, где
+    есть статья. `pid` - `RunFile.id` (publication_id, а при совпадении имён `P042-2`). У файла, не дошедшего до
+    статьи (отклонён при приёме), статьи нет: PDF отдаётся, таблицы - нет."""
     get_domain(domain)  # неизвестная область -> 422 domain_not_supported
     corpora = [get_corpus(uow, user, run)] if run else user_corpora(uow, user)
     for c in corpora:
         if c.collection != domain:
             continue
+        files = [x for x in uow.files.list(c.id) if x.status != CorpusFileStatus.skipped_duplicate]
+        pub = {v: k for k, v in _file_ids(files).items()}
+        f = next((x for x in files if x.id == pub.get(pid)), None)
         paper = uow.papers.get_by_publication(c.id, pid)
-        if paper is not None:
-            f = next((x for x in uow.files.list(c.id) if x.publication_id == pid
-                      and x.status != CorpusFileStatus.skipped_duplicate), None)
+        if paper is None and f is not None and f.paper_id:
+            paper = uow.papers.get(f.paper_id)
+        if paper is not None or (f is not None and run):
             return c, paper, f
     raise AppError("not_found", f"Статья {pid} не найдена")
 
@@ -95,13 +100,16 @@ def _rag_paper(uow, corpus, paper, f, d: RunData, pid: str, run: str | None, use
     if f is not None:
         fstatus, _ = file_status(f, paper, summary.get("results", 0), d.pub.get(paper.id))
     status = "out" if fstatus == "out" else "has_data" if fstatus in ("done", "ocr") else "nodata"
-    if fstatus == "out":
+    counts = {n: summary.get(n, 0) for n in spec.tables}
+    metrics = summary.get("metrics", [])
+    if fstatus == "out":  # вне области: только строка publications, остальное пусто (§7а.3)
         pub = {**pub, "in_scope": "false"}
+        issues, metrics, counts = [], [], {n: (1 if n == "publications" else 0) for n in spec.tables}
     run_ids = [run_id_of(c.id) for c in user_corpora(uow, user)
                if uow.papers.get_by_publication(c.id, pid) is not None and c.collection == corpus.collection]
     return {
-        "publication": pub, "counts": {n: summary.get(n, 0) for n in spec.tables},
-        "metrics": summary.get("metrics", []), "issues": issues, "paper_status": status,
+        "publication": pub, "counts": counts,
+        "metrics": metrics, "issues": issues, "paper_status": status,
         "meta": {"file_status": fstatus, "run_ids": run_ids, "pdf_pages": paper.page_count,
                  "is_scan": bool(f.is_scan) if f is not None else False},
     }
@@ -113,6 +121,8 @@ def get_paper(domain: str, pid: str, run: str | None = None, tables: str | None 
               user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
     with services.db.uow() as uow:
         corpus, paper, f = _find(uow, user, pid, run, domain)
+        if paper is None:
+            raise AppError("not_found", f"Статья {pid} не разобрана: таблиц нет")
         d = RunData(uow, corpus)
         if domain != "solar":
             return _rag_paper(uow, corpus, paper, f, d, pid, run, user, tables, limit, cursor)
@@ -179,9 +189,9 @@ def _iter_file(fh, start: int, length: int, chunk: int = 1 << 20):
 def get_pdf(domain: str, pid: str, request: Request, run: str | None = None,
             user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
     with services.db.uow() as uow:
-        _, paper, f = _find(uow, user, pid, run, domain)
+        _, paper, f = _find(uow, user, pid, run, domain)  # любой принятый файл разбора, в т. ч. out/nodata/error
         key = f.storage_key if f is not None else None
-        sha = (f.sha256 if f is not None else None) or paper.sha256
+        sha = (f.sha256 if f is not None else None) or (paper.sha256 if paper is not None else None)
     store = services.store
     if not key or not store.exists(key):
         raise AppError("not_found", "PDF-файла нет")

@@ -98,6 +98,7 @@ corpora = sa.Table(
     sa.Column("created_by", sa.String(64), nullable=True),
     sa.Column("created_at", UTCDateTime, nullable=False),
     sa.Column("deleted_at", UTCDateTime, nullable=True),
+    sa.Column("pinned", sa.Boolean, nullable=True),  # закреплённый разбор (PATCH /runs/{id}); NULL = не закреплён
     sa.Index("ix_corpora_ws", "workspace_id"),
 )
 
@@ -132,6 +133,7 @@ corpus_files = sa.Table(
 LATE_COLUMNS: dict[sa.Table, tuple[sa.Column, ...]] = {
     corpus_files: (corpus_files.c.stage, corpus_files.c.progress, corpus_files.c.is_scan,
                    corpus_files.c.started_at, corpus_files.c.stage_started_at),
+    corpora: (corpora.c.pinned,),
 }
 
 # скорость этапов (секунд на страницу) по завершённым файлам: скользящее среднее для оценки хода и ETA

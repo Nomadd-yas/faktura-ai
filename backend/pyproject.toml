@@ -39,6 +39,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "faktura.norm" = ["data/*.json"]
 "faktura.domain" = ["data/*.json"]
+"faktura.passport" = ["data/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -331,7 +331,7 @@ def test_submission_zip_layout_and_filename(client, auth, pdfs):
     passport = json.loads(zipfile.ZipFile(io.BytesIO(z.content)).read("passport.json"))
     assert passport["versions"]["rules"] and "model" in passport["versions"]
     md = zipfile.ZipFile(io.BytesIO(z.content)).read("PASSPORT.md").decode("utf-8")
-    assert "## Версии" in md and "ML" not in md.replace("HTML", "")
+    assert "Собран с версиями: model " in md and "ML" not in md.replace("HTML", "")
 
 
 def test_submission_zip_check_ok(client, auth, pdfs, services, tmp_path):

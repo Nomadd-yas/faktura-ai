@@ -48,7 +48,8 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 |---|---|---|
 | `id` | string | `run_…` |
 | `title` | string | «21 статья · 20 ноя» или имя ZIP |
-| `domain` | `"solar"` | |
+| `domain` | `"solar"` \| `"rag"` | |
+| `pinned` | bool | закреплён; закреплённые идут первыми в `GET /runs` (§4c) |
 | `status` | `queued` \| `running` \| `done` \| `error` | |
 | `created_at`, `updated_at` | datetime | |
 | `counts` | `{files, queued, running, done, out, error, nodata}` | |
@@ -69,6 +70,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 | `results`, `issues` | int | |
 | `reason` | string \| null | |
 | `size`, `sha256` | | |
+| `suggested_domain` | `"rag"` \| `"solar"` \| `null` | подсказка «статья из другой области»; пока всегда `null`; только в полном `files` (§4c) |
 
 Статус `ocr` (подпись «скан, распознано OCR») бывает только в `rag`: у PDF нет текстового слоя, значения получены распознаванием. В `solar` сканов нет.
 
@@ -91,7 +93,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 Ошибки: `400 no_files`, `413 too_large`, `415 unsupported_media_type`, `422 zip_bomb` / `domain_not_supported`. Лимиты: PDF до 50 МБ и 300 страниц; до 200 файлов и 1 ГБ на разбор; ZIP — до 500 файлов и 2 ГБ в распакованном виде.
 
 ### `GET /runs` — список
-Параметры: `limit` (по умолчанию 20), `cursor`, `files=false` (без списка файлов). Сортировка — новые сверху.
+Параметры: `limit` (по умолчанию 20), `cursor`, `files=false` (без списка файлов). Сортировка — закреплённые (`pinned`) сверху, затем новые.
 ```json
 { "data": [ Run, … ], "total": 23, "next_cursor": null }
 ```
@@ -136,7 +138,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 - `404 not_found` — нет такой статьи.
 
 ### `GET /papers/solar/{pid}/pdf` — исходный PDF
-`application/pdf`, поддерживает `Range` (pdf.js), `ETag`. Подсветка цитаты — на фронте, как в §15.5. `404` — файла нет.
+`application/pdf`, поддерживает `Range` (pdf.js), `ETag`. Подсветка цитаты — на фронте, как в §15.5. Отдаётся для любого принятого файла разбора, в том числе `out`/`nodata`/`error` (§4c). `404` — файла нет.
 
 ### `GET /results` — строки `results` (таблица разбора)
 | Параметр | |
@@ -163,7 +165,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 ## 4. Скачать набор
 
 ### `GET /runs/{id}/submission.zip`
-Ответ — сразу файл: `application/zip`, `Content-Disposition: attachment; filename="submission.zip"; filename*=UTF-8''Набор%20для%20сдачи%20—%20{title}.zip`. Внутри **7 CSV** шаблона области 1 по всем статьям разбора (статья не по теме — только строка в `publications`) **+ `PASSPORT.md` и `passport.json`** (поля, словари, правила проверок, нормализация, версии модели/правил/словаря).
+Ответ — сразу файл: `application/zip`, `Content-Disposition: attachment; filename="submission.zip"; filename*=UTF-8''Набор%20для%20сдачи%20—%20{title}.zip`. Внутри **7 CSV** шаблона области 1 по всем статьям разбора (статья не по теме — только строка в `publications`) **+ `PASSPORT.md` и `passport.json`** (критерии отбора, поля, словари, правила проверок, нормализация, версии модели/правил/словаря; формат и отдельные запросы — §4d).
 
 `?check=true` — сервер прогоняет `check_submission.py`: в ZIP добавляется `check_report.txt`, заголовок `X-Check-Status: ok|warnings|failed`; если скрипт нашёл ОШИБКИ — вместо файла `422 submission_invalid` (в `details.errors` — первые ошибки).
 
@@ -208,6 +210,63 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 ```
 
 Те же поля будет нести будущий SSE `/runs/{id}/events`.
+
+## 4c. Управление разбором и «Разобрать как…» (спека §7а.3, §7а.4)
+
+Все запросы — только для своих разборов: чужой или удалённый разбор → `404 not_found`. У Run есть поле `pinned` (bool, по умолчанию `false`); у RunFile — `suggested_domain` (`"rag"` \| `"solar"` \| `null`, пока всегда `null`: сервис разбора не сообщает, из какой области статья «не по теме»).
+
+### `POST /runs/{id}/rerun-as` — разобрать файлы в другой области
+```json
+{ "domain": "rag", "file_ids": ["D002", "D007"], "title": "D001 и ещё 9 · RAG" }
+```
+→ `202` — новый Run (как у `POST /runs`, плюс `rejected`; заголовок `Location`), прогон стартует сам. Исходный разбор не меняется.
+- PDF берутся из хранилища исходного разбора, повторная загрузка не нужна. `file_ids` — `RunFile.id` исходного разбора; подходят любые принятые файлы (`out`, `nodata`, `error` тоже).
+- `title` необязателен: «{название исходного} · RAG» или «… · солнечные».
+- Ошибки: `404 not_found` — нет разбора или файла (`field: file_ids`); `409 run_in_progress` — исходный разбор ещё идёт; `422 domain_not_supported`; `422 validation_error` — нет `domain`, пустой `file_ids`, та же область, что у исходного, файл не был принят (нет PDF), слишком длинное название.
+
+### `PATCH /runs/{id}` — переименовать / закрепить
+Тело `{ "title"?: string, "pinned"?: bool }` → `200` Run (полный). `422 validation_error` — пустое название (после обрезки пробелов), длиннее 300 символов или нет ни одного поля. В `GET /runs` закреплённые разборы идут первыми, внутри групп — новые сверху.
+
+### `DELETE /runs/{id}` — удалить
+`204`, мягкое удаление: разбор пропадает из списка, а `GET /runs/{id}` и всё остальное по нему отвечают `404`. Идущий разбор сначала останавливается.
+
+### `POST /runs/{id}/restart` — перезапустить
+Тело необязательно: `{ "file_ids"?: [...] }`. Без тела (или без `file_ids`) перезапускается всё, иначе только перечисленные файлы. → `202` Run, тот же `id`, файлы снова `queued`, прогон стартует сам. Ошибки: `404 not_found` (нет разбора/файла), `409 run_in_progress` (разбор ещё идёт — сначала `stop`), `422 validation_error` (пустой `file_ids: []`). Результаты уже разобранных файлов могут прийти из кеша сервера (тот же PDF и версия модели).
+
+### `POST /runs/{id}/stop` — остановить
+`200` Run. Незаконченные файлы (`queued`, `running`) получают статус `error` и `reason: "остановлено"`; готовые остаются как есть. Новые файлы не берутся в работу, а результат файла, который разбирался в момент остановки, отбрасывается. Итоговый `status` разбора считается как обычно (`done`, а `error` — если ни один файл не успел). Повторный `stop` и `stop` завершённого разбора безопасны (`200`, без изменений). Остановленные файлы можно запустить через `restart`.
+
+### Статьи для `out` / `nodata` / `error` (спека §7а.3)
+- `GET /papers/{domain}/{pid}/pdf?run=` отдаёт исходный PDF **любого принятого файла** разбора, включая `out`, `nodata`, `error`. `pid` — `RunFile.id`. `404` — нет такого файла или PDF нет в хранилище.
+- `GET /papers/{domain}/{pid}?run=` для `out` — `200`: `paper_status: "out"`, строка `publication` с `in_scope: "false"` и `exclusion_reason`, остальные массивы пустые (у `rag` — `counts` по нулям, кроме `publications`, `metrics` и `issues` пусты). Для `nodata` — `200`, `paper_status: "nodata"`, пустые таблицы; для `ocr` (rag) — `has_data`. `404` — у файла нет статьи (отклонён при приёме).
+
+## 4d. Паспорт набора с сервера (спека §7а.6)
+
+### `GET /runs/{id}/passport.json`
+`200 application/json` — паспорт набора области этого разбора. **Байт в байт тот же `passport.json`, что внутри `submission.zip`** (один и тот же код генерации). `404 not_found` — нет разбора. Паспорт доступен и пока разбор идёт; версии модели берутся по уже разобранным статьям.
+
+### `GET /runs/{id}/passport.md`
+`200 text/markdown; charset=utf-8` — тот же `PASSPORT.md`, что в ZIP (собирается из этого же JSON).
+
+Формат:
+```json
+{
+  "title": "Паспорт данных «Фактура AI»", "version": "1",
+  "format": "CSV UTF-8 с BOM, запятая, точка, списки через «;»; пустая ячейка = в статье нет",
+  "versions": { "model": "extractor-2026-11-20", "rules": "1.0.0", "dictionary": "…" },
+  "domains": [ { "id": "solar", "name": "Солнечные элементы",
+    "guides": [ { "id": "inclusion|comparability|extraction", "title": "…", "description": "…", "items": ["…"] } ],
+    "entities": [ { "id": "results", "title": "Результаты", "row": "…", "key": "publication_id + result_id",
+      "fields": [ { "name": "metric_name", "type": "enum", "unit": null, "required": true, "description": "…",
+                    "values": ["PCE", "…"], "ref": null } ] } ],
+    "rules": [ { "id": "jv_consistency", "title": "…", "description": "…", "level": "warn", "computed_by": "бэк" } ],
+    "normalization": [ { "quantity": "Voc", "from": "mV", "to": "V", "factor": 0.001, "note": null } ] } ]
+}
+```
+- `domains` — одна область (область разбора). `entities` — 7 таблиц шаблона в порядке выгрузки, `fields` — колонки ровно как в шаблоне (`solar`: `submission_template/*.csv`; `rag`: `rag_schema.json`).
+- `versions.model` — `model_version` статей набора (несколько — через «, »; `null`, пока нет разобранных статей). `versions.rules` — версия набора проверок (solar: `1.0.0`, rag: `rag-checks-1`), `versions.dictionary` — версия словаря нормализации (solar) или схемы rag.
+- В ZIP лежит этот же JSON и `PASSPORT.md` в том же виде, что рисует фронт (+ строка «Собран с версиями»). Раньше в ZIP был паспорт старого формата (`collection`, `tables`, `metrics`…): он заменён.
+- Содержимое областей (критерии, правила, нормализация) — файлы `backend/src/faktura/passport/data/{solar,rag}.json`; при изменении порогов правятся они, фронт подхватывает сам.
 
 ## 5. Область RAG (`domain=rag`)
 
