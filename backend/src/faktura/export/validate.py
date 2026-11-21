@@ -21,7 +21,7 @@ from ..domain.tables import (BOOL_FIELDS, CHECK_CATALOG, EVAL_METRICS, ID_COLUMN
                              NUMERIC_FIELDS, NUMERIC_STRICT, TABLES, TARGET_UNITS, UNIT_FOR_VALUE, VOCAB)
 from .sanitize import _RANGE_TEXT, RANGE_TEXT_FIELDS, REFERENCES
 
-__all__ = ["strict_validate", "run_check_script", "parse_check_output"]
+__all__ = ["strict_validate", "run_check_script", "parse_check_output", "run_rag_check", "parse_rag_check_output"]
 
 _KNOWN_METRICS = set(EVAL_METRICS) | set(TARGET_UNITS) | {"AVT", "CRI", "LUE", "bifaciality_factor"}
 _FIELD_UNITS = {("materials", "bandgap_unit"): "eV", ("layers", "thickness_unit"): "nm",
@@ -266,3 +266,53 @@ def run_check_script(script: Path, csv_dir: Path, pdf_dir: Path, timeout_s: int 
     err = "\n".join(ln for ln in err.splitlines() if not ln.startswith("fontTools is required"))
     text = out if not err else (out + ("\n" if out and not out.endswith("\n") else "") + err)
     return parse_check_output(text, proc.returncode)
+
+
+# --- check_submission.py области rag: ERROR:/REVIEW:, коды выхода 0 / 1 (ошибки) / 2 (нужна проверка) ----------
+
+_RAG_QUOTES_RE = re.compile(r'"quotes":\s*\{[^}]*"requested":\s*(\d+)[^}]*"matched":\s*(\d+)')
+
+
+def parse_rag_check_output(text: str, exit_code: int | None) -> CheckReport:
+    """Разбор вывода RAG-скрипта. Код 2 - не ошибка: замечания «REVIEW:» (статус warnings); падение - crashed."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    qc = qb = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("ERROR:"):
+            errors.append(s[len("ERROR:"):].strip())
+        elif s.startswith("REVIEW:"):
+            warnings.append(s[len("REVIEW:"):].strip())
+        m = _RAG_QUOTES_RE.search(s)
+        if m:
+            qc, qb = int(m.group(1)), int(m.group(1)) - int(m.group(2))
+    crashed = bool(_TRACEBACK_RE.search(text)) or exit_code not in (0, 1, 2) or (exit_code == 1 and not errors)
+    if exit_code == 2 and not warnings and not crashed:
+        warnings.append("нужна проверка (код выхода 2)")
+    return CheckReport(ran=True, ok=(not crashed) and not errors, crashed=crashed,
+                       errors=[] if crashed and not errors else errors, warnings=warnings, quotes_checked=qc,
+                       quotes_bad=qb, raw_output=text, exit_code=exit_code)
+
+
+def run_rag_check(script: Path, csv_dir: Path, pdf_dir: Path, timeout_s: int = 900, ocr: bool = False) -> CheckReport:
+    """`check_submission.py <csv_dir> <pdf_dir> [--ocr]` RAG-варианта (subprocess, PYTHONUTF8=1). Исключений не бросает."""
+    script = Path(script)
+    if not script.is_file():
+        return CheckReport(ran=False, ok=False, crashed=True, raw_output=f"скрипт проверки не найден: {script}")
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    cmd = [sys.executable, str(script), str(csv_dir), str(pdf_dir)] + (["--ocr"] if ocr else [])
+    try:
+        proc = subprocess.run(cmd, capture_output=True, env=env, timeout=timeout_s, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as e:
+        out = _decode(e.stdout) + _decode(e.stderr)
+        return CheckReport(ran=True, ok=False, crashed=True,
+                           raw_output=f"{out}\nпроверка не уложилась в {timeout_s} с".lstrip("\n"))
+    except OSError as e:
+        return CheckReport(ran=False, ok=False, crashed=True, raw_output=f"не удалось запустить проверку: {e}")
+    out, err = _decode(proc.stdout), _decode(proc.stderr)
+    err = "\n".join(ln for ln in err.splitlines() if not ln.startswith("fontTools is required"))
+    text = out if not err else (out + ("\n" if out and not out.endswith("\n") else "") + err)
+    return parse_rag_check_output(text, proc.returncode)

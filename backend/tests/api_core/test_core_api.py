@@ -124,7 +124,7 @@ def test_upload_rejections(client, auth, pdfs):
 
 def test_upload_errors(client, auth, pdfs):
     err(client.post(f"{API}/runs", headers=auth), 400, "no_files")
-    err(upload(client, auth, [pdfs["D001"]], domain="rag"), 422, "domain_not_supported")
+    err(upload(client, auth, [pdfs["D001"]], domain="xyz"), 422, "domain_not_supported")
     err(client.post(f"{API}/runs", files=[("file", ("a.txt", b"x", "text/plain"))], headers=auth), 400, "no_files")
     err(client.post(f"{API}/runs", files={"archive": ("a.rar", b"x", "application/x-rar")}, headers=auth),
         415, "unsupported_media_type")

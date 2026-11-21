@@ -403,6 +403,14 @@ def passport_markdown(passport: dict) -> str:
         lines.append("")
     if p.get("comparability"):
         lines += ["## Сопоставимость", "", str(p["comparability"]), ""]
+    voc = p.get("vocabularies") or {}
+    for kind, title in (("closed", "Закрытые словари"), ("recommended", "Рекомендуемые словари")):
+        if voc.get(kind):
+            lines += [f"## {title}", ""]
+            lines += [f"- `{k}`: {_md(v)}" for k, v in voc[kind].items()]
+            lines.append("")
+    if p.get("normalization"):
+        lines += ["## Нормализация", "", str(p["normalization"]), ""]
     ver = p.get("versions") or {}
     if ver:
         names = {"model": "версия модели", "rules": "версия правил проверок", "normalization": "версия нормализации",

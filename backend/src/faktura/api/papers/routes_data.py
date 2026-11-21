@@ -26,10 +26,13 @@ TABLES = _SOLAR.tables
 
 # --- поиск статьи ------------------------------------------------------------------------------
 
-def _find(uow, user: CurrentUser, pid: str, run: str | None):
-    """(корпус, статья, файл корпуса) или 404. Без `run` - последний разбор пользователя, где есть статья."""
+def _find(uow, user: CurrentUser, pid: str, run: str | None, domain: str = "solar"):
+    """(корпус, статья, файл корпуса) или 404. Без `run` - последний разбор пользователя этой области, где есть статья."""
+    get_domain(domain)  # неизвестная область -> 422 domain_not_supported
     corpora = [get_corpus(uow, user, run)] if run else user_corpora(uow, user)
     for c in corpora:
+        if c.collection != domain:
+            continue
         paper = uow.papers.get_by_publication(c.id, pid)
         if paper is not None:
             f = next((x for x in uow.files.list(c.id) if x.publication_id == pid
@@ -69,12 +72,50 @@ def _result_meta(x: dict, rid: str, with_dups: bool) -> dict[str, Any]:
     return m
 
 
-@router.get("/papers/solar/{pid}", summary="Все 7 таблиц статьи")
-def get_paper(pid: str, run: str | None = None, user: CurrentUser = Depends(current_user),
-              services: Services = Depends(get_services)):
+def _rag_paper(uow, corpus, paper, f, d: RunData, pid: str, run: str | None, user: CurrentUser,
+               tables: str | None, limit: int, cursor: str | None) -> dict[str, Any]:
+    """Статья области без фиксированных моделей (rag): по умолчанию сводка, строки - по запросу `tables`."""
+    spec = get_domain(corpus.collection)
+    if tables:
+        names = [x.strip() for x in tables.split(",") if x.strip()]
+        bad = [n for n in names if n not in spec.tables]
+        if bad or not names:
+            raise AppError("validation_error", f"tables: одно из {', '.join(spec.tables)}", field="tables")
+        out = {}
+        for n in dict.fromkeys(names):
+            rows, total, nxt = uow.sub.paper_table_page(paper.id, corpus.collection, n, limit=limit, cursor=cursor)
+            out[n] = {"data": rows, "total": total, "next_cursor": nxt}
+        return {"tables": out}
+    summary = uow.sub.paper_summary(paper.id)
+    pub_rows, _, _ = uow.sub.paper_table_page(paper.id, corpus.collection, "publications", limit=1)
+    pub = pub_rows[0] if pub_rows else {"publication_id": pid, "title": "", "year": "", "DOI": "", "authors": "",
+                                        "in_scope": "", "exclusion_reason": ""}
+    issues, _, _ = uow.sub.paper_table_page(paper.id, corpus.collection, "issues", limit=1000)
+    fstatus = "queued"
+    if f is not None:
+        fstatus, _ = file_status(f, paper, summary.get("results", 0), d.pub.get(paper.id))
+    status = "out" if fstatus == "out" else "has_data" if fstatus in ("done", "ocr") else "nodata"
+    if fstatus == "out":
+        pub = {**pub, "in_scope": "false"}
+    run_ids = [run_id_of(c.id) for c in user_corpora(uow, user)
+               if uow.papers.get_by_publication(c.id, pid) is not None and c.collection == corpus.collection]
+    return {
+        "publication": pub, "counts": {n: summary.get(n, 0) for n in spec.tables},
+        "metrics": summary.get("metrics", []), "issues": issues, "paper_status": status,
+        "meta": {"file_status": fstatus, "run_ids": run_ids, "pdf_pages": paper.page_count,
+                 "is_scan": bool(f.is_scan) if f is not None else False},
+    }
+
+
+@router.get("/papers/{domain}/{pid}", summary="Статья: таблицы (solar) или сводка/строки таблиц (rag)")
+def get_paper(domain: str, pid: str, run: str | None = None, tables: str | None = None,
+              limit: int = Query(100, ge=1, le=1000), cursor: str | None = None,
+              user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
     with services.db.uow() as uow:
-        corpus, paper, f = _find(uow, user, pid, run)
+        corpus, paper, f = _find(uow, user, pid, run, domain)
         d = RunData(uow, corpus)
+        if domain != "solar":
+            return _rag_paper(uow, corpus, paper, f, d, pid, run, user, tables, limit, cursor)
         x = _extras(uow, paper)
         t = x["tables"]
         pub = t["publications"][0] if t["publications"] else {
@@ -92,7 +133,7 @@ def get_paper(pid: str, run: str | None = None, user: CurrentUser = Depends(curr
         else:
             status = "nodata"
         run_ids = [run_id_of(c.id) for c in user_corpora(uow, user)
-                   if uow.papers.get_by_publication(c.id, pid) is not None]
+                   if c.collection == "solar" and uow.papers.get_by_publication(c.id, pid) is not None]
         return {
             "publication": pub, "materials": t["materials"], "devices": t["devices"], "layers": t["layers"],
             "measurements": t["measurements"], "results": t["results"], "issues": t["issues"],
@@ -134,11 +175,11 @@ def _iter_file(fh, start: int, length: int, chunk: int = 1 << 20):
         fh.close()
 
 
-@router.get("/papers/solar/{pid}/pdf", summary="Исходный PDF (Range, ETag)")
-def get_pdf(pid: str, request: Request, run: str | None = None, user: CurrentUser = Depends(current_user),
-            services: Services = Depends(get_services)):
+@router.get("/papers/{domain}/{pid}/pdf", summary="Исходный PDF (Range, ETag)")
+def get_pdf(domain: str, pid: str, request: Request, run: str | None = None,
+            user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
     with services.db.uow() as uow:
-        _, paper, f = _find(uow, user, pid, run)
+        _, paper, f = _find(uow, user, pid, run, domain)
         key = f.storage_key if f is not None else None
         sha = (f.sha256 if f is not None else None) or paper.sha256
     store = services.store
@@ -177,24 +218,39 @@ def _need_run(run: str | None) -> str:
 
 @router.get("/results", summary="Строки results разбора")
 def list_results(run: str | None = None, pid: list[str] = Query(default=[]), metric: list[str] = Query(default=[]),
+                 metric_name: list[str] = Query(default=[]),
                  scored: bool = False, device_id: str | None = None, measurement_id: str | None = None,
-                 material_id: str | None = None, duplicates: str = Query("include", pattern="^(include|exclude)$"),
+                 material_id: str | None = None, config_id: str | None = None, dataset_id: str | None = None,
+                 experiment_id: str | None = None, task_id: str | None = None,
+                 duplicates: str = Query("include", pattern="^(include|exclude)$"),
                  sort: str | None = None, dir: str = Query("asc", pattern="^(asc|desc)$"),
                  limit: int = Query(100, ge=1, le=1000), cursor: str | None = None,
                  user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
     run = _need_run(run)
     if sort is not None and sort not in _SORTS:
         raise AppError("validation_error", f"sort: одно из {', '.join(_SORTS)}", field="sort")
-    metrics: list[str] | None = list(metric) or None
-    if scored:
-        scored_set = _SOLAR.scored_metrics or ()
-        metrics = [m for m in (metrics or scored_set) if m in scored_set] or ["\x00"]
-    flt = dict(pids=pid or None, metrics=metrics, device_id=device_id, measurement_id=measurement_id,
-               material_id=material_id, exclude_duplicates=duplicates == "exclude")
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run)
+        domain = corpus.collection
+        spec = get_domain(domain)
+        given = {"device_id": device_id, "measurement_id": measurement_id, "material_id": material_id,
+                 "config_id": config_id, "dataset_id": dataset_id, "experiment_id": experiment_id,
+                 "task_id": task_id}
+        for k, v in given.items():
+            if v and k not in spec.result_filters:
+                raise AppError("validation_error", f"Фильтр {k} не поддерживается в области {domain}: "
+                                                   f"{', '.join(spec.result_filters)}", field=k)
+        metrics: list[str] | None = [*metric, *metric_name] or None
+        if scored and spec.scored_metrics is not None:  # у rag оцениваются все метрики: scored игнорируется
+            scored_set = spec.scored_metrics
+            metrics = [m for m in (metrics or scored_set) if m in scored_set] or ["\x00"]
         native = _NATIVE_SORT.get(sort or "", "seq" if dir == "asc" else "publication")
-        rows, total, nxt = uow.sub.list_results(corpus.id, **flt, sort=native, dir=dir, limit=limit, cursor=cursor)
+        common = dict(pids=pid or None, metrics=metrics, exclude_duplicates=duplicates == "exclude", sort=native,
+                      dir=dir, limit=limit, cursor=cursor)
+        if domain != "solar":
+            return _rag_results(uow, corpus, spec, {k: v for k, v in given.items() if v}, common)
+        rows, total, nxt = uow.sub.list_results(corpus.id, device_id=device_id, measurement_id=measurement_id,
+                                                material_id=material_id, **common)
         by_pid = {p.publication_id: p for p in uow.papers.list(corpus_id=corpus.id)}
         cache: dict[str, dict] = {}
         data = []
@@ -209,6 +265,19 @@ def list_results(run: str | None = None, pid: list[str] = Query(default=[]), met
     return {"data": data, "total": total, "next_cursor": nxt}
 
 
+def _rag_results(uow, corpus, spec, filters: dict[str, str], common: dict) -> dict[str, Any]:
+    """results области rag: фильтры по колонкам, сортировка и страница - в БД; без загрузки статей целиком."""
+    rows, total, nxt = uow.sub.list_results(corpus.id, domain=corpus.collection, filters=filters, **common)
+    pids = sorted({r["publication_id"] for r in rows})
+    titles = uow.sub.publication_titles(corpus.id, pids)
+    quotes = uow.sub.quotes_for(corpus.id, "results", [(r["publication_id"], r["result_id"]) for r in rows])
+    links = uow.sub.issue_links(corpus.id, pids)
+    data = [{"row": r, "paper_title": titles.get(r["publication_id"], ""),
+             "meta": {"quote_found": quotes.get((r["publication_id"], r["result_id"])),
+                      "issue_ids": links.get((r["publication_id"], r["result_id"]), [])}} for r in rows]
+    return {"data": data, "total": total, "next_cursor": nxt}
+
+
 @router.get("/issues", summary="Строки issues разбора")
 def list_issues(run: str | None = None, pid: list[str] = Query(default=[]),
                 check_name: list[str] = Query(default=[]), limit: int = Query(100, ge=1, le=1000),
@@ -218,11 +287,7 @@ def list_issues(run: str | None = None, pid: list[str] = Query(default=[]),
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run)
         rows, total, nxt = uow.sub.list_issues(corpus.id, pids=pid or None, check_names=check_name or None,
-                                               limit=limit, cursor=cursor)
-        titles: dict[str, str] = {}
-        for p in uow.papers.list(corpus_id=corpus.id):
-            if p.publication_id in {r["publication_id"] for r in rows}:
-                pubs = uow.sub.paper_tables(p.id)["publications"]
-                titles[p.publication_id] = pubs[0]["title"] if pubs else ""
+                                               limit=limit, cursor=cursor, domain=corpus.collection)
+        titles = uow.sub.publication_titles(corpus.id, sorted({r["publication_id"] for r in rows}))
     return {"data": [{"row": r, "paper_title": titles.get(r["publication_id"], "")} for r in rows],
             "total": total, "next_cursor": nxt}

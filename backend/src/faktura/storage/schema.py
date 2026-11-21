@@ -120,6 +120,7 @@ corpus_files = sa.Table(
     sa.Column("source", sa.String(1000), nullable=True),
     sa.Column("stage", sa.String(32), nullable=True),
     sa.Column("progress", sa.Integer, nullable=True),
+    sa.Column("is_scan", sa.Boolean, nullable=True),
     sa.Column("created_at", UTCDateTime, nullable=False),
     sa.Index("ix_files_corpus", "corpus_id", "seq"),
     sa.Index("ix_files_sha", "sha256"),
@@ -127,7 +128,7 @@ corpus_files = sa.Table(
 
 # колонки, добавленные позже первого развёртывания: Database.create_all добавляет их в существующие БД
 LATE_COLUMNS: dict[sa.Table, tuple[sa.Column, ...]] = {
-    corpus_files: (corpus_files.c.stage, corpus_files.c.progress),
+    corpus_files: (corpus_files.c.stage, corpus_files.c.progress, corpus_files.c.is_scan),
 }
 
 runs = sa.Table(

@@ -13,7 +13,7 @@ from .meta import META_DIR, META_FILES, build_manifest, check_status, check_summ
 from .sanitize import SanitizeResult, number_issues, parse_number_text, sanitize
 from .rows import paper_submission_tables
 from .select import SelectResult, manual_fact_problem, materialize_manual_fact, select_for_submission
-from .validate import parse_check_output, run_check_script, strict_validate
+from .validate import parse_check_output, parse_rag_check_output, run_check_script, run_rag_check, strict_validate
 
 __all__ = [
     "paper_submission_tables",
@@ -24,5 +24,5 @@ __all__ = [
     "META_FILES",
     "SanitizeResult", "number_issues", "sanitize", "parse_number_text",
     "SelectResult", "materialize_manual_fact", "manual_fact_problem", "select_for_submission",
-    "run_check_script", "strict_validate", "parse_check_output",
+    "run_check_script", "strict_validate", "parse_check_output", "run_rag_check", "parse_rag_check_output",
 ]

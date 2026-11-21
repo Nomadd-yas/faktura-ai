@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from ...domain.entities import CorpusFileStatus, CurrentUser, RunStatus
 from ...domain.errors import AppError
 from ...domain.services import Services
-from ...domain.registry import get_domain
+from ...domain.registry import DOMAINS, get_domain
 from ...pdfio.inputs import CollectResult, ZipLimits, collect_inputs
 from ...storage import decode_cursor, encode_cursor
 from ..base.deps import JSON_MEDIA_TYPE, current_user, get_services, upload_rate_limit
@@ -117,7 +117,7 @@ def create_run(request: Request, file: list[UploadFile] | None = File(default=No
                services: Services = Depends(get_services)):
     from ...pipeline import CorpusService, RunService
 
-    if domain != DOMAIN:
+    if domain not in DOMAINS:
         raise AppError("domain_not_supported", field="domain")
     files = [f for f in (file or []) if f is not None and (f.filename or "")]
     if archive is not None and not (archive.filename or ""):
@@ -134,7 +134,7 @@ def create_run(request: Request, file: list[UploadFile] | None = File(default=No
         now = datetime.now(timezone.utc)
         n_guess = len(collected.files)
         name = (title or "").strip() or zip_name or default_title(n_guess, now)
-        corpus = cs.create(user.workspace_id, user.id, name, DOMAIN, kind=CORPUS_KIND)
+        corpus = cs.create(user.workspace_id, user.id, name, domain, kind=CORPUS_KIND)
         try:
             intake = cs.add_inputs(corpus.id, collected, mode="api", dedupe=True, reuse_existing=False,
                                   allow_same_names=True)
@@ -214,11 +214,15 @@ def _export_name(title: str | None) -> str:
     return f"Набор для сдачи — {stem}.zip" if stem else "Набор для сдачи.zip"
 
 
-def _run_check(services: Services, tables: dict[str, list[dict]], pdf_keys: list[tuple[str, str]]):
-    """check_submission.py на выгруженных CSV и PDF разбора (во временной папке). Скрипт - settings.check_script."""
-    from ...export import run_check_script, table_bytes
+def _run_check(services: Services, tables: dict[str, list[dict]], pdf_keys: list[tuple[str, str]],
+               domain: str = "solar", ocr: bool = False):
+    """check_submission.py области на выгруженных CSV и PDF разбора (во временной папке). Скрипт - по области
+    (solar: settings.check_script, rag: settings.rag_check_script). rag: коды выхода 0/1/2, `--ocr` для сканов."""
+    from ...config import domain_paths
+    from ...export import run_check_script, run_rag_check, table_bytes
 
-    script = services.settings.check_script
+    spec = get_domain(domain)
+    script = domain_paths(services.settings, domain)[2]
     if script is None or not Path(script).is_file():
         raise AppError("extractor_unavailable", "Проверка недоступна: скрипт проверки не настроен", http_status=503)
     tmp = Path(tempfile.mkdtemp(prefix="faktura_zipcheck_"))
@@ -226,14 +230,16 @@ def _run_check(services: Services, tables: dict[str, list[dict]], pdf_keys: list
         csv_dir, pdf_dir = tmp / "csv", tmp / "pdfs"
         csv_dir.mkdir()
         pdf_dir.mkdir()
-        for t in TABLES:
-            (csv_dir / f"{t}.csv").write_bytes(table_bytes(t, tables[t]))
+        for t, cols in spec.tables.items():
+            (csv_dir / f"{t}.csv").write_bytes(table_bytes(t, tables[t], cols))
         for pid, key in pdf_keys:
             try:
                 services.store.copy_to(key, pdf_dir / f"{pid}.pdf")
             except Exception:  # noqa: BLE001
                 log.warning("PDF %s не скопирован для проверки", pid)
-        return run_check_script(Path(script), csv_dir, pdf_dir, timeout_s=services.settings.check_timeout_s)
+        if domain == "solar":
+            return run_check_script(Path(script), csv_dir, pdf_dir, timeout_s=services.settings.check_timeout_s)
+        return run_rag_check(Path(script), csv_dir, pdf_dir, timeout_s=services.settings.check_timeout_s, ocr=ocr)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -243,15 +249,19 @@ def submission_zip(run_id: str, partial: bool = False, check: bool = False,
                    user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
     from ...domain.profile import builtin_solar_profile
     from ...export import check_status, table_bytes
-    from ...passport import build_passport, build_versions, passport_markdown
+    from ...passport import (build_passport, build_rag_passport, build_rag_versions, build_versions,
+                             passport_markdown)
 
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run_id)
         d = RunData(uow, corpus)
+        spec = get_domain(corpus.collection)
+        TABLES = spec.tables
         if d.run is not None and d.run.status in (RunStatus.queued, RunStatus.running, RunStatus.cancelling) \
                 and not partial:
             raise AppError("run_in_progress")
         tables: dict[str, list[dict]] = {t: [] for t in TABLES}
+        any_scan = False
         seen: set[str] = set()
         papers_n = 0
         model_versions: set[str] = set()
@@ -266,32 +276,40 @@ def submission_zip(run_id: str, partial: bool = False, check: bool = False,
                 if partial and f.status in (CorpusFileStatus.pending, CorpusFileStatus.queued,
                                             CorpusFileStatus.processing, CorpusFileStatus.downloading):
                     continue
-                tables["publications"].append({"publication_id": f.publication_id})  # упавшая: только id
-                seen.add(f.publication_id)
-                papers_n += 1
+                if spec.name == "solar":
+                    tables["publications"].append({"publication_id": f.publication_id})  # упавшая: только id
+                    seen.add(f.publication_id)
+                    papers_n += 1
+                # rag: у упавшей статьи нет данных, строка без in_scope не прошла бы проверку - в выгрузку не входит
                 continue
             seen.add(f.publication_id)
             papers_n += 1
             if f.storage_key:
                 pdf_keys.append((f.publication_id, f.storage_key))
+            any_scan = any_scan or bool(f.is_scan)
             if paper.model_version:
                 model_versions.add(paper.model_version)
             for k in ("norm", "dictionary", "rules"):
                 v = (paper.versions or {}).get(k)
                 if v:
                     versions.setdefault(k, v)
-            for t, rows in uow.sub.paper_tables(paper.id).items():
+            for t, rows in uow.sub.paper_tables(paper.id, spec.name).items():
                 tables[t].extend(rows)
         title = corpus.name
     norm = services.normalizer
-    passport = build_passport(builtin_solar_profile(), build_versions(
-        model_versions, rules=versions.get("rules"),
-        normalization=versions.get("norm") or str(getattr(norm, "version", "") or "") or None,
-        dictionary=versions.get("dictionary") or str(getattr(norm, "dictionary_version", "") or "") or None))
+    if spec.name == "solar":
+        passport = build_passport(builtin_solar_profile(), build_versions(
+            model_versions, rules=versions.get("rules"),
+            normalization=versions.get("norm") or str(getattr(norm, "version", "") or "") or None,
+            dictionary=versions.get("dictionary") or str(getattr(norm, "dictionary_version", "") or "") or None))
+    else:
+        passport = build_rag_passport(spec, build_rag_versions(model_versions))
     headers = {}
     report = None
     if check:
-        report = _run_check(services, tables, pdf_keys)
+        import shutil as _sh
+
+        report = _run_check(services, tables, pdf_keys, spec.name, ocr=any_scan and _sh.which("tesseract") is not None)
         status = check_status(report)
         if status == "failed":
             raise AppError("submission_invalid", "Набор не прошёл проверку check_submission.py", details={
@@ -300,8 +318,8 @@ def submission_zip(run_id: str, partial: bool = False, check: bool = False,
         headers["X-Check-Status"] = status or "ok"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        for t in TABLES:
-            z.writestr(f"{t}.csv", table_bytes(t, tables[t]))
+        for t, cols in TABLES.items():
+            z.writestr(f"{t}.csv", table_bytes(t, tables[t], cols))
         z.writestr("PASSPORT.md", passport_markdown(passport).encode("utf-8"))
         z.writestr("passport.json", (json.dumps(passport, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
         if report is not None:

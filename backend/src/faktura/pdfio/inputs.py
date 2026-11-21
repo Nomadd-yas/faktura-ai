@@ -26,6 +26,7 @@ class PdfInfo(BaseModel):
     sha256: str
     size_bytes: int
     page_count: int
+    is_scan: bool | None = None  # нет текстового слоя (заполняется приёмом для не-solar областей)
 
 
 class InputFile(BaseModel):
@@ -133,6 +134,47 @@ def inspect_pdf(path: Path, *, max_mb: int = 50, max_pages: int = 300) -> PdfInf
     finally:
         doc.close()
     return PdfInfo(sha256=sha256_file(path), size_bytes=size, page_count=pages)
+
+
+SCAN_MIN_CHARS = 10  # меньше значимых символов на странице = «текста нет»
+
+
+def detect_scan(path: Path) -> bool | None:
+    """True, если у PDF нет текстового слоя: ни pypdf, ни PyMuPDF не дают текста ни на одной странице.
+
+    Останавливается на первой странице с текстом (обычный PDF проверяется за одну страницу). None - не удалось
+    проверить (ошибка чтения)."""
+    path = Path(path)
+    try:
+        import fitz
+
+        _silence_mupdf()
+        doc = fitz.open(str(path), filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        reader = None
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(str(path))
+        except Exception:  # noqa: BLE001 - pypdf не читает: решает PyMuPDF
+            reader = None
+        for i in range(doc.page_count):
+            try:
+                if len("".join(doc.load_page(i).get_text().split())) >= SCAN_MIN_CHARS:
+                    return False
+            except Exception:  # noqa: BLE001
+                pass
+            if reader is not None:
+                try:
+                    if len("".join((reader.pages[i].extract_text() or "").split())) >= SCAN_MIN_CHARS:
+                        return False
+                except Exception:  # noqa: BLE001
+                    pass
+        return True
+    finally:
+        doc.close()
 
 
 # ---------------------------------------------------------------------------------------------

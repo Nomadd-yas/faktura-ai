@@ -11,7 +11,7 @@ from typing import Any
 
 from ...domain.entities import CorpusFile, CorpusFileStatus, CurrentUser, PaperStatus, Run, RunStatus
 from ...domain.errors import AppError
-from ...domain.registry import get_domain
+from ...domain.registry import DOMAINS, get_domain
 from ..base.serializers import iso
 
 DOMAIN = "solar"
@@ -19,7 +19,8 @@ CORPUS_KIND = "extract"
 
 _MONTHS = ("янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
 _LABELS = {"queued": "в очереди", "running": "разбор", "done": "готово", "nodata": "нет результатов",
-           "error": "ошибка"}
+           "error": "ошибка", "ocr": "скан, распознано OCR"}
+RAG_TOP_METRICS = 20  # coverage сводки rag: топ метрик по числу статей
 _IN_PROGRESS = (RunStatus.queued, RunStatus.running, RunStatus.cancelling)
 SHORT_FILE_KEYS = ("id", "name", "status", "has_data", "results", "issues", "reason")
 
@@ -55,15 +56,15 @@ def get_corpus(uow, user: CurrentUser, run_id: str):
     """Корпус разбора пользователя или 404 (чужие разборы не видны)."""
     c = uow.corpora.get(corpus_id_of(run_id))
     if (c is None or c.deleted_at is not None or c.workspace_id != user.workspace_id
-            or c.created_by != user.id or c.collection != DOMAIN or c.kind != CORPUS_KIND):
+            or c.created_by != user.id or c.collection not in DOMAINS or c.kind != CORPUS_KIND):
         raise AppError("not_found", "Разбор не найден")
     return c
 
 
 def user_corpora(uow, user: CurrentUser) -> list:
     """Разборы пользователя, новые сверху."""
-    items = [c for c in uow.corpora.list(user.workspace_id, collection=DOMAIN, kind=CORPUS_KIND)
-             if c.created_by == user.id]
+    items = [c for c in uow.corpora.list(user.workspace_id, kind=CORPUS_KIND)
+             if c.created_by == user.id and c.collection in DOMAINS]
     return sorted(items, key=lambda c: (c.created_at or datetime.min.replace(tzinfo=None), c.id), reverse=True)
 
 
@@ -102,6 +103,8 @@ class RunData:
 
     def counts(self, views: list[dict]) -> dict[str, int]:
         out = {"files": len(views), "queued": 0, "running": 0, "done": 0, "out": 0, "error": 0, "nodata": 0}
+        if self.corpus.collection != "solar":
+            out["ocr"] = 0  # сканы бывают только в областях кроме solar
         for v in views:
             out[v["status"]] += 1
         return out
@@ -165,6 +168,8 @@ def file_status(f: CorpusFile, paper, results: int, pub: tuple[str, str] | None)
     in_scope, reason = pub if pub else ("", "")
     if in_scope == "false" or (not pub and paper.in_scope is False):
         return "out", reason
+    if results > 0 and f.is_scan:
+        return "ocr", ""
     return ("done", "") if results > 0 else ("nodata", "")
 
 
@@ -176,7 +181,7 @@ def run_view(uow, corpus, *, files: str = "full") -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": run_id_of(corpus.id),
         "title": corpus.name or default_title(n, corpus.created_at or datetime.now()),
-        "domain": DOMAIN,
+        "domain": corpus.collection,
         "status": d.status(views),
         "created_at": iso(corpus.created_at),
         "updated_at": iso(d.updated_at()),
@@ -195,7 +200,8 @@ def run_summary(uow, corpus) -> dict[str, Any]:
     d = RunData(uow, corpus)
     views = [d.file_view(f) for f in d.files]
     by_status = d.counts(views)
-    in_scope_pids = {f.paper_id for f, v in zip(d.files, views) if v["status"] in ("done", "nodata") and f.paper_id}
+    in_scope_pids = {f.paper_id for f, v in zip(d.files, views)
+                     if v["status"] in ("done", "nodata", "ocr") and f.paper_id}
     per_metric: dict[str, int] = {}
     papers_with: dict[str, set[str]] = defaultdict(set)
     for paper_id, metric, n in uow.sub.metric_counts(corpus.id):
@@ -204,15 +210,26 @@ def run_summary(uow, corpus) -> dict[str, Any]:
             papers_with[metric].add(paper_id)
     issues_by = [{"check_name": k, "total": n} for k, n in uow.sub.issue_counts_by_check(corpus.id)]
     total = len(in_scope_pids)
-    scored = get_domain(DOMAIN).scored_metrics or ()
+    spec = get_domain(corpus.collection)
+    scored = spec.scored_metrics
+    if scored is None:  # rag: оцениваются все метрики - в coverage топ метрик по числу статей
+        top = sorted(per_metric, key=lambda m: (-len(papers_with.get(m, ())), -per_metric[m], m))
+        top = [m for m in top if m][:RAG_TOP_METRICS]
+        coverage = [{"metric": m, "n": len(papers_with.get(m, ())), "total": total,
+                     "results": per_metric.get(m, 0)} for m in top]
+        scored_results = sum(v["results"] for v in views)
+    else:
+        coverage = [{"metric": m, "n": len(papers_with.get(m, ())), "total": total,
+                     "results": per_metric.get(m, 0)} for m in scored]
+        scored_results = sum(per_metric.get(m, 0) for m in scored)
     return {
-        "files": by_status["files"], "papers_in_scope": by_status["done"] + by_status["nodata"],
+        "files": by_status["files"],
+        "papers_in_scope": by_status["done"] + by_status["nodata"] + by_status.get("ocr", 0),
         "papers_out": by_status["out"], "files_without_results": by_status["nodata"],
         "files_error": by_status["error"],
         "results": sum(v["results"] for v in views),
-        "scored_results": sum(per_metric.get(m, 0) for m in scored),
+        "scored_results": scored_results,
         "issues_total": sum(v["issues"] for v in views),
-        "coverage": [{"metric": m, "n": len(papers_with.get(m, ())), "total": total,
-                      "results": per_metric.get(m, 0)} for m in scored],
+        "coverage": coverage,
         "issues_by_check": issues_by,
     }

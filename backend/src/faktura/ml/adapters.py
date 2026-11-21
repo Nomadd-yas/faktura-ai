@@ -22,10 +22,12 @@ from typing import Any, Callable, Literal
 
 from ..config import Settings
 from ..domain.errors import AppError, ExtractError, extract_error
-from ..domain.extraction import ExtractOutcome, ExtractRequest, MlHealth
+from ..domain.extraction import ExtractOutcome, ExtractRequest, GenericOutcome, MlHealth
 from ..domain.io import parse_cell, read_tables
 from ..domain.ports import ExtractAdapter, FileStore
+from ..domain.registry import get_domain
 from ..domain.tables import INTEGER_FIELDS, TABLES
+from .generic import GenericGoldExtractor, parse_generic_response, pdf_dataset_to_generic
 from .pdf_dataset import pdf_dataset_to_contract
 from .response import BACKEND_RESULT_FIELDS, ROW_TABLES, parse_extract_response
 
@@ -39,7 +41,7 @@ NUMERIC_CHECKS: frozenset[str] = frozenset({
 PDF_ERROR_CODES = frozenset({"pdf_no_text", "pdf_encrypted", "pdf_broken"})
 RETRY_STATUSES = frozenset({429, 502, 503, 504})
 MAX_RETRY_AFTER_S = 600.0
-SUPPORTED_DOMAINS = ("solar",)
+SUPPORTED_DOMAINS = ("solar", "rag")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -66,11 +68,14 @@ class MockGoldExtractor:
     model_version = 'mock-gold-<sha8 эталона>'. Ответы мока не кешируются."""
     name = "mock"
 
-    def __init__(self, gold_dir: Path, issues_mode: Literal["all", "ml_only"] = "all") -> None:
+    def __init__(self, gold_dir: Path, issues_mode: Literal["all", "ml_only"] = "all",
+                 rag_gold_dir: Path | None = None) -> None:
         if issues_mode not in ("all", "ml_only"):
             raise ValueError(f"issues_mode: all | ml_only, получено {issues_mode!r}")
         self.gold_dir = Path(gold_dir) if gold_dir is not None else None
         self.issues_mode = issues_mode
+        self.rag_gold_dir = Path(rag_gold_dir) if rag_gold_dir is not None else None
+        self._generic: dict[str, GenericGoldExtractor] = {}
         self._lock = threading.Lock()
         self._rows: dict[str, dict[str, list[dict[str, str]]]] | None = None
         self._version: str | None = None
@@ -123,8 +128,17 @@ class MockGoldExtractor:
                 out[k] = v
         return out
 
-    def build_raw(self, publication_id: str) -> dict[str, Any]:
+    def generic(self, domain: str) -> GenericGoldExtractor:
+        """Мок области без pydantic-моделей (rag) по `rag_gold_dir`."""
+        with self._lock:
+            if domain not in self._generic:
+                self._generic[domain] = GenericGoldExtractor(self.rag_gold_dir, domain)
+            return self._generic[domain]
+
+    def build_raw(self, publication_id: str, domain: str = "solar") -> dict[str, Any]:
         """Ответ §7.0.1 для статьи; его же отдаёт mock_server."""
+        if domain != "solar":
+            return self.generic(domain).build_raw(publication_id)
         self._load()
         paper = (self._rows or {}).get(publication_id)
         raw: dict[str, Any] = {"model_version": self._version}
@@ -148,14 +162,19 @@ class MockGoldExtractor:
             raw[t] = recs
         return raw
 
-    def extract(self, req: ExtractRequest) -> ExtractOutcome:
+    def extract(self, req: ExtractRequest) -> ExtractOutcome | GenericOutcome:
+        if (req.domain or "solar") != "solar":
+            return self.generic(req.domain).extract(req)
         return parse_extract_response(self.build_raw(req.publication_id), req.publication_id)
 
     def health(self) -> MlHealth:
         try:
             return MlHealth(status="ok", model_version=self.model_version)
         except (ExtractError, OSError):
-            return MlHealth(status="down", model_version=None)
+            pass
+        if self.rag_gold_dir is not None:  # эталона solar нет, но есть эталон другой области
+            return self.generic("rag").health()
+        return MlHealth(status="down", model_version=None)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -248,7 +267,7 @@ class HttpExtractor:
             data["fields"] = json.dumps([f.model_dump(mode="json") for f in req.fields], ensure_ascii=False)
         return data
 
-    def extract(self, req: ExtractRequest) -> ExtractOutcome:
+    def extract(self, req: ExtractRequest) -> ExtractOutcome | GenericOutcome:
         import httpx
 
         pdf_path = Path(req.pdf_path)
@@ -285,6 +304,11 @@ class HttpExtractor:
                         data = resp.json()
                     except Exception as e:  # noqa: BLE001
                         raise extract_error("ml_schema_mismatch", "Ответ ML-1 не JSON") from e
+                    domain = req.domain or "solar"
+                    if domain != "solar":
+                        if self.protocol == "pdf_dataset":
+                            data = pdf_dataset_to_generic(data, req.publication_id, domain)
+                        return parse_generic_response(data, req.publication_id, get_domain(domain))
                     if self.protocol == "pdf_dataset":
                         data = pdf_dataset_to_contract(data, req.publication_id)
                     return parse_extract_response(data, req.publication_id)
@@ -359,7 +383,7 @@ class RawDirExtractor:
     def __init__(self, raw_dir: Path) -> None:
         self.raw_dir = Path(raw_dir)
 
-    def extract(self, req: ExtractRequest) -> ExtractOutcome:
+    def extract(self, req: ExtractRequest) -> ExtractOutcome | GenericOutcome:
         p = self.raw_dir / f"{req.publication_id}.json"
         if not p.is_file():
             raise extract_error("ml_error", f"Нет файла ответа ML: {p.name} в {self.raw_dir}", retryable=False)
@@ -367,6 +391,8 @@ class RawDirExtractor:
             data = json.loads(p.read_text(encoding="utf-8-sig"))
         except (ValueError, UnicodeDecodeError) as e:
             raise extract_error("ml_schema_mismatch", f"{p.name}: не JSON ({e})") from e
+        if (req.domain or "solar") != "solar":
+            return parse_generic_response(data, req.publication_id, get_domain(req.domain))
         return parse_extract_response(data, req.publication_id)
 
     def health(self) -> MlHealth:
@@ -495,8 +521,13 @@ class CachedExtractor:
         self.cache = cache
         self.name = inner.name
 
-    def _from_cache(self, req: ExtractRequest, version: str, raw: dict, note: str | None = None) -> ExtractOutcome:
-        out = parse_extract_response(raw, req.publication_id)
+    def _from_cache(self, req: ExtractRequest, version: str, raw: dict, note: str | None = None
+                    ) -> ExtractOutcome | GenericOutcome:
+        domain = req.domain or "solar"
+        if domain != "solar":
+            out = parse_generic_response(raw, req.publication_id, get_domain(domain))
+        else:
+            out = parse_extract_response(raw, req.publication_id)
         out.from_cache = True
         if note:
             out.warnings.append(note)
@@ -504,8 +535,17 @@ class CachedExtractor:
             out.model_version = version
         return out
 
-    def _offline(self, req: ExtractRequest, err: ExtractError) -> ExtractOutcome:
+    @staticmethod
+    def _domain_ok(req: ExtractRequest, raw: dict | None) -> bool:
+        """Кеш общий по sha256: ответ другой области (rag/solar) для того же PDF не подходит."""
+        if raw is None:
+            return False
+        return (raw.get("domain") or "solar") == (req.domain or "solar")
+
+    def _offline(self, req: ExtractRequest, err: ExtractError) -> ExtractOutcome | GenericOutcome:
         hit = self.cache.get_last(req.sha256)
+        if hit is not None and not self._domain_ok(req, hit[1]):
+            hit = None
         if hit is not None and getattr(self.inner, "protocol", None) == "pdf_dataset" \
                 and not str(hit[0]).startswith("pdf-dataset"):
             hit = None  # не подсовывать ответ мока/другого ML вместо прототипа
@@ -514,7 +554,7 @@ class CachedExtractor:
         v, raw = hit
         return self._from_cache(req, v, raw, f"Сервис разбора недоступен: взят сохранённый ответ версии {v}")
 
-    def extract(self, req: ExtractRequest) -> ExtractOutcome:
+    def extract(self, req: ExtractRequest) -> ExtractOutcome | GenericOutcome:
         version = req.model_version
         if not version or version == "latest":
             h = self.inner.health()
@@ -524,13 +564,13 @@ class CachedExtractor:
             version = h.model_version
         if version and version != self.inner.name:
             raw = self.cache.get(req.sha256, version)
-            if raw is not None:
+            if raw is not None and self._domain_ok(req, raw):
                 return self._from_cache(req, version, raw)
         elif getattr(self.inner, "protocol", None) == "pdf_dataset":
             # прототип ML-1 версии в /health не сообщает: берём последний сохранённый ответ, но только его же
             # (не ответ мока/другого ML для того же PDF)
             hit = self.cache.get_last(req.sha256)
-            if hit is not None and str(hit[0]).startswith("pdf-dataset"):
+            if hit is not None and str(hit[0]).startswith("pdf-dataset") and self._domain_ok(req, hit[1]):
                 return self._from_cache(req, hit[0], hit[1])
         try:
             out = self.inner.extract(req.model_copy(update={"model_version": version or req.model_version}))
@@ -570,7 +610,8 @@ def build_extractor(settings: Settings, *, kind: str | None = None, url: str | N
     if k == "mock":
         if settings.mock_gold_dir is None:
             raise AppError("validation_error", "Для мока нужен эталон: FAKTURA_MOCK_GOLD_DIR / --gold-dir")
-        return MockGoldExtractor(Path(settings.mock_gold_dir), settings.mock_issues)
+        return MockGoldExtractor(Path(settings.mock_gold_dir), settings.mock_issues,
+                                 rag_gold_dir=settings.rag_mock_gold_dir)
     if k == "http":
         base = url or settings.extract_url
         if not base:

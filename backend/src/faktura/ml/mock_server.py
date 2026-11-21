@@ -33,7 +33,7 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
         if "ext" not in state:
             s = settings or get_settings()
             gold = s.mock_gold_dir or Path("dev_gold")
-            state["ext"] = MockGoldExtractor(Path(gold), s.mock_issues)
+            state["ext"] = MockGoldExtractor(Path(gold), s.mock_issues, rag_gold_dir=s.rag_mock_gold_dir)
         return state["ext"]
 
     @app.get("/health")
@@ -70,7 +70,7 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
         if not pid:
             return _error(400, "bad_request", "Нет publication_id")
         try:
-            raw = extractor().build_raw(pid)
+            raw = extractor().build_raw(pid, domain)
         except Exception as e:  # noqa: BLE001 - нет эталона и т. п.
             return _error(503, "unavailable", f"Мок недоступен: {e}", retryable=True)
         return JSONResponse(content=raw)

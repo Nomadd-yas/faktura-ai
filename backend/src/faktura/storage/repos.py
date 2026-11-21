@@ -258,7 +258,7 @@ def _file(r) -> CorpusFile:
                       size_bytes=r.size_bytes, page_count=r.page_count, status=r.status, error_code=r.error_code,
                       error_message=r.error_message, paper_id=r.paper_id, duplicate_of=r.duplicate_of,
                       dup_kind=r.dup_kind, storage_key=r.storage_key, source=r.source, stage=r.stage,
-                      progress=r.progress, created_at=r.created_at)
+                      progress=r.progress, is_scan=r.is_scan, created_at=r.created_at)
 
 
 class FilesRepo(_Repo):

@@ -247,6 +247,11 @@ class PaperProcessor:
             file = uow.files.get(paper.file_id) if paper.file_id else None
             if mode != "full" and paper.processed_at is None:
                 raise AppError("conflict", "Статья ещё не разобрана: нечего пересчитывать")
+        if (paper.collection or "solar") != "solar":  # rag: свой процессор, без bundle/фактов/замечаний бэка
+            from .generic import GenericProcessor
+
+            return GenericProcessor(self).process(paper, file, mode=mode, model_version=model_version,
+                                                  on_stage=on_stage, abort=abort)
         if mode == "recheck":
             return self._recheck(paper, file, profile)
         if file is None or not file.storage_key:

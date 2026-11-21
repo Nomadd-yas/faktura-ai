@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from ..domain.entities import Corpus, CorpusFile, CorpusFileStatus, DupKind, PaperStatus
 from ..domain.errors import AppError, PdfError
 from ..domain.services import Services
-from ..pdfio.inputs import CollectResult, InputFile, Rejected, dedupe_names, inspect_pdf
+from ..pdfio.inputs import CollectResult, InputFile, Rejected, dedupe_names, detect_scan, inspect_pdf
 from ._pdf import PDF_LOCK
 
 log = logging.getLogger(__name__)
@@ -90,6 +90,8 @@ class CorpusService:
             try:
                 with PDF_LOCK:
                     info = inspect_pdf(f.path, max_mb=s.max_file_mb, max_pages=s.max_pages)
+                    if corpus.collection != "solar":  # у solar сканов нет; для rag признак скана - статус «ocr»
+                        info.is_scan = detect_scan(f.path)
             except PdfError as e:
                 if mode == "api":
                     result.rejected.append(Rejected(name=f.name, code=e.code, message=e.message, rel_path=f.rel_path))
@@ -123,7 +125,8 @@ class CorpusService:
             same = [x for x in uow.files.list(corpus.id)
                     if x.sha256 == info.sha256 and x.status != CorpusFileStatus.skipped_duplicate]
             common = dict(corpus_id=corpus.id, name=f.name, publication_id=f.publication_id, sha256=info.sha256,
-                          size_bytes=info.size_bytes, page_count=info.page_count, source=f.rel_path)
+                          size_bytes=info.size_bytes, page_count=info.page_count, source=f.rel_path,
+                          is_scan=getattr(info, "is_scan", None))
             if same and mode == "api":
                 orig = same[0]
                 cf = uow.files.add(**common, status=CorpusFileStatus.skipped_duplicate, duplicate_of=orig.id,

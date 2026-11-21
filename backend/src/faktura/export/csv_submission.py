@@ -21,9 +21,10 @@ __all__ = ["write_submission", "write_tables", "table_bytes", "SUBMISSION_FILES"
 SUBMISSION_FILES: tuple[str, ...] = tuple(f"{t}.csv" for t in TABLES)
 
 
-def table_bytes(table: str, rows: list[dict[str, str]]) -> bytes:
-    """Байты одного CSV сдачи: BOM + заголовок 1:1 с TABLES + строки; лишние ключи строк отбрасываются."""
-    cols = TABLES[table]
+def table_bytes(table: str, rows: list[dict[str, str]], columns: tuple[str, ...] | None = None) -> bytes:
+    """Байты одного CSV сдачи: BOM + заголовок 1:1 с TABLES (или `columns` другой области) + строки;
+    лишние ключи строк отбрасываются."""
+    cols = columns or TABLES[table]
     buf = io.StringIO(newline="")
     w = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
     w.writerow(cols)

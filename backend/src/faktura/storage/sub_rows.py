@@ -52,12 +52,15 @@ class SubRowsRepo(_Repo):
 
     def replace(self, paper_id: str, corpus_id: str | None, domain: str,
                 tables: Mapping[str, Sequence[Mapping[str, Any]]],
-                quote_found: Mapping[str, bool | None] | None = None) -> None:
-        """Удаляет строки статьи и вставляет новые пачками. quote_found: result_id -> проверка цитаты."""
+                quote_found: Mapping[str, bool | None] | None = None,
+                issue_quote_found: Mapping[str, bool | None] | None = None) -> None:
+        """Удаляет строки статьи и вставляет новые пачками. quote_found: result_id -> проверка цитаты;
+        issue_quote_found: issue_id -> проверка цитаты замечания."""
         spec = get_domain(domain)
         t = S.sub_rows
         self.c.execute(t.delete().where(t.c.paper_id == paper_id))
         quote_found = quote_found or {}
+        issue_quote_found = issue_quote_found or {}
         batch: list[dict[str, Any]] = []
         for name, cols in spec.tables.items():
             key = spec.keys.get(name)
@@ -71,7 +74,8 @@ class SubRowsRepo(_Repo):
                     "check_name": data.get("check_name") if name == "issues" else None,
                     "num_value": _num(data.get("metric_value", "")) if name == "results" else None,
                     "source_page": _page(data.get("source_page", "")) if name in ("results", "issues") else None,
-                    "quote_found": quote_found.get(data.get(key, "")) if name == "results" and key else None,
+                    "quote_found": (quote_found if name == "results" else issue_quote_found).get(data.get(key, ""))
+                    if name in ("results", "issues") and key else None,
                     "data": data,
                 })
         for i in range(0, len(batch), CHUNK):
@@ -87,6 +91,61 @@ class SubRowsRepo(_Repo):
         for name, data in self.c.execute(q):
             if name in out:
                 out[name].append({k: _s((data or {}).get(k)) for k in spec.tables[name]})
+        return out
+
+    def paper_table_page(self, paper_id: str, domain: str, table: str, limit: int = 100,
+                         cursor: str | None = None) -> tuple[list[dict[str, str]], int, str | None]:
+        """Страница строк одной таблицы статьи в порядке position: (rows, total, next_cursor). Курсор - keyset по id."""
+        spec = get_domain(domain)
+        if table not in spec.tables:
+            raise _bad(f"Нет таблицы {table}", "tables")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise _bad("limit: положительное целое", "limit")
+        t = S.sub_rows
+        where = [t.c.paper_id == paper_id, t.c.table_name == table]
+        total = self.c.execute(sa.select(sa.func.count()).select_from(t).where(*where)).scalar() or 0
+        q_where = list(where)
+        if cursor:
+            cur = decode_cursor(cursor)
+            if len(cur) != 3 or cur[0] != "pt" or cur[1] != table or not isinstance(cur[2], int):
+                raise _bad("Некорректный курсор", "cursor")
+            q_where.append(t.c.id > cur[2])
+        rows = self.c.execute(sa.select(t.c.id, t.c.data).where(*q_where).order_by(t.c.id).limit(limit + 1)).all()
+        more = len(rows) > limit
+        rows = rows[:limit]
+        nxt = encode_cursor(["pt", table, rows[-1][0]]) if more and rows else None
+        cols = spec.tables[table]
+        return [{k: _s((d or {}).get(k)) for k in cols} for _, d in rows], total, nxt
+
+    def publication_titles(self, corpus_id: str, pids: Sequence[str] | None = None) -> dict[str, str]:
+        """publication_id -> title из строк publications корпуса."""
+        t = S.sub_rows
+        q = sa.select(t.c.publication_id, t.c.data).where(t.c.corpus_id == corpus_id, t.c.table_name == "publications")
+        if pids is not None:
+            q = q.where(t.c.publication_id.in_(list(pids)))
+        return {p: _s((d or {}).get("title")) for p, d in self.c.execute(q)}
+
+    def quotes_for(self, corpus_id: str, table: str, pairs: Sequence[tuple[str, str]]) -> dict[tuple[str, str], bool | None]:
+        """(publication_id, row_id) -> quote_found для заданных строк таблицы (results | issues)."""
+        if not pairs:
+            return {}
+        t = S.sub_rows
+        pids = {p for p, _ in pairs}
+        ids = {r for _, r in pairs}
+        q = sa.select(t.c.publication_id, t.c.row_id, t.c.quote_found).where(
+            t.c.corpus_id == corpus_id, t.c.table_name == table, t.c.publication_id.in_(list(pids)),
+            t.c.row_id.in_(list(ids)))
+        want = set(pairs)
+        return {(p, r): qf for p, r, qf in self.c.execute(q) if (p, r) in want}
+
+    def issue_links(self, corpus_id: str, pids: Sequence[str]) -> dict[tuple[str, str], list[str]]:
+        """(publication_id, result_id) -> issue_id замечаний, ссылающихся на строку (issues.record_ids)."""
+        t = S.sub_rows
+        out: dict[tuple[str, str], list[str]] = {}
+        for pid, rid, d in self.c.execute(sa.select(t.c.publication_id, t.c.row_id, t.c.data).where(
+                t.c.corpus_id == corpus_id, t.c.table_name == "issues", t.c.publication_id.in_(list(pids)))):
+            for rec in [x.strip() for x in _s((d or {}).get("record_ids")).split(";") if x.strip()]:
+                out.setdefault((pid, rec), []).append(rid or "")
         return out
 
     def paper_quotes(self, paper_id: str) -> dict[str, bool | None]:

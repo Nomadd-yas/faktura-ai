@@ -157,3 +157,77 @@ def title_key(title: str | None, year: int | None, first_author: str | None) -> 
     if not surname:
         return None
     return f"{t}|{y}|{surname}"
+
+
+# ---------------------------------------------------------------------------------------------
+# Проверка цитат области rag: нормализация и два чтения PDF, как в RAG-варианте check_submission.py
+# ---------------------------------------------------------------------------------------------
+
+_HYPHEN_BREAK = re.compile(r"(?<=\w)-\s*\r?\n\s*(?=\w)")
+_WS = re.compile(r"\s+")
+
+
+def rag_norm(text: str) -> str:
+    """Копия norm() RAG-скрипта: NFKC, без мягкого переноса, склейка переносов слов, схлопнутые пробелы."""
+    text = unicodedata.normalize("NFKC", text or "").replace("\u00ad", "")
+    text = _HYPHEN_BREAK.sub("", text)
+    return _WS.sub(" ", text).strip()
+
+
+class VariantQuoteIndex:
+    """Цитаты rag: страница читается pypdf и PyMuPDF (независимые варианты), цитата найдена, если она есть
+    хотя бы в одном. `check` -> None, если цитата не проверяется (нет страницы, ссылка на Table/Supplementary,
+    у страницы нет текстового слоя), иначе True/False. Нечитаемый PDF: все цитаты None."""
+
+    def __init__(self, pdf_path: Path) -> None:
+        self.pdf_path = Path(pdf_path)
+        self._pages: list[list[str]] | None = None
+        self._lock = threading.Lock()
+        self.error: str | None = None
+
+    @property
+    def pages(self) -> list[list[str]]:
+        if self._pages is None:
+            with self._lock:
+                if self._pages is None:
+                    self._pages = self._load()
+        return self._pages
+
+    def _load(self) -> list[list[str]]:
+        variants: list[list[str]] = []
+        try:
+            from pypdf import PdfReader
+
+            variants.append([rag_norm(pg.extract_text() or "") for pg in PdfReader(str(self.pdf_path)).pages])
+        except Exception as e:  # noqa: BLE001
+            self.error = f"pypdf: {type(e).__name__}"
+        try:
+            import fitz
+
+            from ..pipeline._pdf import PDF_LOCK
+
+            with PDF_LOCK:
+                with fitz.open(str(self.pdf_path)) as doc:
+                    variants.append([rag_norm(p.get_text() or "") for p in doc])
+        except Exception as e:  # noqa: BLE001
+            self.error = (self.error + "; " if self.error else "") + f"PyMuPDF: {type(e).__name__}"
+        if not variants or len({len(v) for v in variants}) != 1:
+            return []
+        return [[v[i] for v in variants] for i in range(len(variants[0]))]
+
+    def check(self, page: object, fragment: str | None) -> bool | None:
+        if not is_checkable_fragment(fragment):
+            return None
+        n = _page_number(page)
+        if n is None:
+            return None
+        pages = self.pages
+        if not (1 <= n <= len(pages)):
+            return None if not pages else False
+        variants = pages[n - 1]
+        if not any(variants):
+            return None  # нет текстового слоя: цитату нечем проверить (скан)
+        needle = rag_norm((fragment or "").strip())
+        if not needle:
+            return None
+        return any(needle in t for t in variants)

@@ -51,3 +51,12 @@ class MlHealth(BaseModel):
     status: Literal["ok", "degraded", "down"]
     model_version: str | None = None
     retry_after_s: int | None = None
+
+
+class GenericOutcome(BaseModel):
+    """Ответ модели для области без своих pydantic-моделей (rag): строки таблиц как словари."""
+    tables: dict[str, list[dict[str, Any]]]
+    model_version: str
+    warnings: list[str] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
+    from_cache: bool = False

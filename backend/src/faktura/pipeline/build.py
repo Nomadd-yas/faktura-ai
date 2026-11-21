@@ -64,10 +64,11 @@ def make_extractor(settings: Settings, *, kind: str | None = None, url: str | No
     k = kind or settings.extractor
     if k == "mock":
         gold = settings.mock_gold_dir
-        if gold is None or not Path(gold).is_dir():
+        rag = settings.rag_mock_gold_dir
+        if (gold is None or not Path(gold).is_dir()) and (rag is None or not Path(rag).is_dir()):
             raise AppError("validation_error",
                            f"Для мока ML-1 нужен каталог эталона (FAKTURA_MOCK_GOLD_DIR / --gold-dir): {gold}")
-        return MockGoldExtractor(Path(gold), settings.mock_issues)
+        return MockGoldExtractor(Path(gold) if gold is not None else None, settings.mock_issues, rag_gold_dir=rag)
     if k == "http":
         base = url or settings.extract_url
         if not base:

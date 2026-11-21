@@ -135,6 +135,7 @@ class CorpusFile(BaseModel):
     source: str | None = None
     stage: str | None = None  # этап разбора: «Извлечение» | «Нормализация» | «Проверка»
     progress: int | None = None  # 0..100
+    is_scan: bool | None = None  # у PDF нет текстового слоя (определяется при приёме для rag)
     created_at: datetime | None = None
 
 

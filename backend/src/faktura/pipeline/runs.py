@@ -665,6 +665,9 @@ class RunService:
         """Смысловые дубли по порядку приёма (после параллельной обработки эталон - самая ранняя статья)."""
         with self.services.db.uow() as uow:
             run = uow.runs.get(run_id)
+            corpus = uow.corpora.get(run.corpus_id)
+            if corpus is not None and corpus.collection != "solar":
+                return  # смысловые дубли считаются по bundle solar; для rag не применяются
             for f in uow.files.list(run.corpus_id, ids=run.file_ids or []):
                 if f.paper_id and f.status == CorpusFileStatus.done:
                     p = uow.papers.get(f.paper_id)
