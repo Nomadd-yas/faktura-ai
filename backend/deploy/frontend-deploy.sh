@@ -2,10 +2,10 @@
 # Выкладка фронтенда (репозиторий hack-lock, приватный) на сервер: исходники клонируются ЛОКАЛЬНО (там есть доступ к
 # GitHub), передаются по ssh, собираются на сервере в контейнере node:22 и подменяют /var/www/faktura атомарно.
 # nginx не устанавливается и не трогается (его ставит ML-2); конфиг сайта - backend/deploy/nginx/factura.conf.
-#   bash backend/deploy/frontend-deploy.sh [ssh-host] [git-ref]     (по умолчанию faktura-gpu, main)
+#   bash backend/deploy/frontend-deploy.sh [ssh-host] [git-ref]     (по умолчанию faktura-gpu, master)
 set -euo pipefail
 HOST="${1:-faktura-gpu}"
-REF="${2:-main}"
+REF="${2:-master}"
 REPO="${FRONTEND_REPO:-https://github.com/Hahora/hack-lock.git}"
 SRC="$(mktemp -d)"
 trap 'rm -rf "$SRC"' EXIT
