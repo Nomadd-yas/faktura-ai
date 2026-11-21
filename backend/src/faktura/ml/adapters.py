@@ -440,6 +440,38 @@ class HttpExtractor:
         assert last is not None
         raise last
 
+    # --- блочный OCR (ML /ocr) ---
+    def ocr_pages(self, pdf_path: Path | str, pages: list[int] | str | None = None, *, fmt: str = "both") -> dict[str, Any]:
+        """POST /ocr: блочный OCR страниц PDF (для индекса текста сканов и т.п.). pages: [1, 3] | "1,3,5-7" | None (все).
+        Возвращает JSON ML: {pages:[{page, markdown, blocks:[{label, bbox(0..1000), content}], confidence?}], model, seconds, cached}.
+        Без ретраев: ответ кешируется на стороне ML, повтор вызова дешёвый. Ошибки -> ExtractError (ml_unavailable | ml_error)."""
+        import httpx
+
+        spec = ",".join(str(int(p)) for p in pages) if isinstance(pages, (list, tuple)) else (pages or "")
+        data = {"format": fmt}
+        if spec:
+            data["pages"] = spec
+        path = Path(pdf_path)
+        try:
+            with path.open("rb") as fh:
+                resp = self._get_client().post(self._url("/ocr"), data=data, files={"file": (path.name, fh, "application/pdf")})
+        except httpx.TimeoutException as e:
+            raise extract_error("ml_timeout", f"ML /ocr: таймаут {e}", retryable=True) from e
+        except httpx.HTTPError as e:
+            raise extract_error("ml_unavailable", f"ML /ocr: {e}", retryable=True) from e
+        if resp.status_code != 200:
+            body = _error_body(resp)
+            code = "ml_unavailable" if resp.status_code in (502, 503, 504) else "ml_error"
+            raise extract_error(code, f"ML /ocr: HTTP {resp.status_code}: {body.get('message') or resp.text[:200]}",
+                                retryable=bool(body.get("retryable")) or resp.status_code in (502, 503, 504))
+        try:
+            out = resp.json()
+        except ValueError as e:
+            raise extract_error("ml_error", "ML /ocr: ответ не JSON") from e
+        if not isinstance(out, dict) or not isinstance(out.get("pages"), list):
+            raise extract_error("ml_error", "ML /ocr: неожиданная форма ответа")
+        return out
+
     # --- health ---
     def health(self) -> MlHealth:
         import httpx

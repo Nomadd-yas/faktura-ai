@@ -162,6 +162,38 @@ ROUTERAI_API_KEY=sk-... python extract_dataset.py D001.clean.md --out D001.datas
 - `run_glmocr.py` больше не нужен — его роль исполняет `pipeline.py` (шаг 1).
 - Первый боевой прогон: смотрите `finish_reason` по шагам в stdout и `.meta.json`; `finish_reason=length` — поднимите `--max-tokens` (передаётся только в CLI-режиме; для конвейера лимиты в `extract_dataset.py` — `max_tokens`/`issues_max_tokens` в вызове `extract()`).
 
+## Блочный OCR: POST /ocr и ручки настройки [faktura-patch]
+
+`POST /ocr` - multipart: `file` (PDF), опционально `pages` (`"1,3,5-7"`, с 1; по умолчанию все) и `format` = `markdown | blocks | both` (по умолчанию `both`).
+Ответ: `{pages:[{page, markdown?, blocks?:[{index, label, native_label, bbox, content}], confidence?, seconds, page_size_pt}], model, seconds, cached, bbox_format}`.
+`label` - text | table | formula | image; `native_label` - метка layout-модели (paragraph_title, figure_title, ...); `bbox` - `[x1,y1,x2,y2]`
+в **нормализованных координатах 0..1000** от левого верхнего угла страницы (это `bbox_2d` из json_result glmocr; в pt: `x/1000*ширина`,
+ширина/высота страницы - в `page_size_pt`). Блоки header/footer/footnote/number layout-модель отбрасывает (abandon), у image `content = null`.
+`cached` = true, если все страницы взяты из дискового кеша `/out/ocr_cache/<sha256 pdf>/p<N>.<хеш настроек>.json` (ключ: sha256 PDF, страница,
+хеш page_loader/layout/модели; адрес vLLM в хеш не входит). Кешированные страницы отдаются и при недоступном vLLM.
+
+Ошибки `{code,message,retryable,detail}`: 400 `bad_request` (плохие `pages`/`format`), 413 `too_many_pages` (> `OCR_MAX_PAGES`, 50),
+422 `pdf_broken|pdf_encrypted`, 503 `ocr_unavailable` (vLLM недоступен, `retryable`, `Retry-After: 60`), 500 `ml_error`.
+Выполняется в отдельном пуле процессов (прогретый парсер glmocr, воркер перезапускается каждые `ML_TASKS_PER_CHILD`), размер пула - `OCR_CONCURRENCY` (2);
+первый запрос в процессе грузит layout-модель (пул лениво, при старте не прогревается). RouterAI не используется.
+
+Ручки (env -> эффективный конфиг во временном каталоге поверх `glmocr.config.yaml`/`GLMOCR_CONFIG`; не заданы - конфиг как есть):
+
+| env | куда в glmocr-конфиге | заметка |
+|-----|-----------------------|---------|
+| `OCR_PDF_DPI` | `pipeline.page_loader.pdf_dpi` (200) | растеризация страницы перед layout и OCR |
+| `OCR_MAX_TOKENS` | `pipeline.page_loader.max_tokens` (8192) | лимит ответа на любой запрос, в т.ч. на блок; раздельных лимитов по типам блоков в glmocr 0.1.5 нет |
+| `OCR_LAYOUT_THRESHOLD` | `pipeline.layout.threshold` (0.3) | порог уверенности layout-модели |
+| `OCR_LAYOUT_THRESHOLD_BY_CLASS` | `pipeline.layout.threshold_by_class` | JSON, напр. `{"table": 0.2}` |
+| `OCR_LAYOUT_UNCLIP` | `pipeline.layout.layout_unclip_ratio` (1.0,1.0) | `1.05` или `1.05,1.1`: расширение рамки блока (отдельного padding кропа в glmocr нет - это его ближайший аналог) |
+| `OCR_MAX_PAGES`, `OCR_CONCURRENCY` | - | лимит страниц запроса, число воркеров пула |
+
+Оценка качества (A/B при смене модели/ручек): `ml/eval/ocr_eval.py` (см. docstring), запускается в контейнере.
+
+Пробелы в ячейках таблиц: склейка вида «GEMINI1.0Pro» - **вывод модели** (glmocr отдаёт HTML таблицы как есть, `_clean_content` пробелы внутри
+не трогает; наш `_ocr_page_texts`/`build_paged_markdown` содержимое не меняют). Наш код склеивал слова только при разборе HTML ячеек
+(`<br>` удалялся без пробела) - исправлено в `extract_dataset.html_cell_text`: разрывающие теги -> пробел, строчные (`<sub>`) -> без пробела.
+
 ## Графики (домен rag) [faktura-patch]
 
 `figures.py` оцифровывает графики прямо из векторной геометрии PDF (оси калибруются по подписям делений) и **знает своё

@@ -25,7 +25,7 @@ if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
 import ask  # [faktura-patch] вопросы по разбору
-from pipeline import (PipelineError, config_path, model_version, ocr_reachable,
+from pipeline import (PipelineError, check_pdf, config_path, model_version, ocr_reachable,
                       run_pipeline)
 
 app = FastAPI(title="pdf-dataset", version="1.0",
@@ -167,6 +167,117 @@ async def _ask_call(request: Request, fn):
         return _error(e.status, e.code, e.message, retryable=e.retryable)
     except Exception as e:  # noqa: BLE001
         return _error(500, "ml_error", f"{type(e).__name__}: {e}")
+
+
+# ---------- [faktura-patch] POST /ocr: блочный OCR (glmocr) постранично, с дисковым кешем ----------
+# Отдельный маленький пул (OCR_CONCURRENCY, по умолчанию 2): парсер glmocr прогрет в воркере, память ограничена
+# (воркер перезапускается каждые ML_TASKS_PER_CHILD запросов), очередь /extract не занимается.
+_OCR_POOL = None
+
+
+def _ocr_concurrency() -> int:
+    return max(1, int(os.environ.get("OCR_CONCURRENCY", "2")))
+
+
+def _get_ocr_pool():
+    global _OCR_POOL
+    with _POOL_LOCK:
+        if _OCR_POOL is None:
+            import multiprocessing as mp
+            from concurrent.futures import ProcessPoolExecutor
+            _OCR_POOL = ProcessPoolExecutor(
+                max_workers=_ocr_concurrency(), mp_context=mp.get_context("spawn"),
+                max_tasks_per_child=max(1, int(os.environ.get("ML_TASKS_PER_CHILD", "8"))),
+                initializer=_worker_init)
+        return _OCR_POOL
+
+
+def _run_ocr_isolated(pdf_path, pages, work):
+    """-> результат ocr_service.ocr_blocks_child; сломанный пул пересоздаётся."""
+    global _OCR_POOL
+    from concurrent.futures.process import BrokenProcessPool
+    import ocr_service
+    pool = _get_ocr_pool()
+    try:
+        return pool.submit(ocr_service.ocr_blocks_child, str(pdf_path), list(pages), str(work)).result()
+    except BrokenProcessPool:
+        with _POOL_LOCK:
+            if _OCR_POOL is pool:
+                _OCR_POOL = None
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return {"perr": {"code": "ml_error", "retryable": False, "status": 500,
+                         "message": "OCR прерван: процесс завершён (вероятно, не хватило памяти)"}}
+
+
+@app.post("/ocr")
+def ocr_pdf(file: UploadFile = File(...),
+            pages: str | None = Form(None),     # "1,3,5-7"; по умолчанию все страницы
+            format: str = Form("both")):        # markdown | blocks | both
+    """Блочный OCR выбранных страниц PDF. Ответ: {pages:[{page, markdown?, blocks?, confidence?, seconds, page_size_pt}],
+    model, seconds, cached, bbox_format}. bbox блока — нормализованные 0..1000 [x1,y1,x2,y2] от левого верхнего угла."""
+    import hashlib
+    import time
+    import ocr_service as osv
+    import pymupdf
+    t0 = time.time()
+    fmt = (format or "both").strip().lower()
+    if fmt not in osv.FORMATS:
+        return _error(400, "bad_request", f"format: {fmt!r} не из {osv.FORMATS}")
+    data = file.file.read()
+    sha = hashlib.sha256(data).hexdigest()
+    work = osv.work_dir(OUT_DIR)
+    try:
+        pdf_path = work / "in.pdf"
+        pdf_path.write_bytes(data)
+        try:
+            n = check_pdf(pdf_path)
+        except PipelineError as e:
+            return _error(e.status, e.code, e.message, retryable=e.retryable)
+        try:
+            plist = osv.parse_pages(pages, n)
+        except osv.OcrRequestError as e:
+            return _error(e.status, e.code, e.message)
+        if len(plist) > osv.max_pages():
+            return _error(413, "too_many_pages", f"страниц {len(plist)} > OCR_MAX_PAGES={osv.max_pages()}")
+        try:
+            cfg = config_path()
+        except PipelineError as e:
+            return _error(e.status, e.code, e.message)
+        chash = osv.config_hash(cfg)
+        cache = osv.OcrCache(OUT_DIR / "ocr_cache")
+        entries = {p: cache.get(sha, p, chash) for p in plist}
+        missing = [p for p in plist if entries[p] is None]
+        if missing:
+            if not ocr_reachable(cfg, timeout=2.0):
+                return _error(503, "ocr_unavailable", "OCR-сервер (vLLM) недоступен", retryable=True,
+                              headers={"Retry-After": "60"})
+            try:
+                out = _run_ocr_isolated(pdf_path, missing, work)
+            except Exception as e:  # noqa: BLE001
+                return _error(500, "ml_error", f"{type(e).__name__}: {e}")
+            if "perr" in out:
+                e = out["perr"]
+                return _error(e["status"], e["code"], e["message"], retryable=e["retryable"],
+                              headers={"Retry-After": "60"} if e["code"] == "ocr_unavailable" else None)
+            if "err" in out:
+                return _error(500, "ml_error", out["err"])
+            for p in missing:
+                entries[p] = out["pages"][p]
+                cache.put(sha, p, chash, entries[p])
+        sizes = {}
+        try:
+            doc = pymupdf.open(str(pdf_path))
+            sizes = {p: [round(doc[p - 1].rect.width, 2), round(doc[p - 1].rect.height, 2)] for p in plist}
+            doc.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return osv.build_response(entries, plist, fmt, model=osv.ocr_model_name(cfg), seconds=time.time() - t0,
+                                  cached=not missing, sizes=sizes)
+    finally:
+        osv.cleanup(work)
 
 
 NDJSON_TYPE = "application/x-ndjson"
