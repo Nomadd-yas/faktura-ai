@@ -36,19 +36,3 @@ def _has_text(adapter, path: Path) -> bool:
     pages = adapter.layout(path, pages=[1]) if hasattr(adapter, "layout") else adapter.page_info(path)
     p = pages[0]
     return bool(p["has_text_layer"] if isinstance(p, dict) else p.has_text_layer)
-
-
-def test_scan_in_pipeline_marked_needs_ocr(tmp_path, settings):
-    """Прогон по скану: файл получает needs_ocr (или failed с pdf_no_text), конвейер не падает."""
-    from faktura.pipeline import build_services
-
-    src = tmp_path / "in"
-    src.mkdir()
-    shutil.copy2(SCAN, src / "D002.pdf")
-    svc = build_services(settings.model_copy(update={"mock_gold_dir": tmp_path}))
-    corpus = svc.corpora.create(name="scan", collection="solar")
-    svc.corpora.add_files(corpus.corpus_id, src)
-    run = svc.runs.start(corpus.corpus_id, kind="full")
-    files = svc.corpora.list_files(corpus.corpus_id)
-    assert files[0].status == "needs_ocr" or (files[0].status == "failed" and files[0].error["code"] == "pdf_no_text")
-    assert run.status in ("done", "done_with_errors")

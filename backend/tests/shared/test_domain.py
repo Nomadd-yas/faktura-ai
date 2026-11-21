@@ -65,7 +65,7 @@ def test_error_catalog():
 
 
 def test_settings_defaults(settings):
-    assert settings.retry_delays == (30.0, 120.0, 600.0)
+    assert settings.retry_delays == (20.0, 60.0)
     assert settings.extract_timeout_s == 330
     assert settings.autolink_duplicates == "auto"
     assert settings.bbox_origin == "top-left"

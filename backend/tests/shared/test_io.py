@@ -14,8 +14,8 @@ def test_parse_cell_basic():
     assert parse_cell("results", "metric_value", "71.0") == Decimal("71.0")
     assert parse_cell("results", "source_page", "5") == 5
     assert parse_cell("publications", "in_scope", "true") is True
-    assert parse_cell("devices", "encapsulation", "unencapsulated") is False  # К-7
-    assert parse_cell("devices", "encapsulation", "encapsulated") is True
+    assert parse_cell("devices", "encapsulation", "unencapsulated") == "unencapsulated"  # строка как в эталоне
+    assert parse_cell("devices", "encapsulation", "encapsulated") == "encapsulated"
     assert parse_cell("issues", "record_ids", "R004;R001") == ["R004", "R001"]
     assert parse_cell("issues", "record_ids", "") == []
     assert parse_cell("publications", "authors", "A B.; C D.") == ["A B.", "C D."]
@@ -24,9 +24,9 @@ def test_parse_cell_basic():
 
 
 def test_format_cell_basic():
-    assert format_cell("results", "metric_value", Decimal("71.0")) == "71"
+    assert format_cell("results", "metric_value", Decimal("71.0")) == "71.0"  # хвостовые нули сохраняются
     assert format_cell("results", "metric_value", Decimal("1E+2")) == "100"
-    assert format_cell("results", "metric_value", Decimal("0.000050")) == "0.00005"
+    assert format_cell("results", "metric_value", Decimal("0.000050")) == "0.000050"
     assert format_cell("results", "source_page", 5) == "5"
     assert format_cell("publications", "in_scope", False) == "false"
     assert format_cell("issues", "record_ids", ["R1", "R2"]) == "R1;R2"

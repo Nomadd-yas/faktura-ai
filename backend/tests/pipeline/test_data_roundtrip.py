@@ -11,7 +11,7 @@ import pytest
 from faktura.domain.entities import CorpusFileStatus, FactFilter, RunStatus
 from faktura.domain.tables import CHECK_CATALOG, EVAL_METRICS, TABLES
 
-pytestmark = pytest.mark.data
+pytestmark = [pytest.mark.data, pytest.mark.slow]
 
 TABLE_FILES = sorted(f"{t}.csv" for t in TABLES)
 
@@ -61,7 +61,7 @@ def test_dev_roundtrip_exit_0_and_layout(dev_out):
 def test_dev_validator_clean(dev_out):
     out, _ = dev_out
     report = (out / "_meta" / "check_report.txt").read_text(encoding="utf-8")
-    assert "Ошибок: 0" in report or "0 ошибок" in report.lower() or "ошибок не найдено" in report.lower()
+    assert "ошибок: 0" in report.lower() or "0 ошибок" in report.lower() or "ошибок не найдено" in report.lower()
 
 
 def test_dev_eval_perfect_on_11_metrics(dev_out, dev_gold_dir, tmp_path):
@@ -257,6 +257,11 @@ def test_p1_quote_found_filled_and_anchors_in_fractions(dev_env):
     with svc.db.uow() as uow:
         f = next(x for x in uow.files.list(c.id) if x.publication_id == "D001")
         rows = uow.facts.query(FactFilter(paper_ids=[f.paper_id]), [], 5000, None).data
+    from faktura.pdfio.quotes import is_checkable_fragment
+
     with_quote = [r.fact for r in rows if r.fact.source_fragment]
-    assert with_quote and all(x.quote_found is not None for x in with_quote)
-    assert sum(1 for x in with_quote if x.quote_found) / len(with_quote) > 0.5  # цитаты эталона лежат в реальных PDF
+    # цитаты вида «Table N ...»/«Supplementary ...» валидатор не проверяет: quote_found=None (не False)
+    checkable = [x for x in with_quote if is_checkable_fragment(x.source_fragment)]
+    assert checkable and all(x.quote_found is not None for x in checkable)
+    assert all(x.quote_found is None for x in with_quote if not is_checkable_fragment(x.source_fragment))
+    assert sum(1 for x in checkable if x.quote_found) / len(checkable) > 0.9  # цитаты эталона лежат в реальных PDF

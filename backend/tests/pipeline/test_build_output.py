@@ -329,6 +329,7 @@ def test_validator_gets_csv_dir_equal_out(env, done_corpus, profile, tmp_path, r
 # --- (data) реальный валидатор на эталоне ------------------------------------------------------------------------------------------------------------
 
 @pytest.mark.data
+@pytest.mark.slow
 def test_real_validator_on_dev_gold(make_env, dev_dir, dev_gold_dir, check_script, profile, tmp_path):
     env = make_env(gold_dir=dev_gold_dir)
     c = env.new_corpus("dev")

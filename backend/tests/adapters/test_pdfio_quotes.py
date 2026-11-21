@@ -116,6 +116,7 @@ def test_quote_page_is_one_based(make_pdf):
 
 
 @pytest.mark.data
+@pytest.mark.slow
 def test_quote_index_matches_script_on_dev(case_dir, check_script):
     """251 проверяемая цитата в results+issues dev_gold: не найдена ровно одна (D003), как в check_submission.py."""
     import re
