@@ -54,6 +54,8 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 | `created_at`, `updated_at` | datetime | |
 | `counts` | `{files, queued, running, done, out, error, nodata}` | |
 | `results`, `issues` | int | всего строк по разбору |
+| `issues_open` | int | открытые замечания с учётом правок (§4f) |
+| `progress`, `eta_seconds`, `started_at` | | см. §4b |
 | `files` | RunFile[] | |
 
 ### RunFile
@@ -68,6 +70,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 | `eta_seconds`, `pages`, `started_at` | | см. §4b |
 | `has_data` | bool | есть строки `results` |
 | `results`, `issues` | int | |
+| `open_issue_count` | int | открытые замечания файла с учётом правок (§4f) |
 | `reason` | string \| null | |
 | `size`, `sha256` | | |
 | `suggested_domain` | `"rag"` \| `"solar"` \| `null` | подсказка «статья из другой области»: заполнена только при `status: "out"`, если сервис разбора счёл статью принадлежащей другой области (§4c); иначе `null`; только в полном `files` |
@@ -98,11 +101,11 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 ```json
 { "data": [ Run, … ], "total": 23, "next_cursor": null }
 ```
-В списке `files` короткие: `id, name, status, has_data, results, issues, reason`.
+В списке `files` короткие: `id, name, status, has_data, results, issues, open_issue_count, reason, stage, progress, eta_seconds, pages, started_at`.
 
 ### `GET /runs/{id}` — разбор целиком, `files` полные. `404 not_found`.
 
-**Прогресс — опросом:** `GET /runs/{id}` раз в 2 с, пока `status` = `queued`/`running`. (SSE `/runs/{id}/events` — позже, формы событий будут как в §15.3.)
+**Прогресс:** поток событий SSE `GET /runs/{id}/events` (§4e) или опрос `GET /runs/{id}` раз в 2 с, пока `status` = `queued`/`running`.
 
 ### `GET /runs/{id}/summary` — сводка
 ```json
@@ -419,16 +422,15 @@ data: {"id": "run_7", "status": "done", "progress": 100, "eta_seconds": null, �
 
 **Ещё на будущее** (в работе у модели, в API ничего не меняется): значения с векторных графиков извлекаются из геометрии PDF, с растровых — моделью со зрением (`note` = «approximate, digitized…»); если рисунок не удалось оцифровать — замечание `figure_only`.
 
-## 6. Что заморожено (на этих экранах пока мок)
+## 6. Что ещё не сделано (на этих экранах пока мок)
 
-Вернёмся к ним после того, как пришлёшь обновлённую спеку фронта:
-- правки человека: `PATCH …/review`, `reviews/batch`, undo/история, влияние правок на выгрузку;
-- управление разбором: `PATCH/DELETE /runs/{id}`, `restart`, `stop`, догрузка `POST /runs/{id}/files`, демо-разбор dev;
-- SSE `/runs/{id}/events` (пока — опрос);
-- «Данные» по всем разборам: `/results` без `run`, язык запросов (`q`), `group_by`, `/results/summary`, `/compare`, «лучшее значение»;
-- состояния замечаний, `/issues/stats`;
-- `dataset.json`, `dataset.xlsx`, `/exports`, `/passport`;
+Сделано с 21.11 и больше не заморожено: правки человека, состояния замечаний, журнал и отмена, `/issues/stats`, «лучшее значение» в сводке (§4f); управление разбором и догрузка файлов (§4c, §4f); SSE (§4e); паспорт (§4d).
+
+Пока не сделано:
+- демо-разбор dev;
+- «Данные» по всем разборам: `/results` без `run`, язык запросов (`q`), `group_by`, `/results/summary`, `/compare`;
+- `dataset.json`, `dataset.xlsx`, `/exports`;
 - просмотр OCR-слоя страниц (`/papers/{domain}/{pid}/ocr`);
-- чат разбора, граф связей, проекты, словари, поиск.
+- чат разбора, граф связей, проекты, словари, поиск (эндпоинты отвечают заглушкой с заголовком `X-Faktura-Stub: 1`).
 
 Если какой-то из этих пунктов нужен раньше — скажи, переставим.
