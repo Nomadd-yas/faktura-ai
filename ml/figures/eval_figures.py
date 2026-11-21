@@ -52,6 +52,9 @@ def collect(figs):
     for f in figs:
         for p in f["panels"]:
             for s in p["series"]:
+                for lv in s.get("printed_labels") or []:
+                    if lv is not None:
+                        pts[f["page"]].append((lv, 0, f["figure_label"]))
                 for x, y in s["points"]:
                     n += 1
                     pts[f["page"]].append((y, (p["y_axis"]["step"] or 0), f["figure_label"]))

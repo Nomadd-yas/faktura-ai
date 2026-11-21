@@ -158,16 +158,22 @@ def _tick_groups(spans):
 
 
 def _split_runs(g, key, maxgap_factor=3.0):
-    """split a tick group into runs separated by big gaps (separate panels)."""
-    if len(g) < 3:
+    """split a tick group into monotone runs: break on direction flips / resets and big gaps."""
+    if len(g) < 2:
         return [g]
+    runs, cur = [], [g[0]]
+    sign = 0
     gaps = [g[i + 1][key] - g[i][key] for i in range(len(g) - 1)]
     med = sorted(gaps)[len(gaps) // 2]
-    runs, cur = [], [g[0]]
-    for i, gp in enumerate(gaps):
-        if med > 0 and gp > maxgap_factor * med + 15:
+    for i in range(len(g) - 1):
+        dv = g[i + 1]["v"] - g[i]["v"]
+        sg = (dv > 0) - (dv < 0)
+        big = med > 0 and gaps[i] > maxgap_factor * med + 15
+        if sg == 0 or big or (sign and sg != sign):
             runs.append(cur)
-            cur = []
+            cur, sign = [g[i + 1]], 0
+            continue
+        sign = sg
         cur.append(g[i + 1])
     runs.append(cur)
     return runs
@@ -218,10 +224,15 @@ def _marks(page):
             continue
         if fill is not None and not _is_white(fill) and closed:
             continue  # filled polygons (areas, big shapes)
-        if len(items) >= 2 and not small:
-            pts = _verts(items)
-            if len(pts) >= 3:
-                lines.append({"pts": pts, "color": scol or col, "w": d.get("width") or 0})
+        if not small:
+            for sub in _subpaths(items):
+                if len(sub) == 1 and sub[0][0] == "l":
+                    p, q = sub[0][1], sub[0][2]
+                    segs.append({"p": (p.x, p.y), "q": (q.x, q.y), "color": scol or col, "w": d.get("width") or 0})
+                else:
+                    pts = _verts(sub)
+                    if len(pts) >= 3:
+                        lines.append({"pts": pts, "color": scol or col, "w": d.get("width") or 0})
     lines += _chain(segs)
     return segs, lines, markers, rects
 
@@ -232,6 +243,21 @@ def _close(items):
         return abs(a.x - b.x) < 0.3 and abs(a.y - b.y) < 0.3
     except AttributeError:
         return False
+
+
+def _subpaths(items):
+    """split a path's items into connected runs (a new 'move' breaks the run)."""
+    runs, cur = [], []
+    for it in items:
+        if cur:
+            prev = cur[-1][-1]
+            if abs(prev.x - it[1].x) > 0.05 or abs(prev.y - it[1].y) > 0.05:
+                runs.append(cur)
+                cur = []
+        cur.append(it)
+    if cur:
+        runs.append(cur)
+    return runs
 
 
 def _verts(items):
@@ -282,11 +308,32 @@ def _chain(segs, tol=0.15):
 
 
 # ---------------------------------------------------------------- panels
+def _regular_unique(runs, key, min_n):
+    """keep runs whose ticks fit a linear/log axis (data labels do not); no node reused."""
+    good = []
+    for r in runs:
+        if len(r) < min_n:
+            continue
+        f = fit_axis([(n[key], n["v"]) for n in r])
+        if f and f["residual"] <= 0.01:
+            good.append(r)
+    good.sort(key=lambda g: -len(g))
+    used, out = set(), []
+    for r in good:
+        ids = {id(n) for n in r}
+        if ids & used:
+            continue
+        used |= ids
+        out.append(r)
+    return out
+
+
 def _find_panels(page, spans):
     xrows, ycols = _tick_groups(spans)
     xruns = [r for g in xrows for r in _split_runs(g, "cx") if _monotone(r)]
     ycruns = [r for g in ycols for r in _split_runs(g, "cy") if _monotone(r)]
-    ycruns.sort(key=lambda g: -len(g))
+    ycruns = _regular_unique(ycruns, "cy", 3)
+    xruns = _regular_unique(xruns, "cx", 2)
     panels = []
     for yc in ycruns:
         right = max(n["x1"] for n in yc)
@@ -297,15 +344,48 @@ def _find_panels(page, spans):
         for xr in xruns:
             top = min(n["y0"] for n in xr)
             xmin = min(n["cx"] for n in xr)
-            if top >= ybot - 6 and right - 8 <= xmin <= right + 200 and top - ybot < 450:
-                cand.append((top, xr))
+            if top >= ybot - 6 and right - 8 <= xmin <= right + 70 and top - ybot < 450:
+                cand.append((top - ybot + 3 * abs(xmin - right - 10), xr))
         xr = min(cand, key=lambda c: c[0])[1] if cand else None
         panels.append({"yc": yc, "xr": xr, "right": right, "left": left, "ytop": ytop, "ybot": ybot})
     return panels
 
 
-def _axis_dict(nodes, key, label, fit):
-    ticks = [(n[key], n["v"]) for n in nodes]
+def _snap(nodes, segs, which):
+    """snap tick-label centres to real tick marks / gridlines.  Returns list of coords."""
+    key = "cy" if which == "y" else "cx"
+    out, offs = [], []
+    for n in nodes:
+        best = None
+        for sg in segs:
+            (px, py), (qx, qy) = sg["p"], sg["q"]
+            if which == "y":
+                if abs(py - qy) > 0.2 or abs(py - n["cy"]) > 3.0 or max(px, qx) < n["x1"] - 1:
+                    continue
+                if min(px, qx) > n["x1"] + 30:
+                    continue
+                c = py
+            else:
+                if abs(px - qx) > 0.2 or abs(px - n["cx"]) > 3.0 or min(py, qy) > n["y1"]:
+                    continue
+                if max(py, qy) < n["y0"] - 14:
+                    continue
+                c = px
+            if best is None or abs(c - n[key]) < abs(best - n[key]):
+                best = c
+        out.append(best)
+        if best is not None:
+            offs.append(best - n[key])
+    if len(offs) >= max(2, len(nodes) // 2):
+        offs.sort()
+        med = offs[len(offs) // 2]
+        res = [o if o is not None else n[key] + med for o, n in zip(out, nodes)]
+        return res
+    return None
+
+
+def _axis_dict(nodes, key, label, fit, coords=None):
+    ticks = [((coords[i] if coords else n[key]), n["v"]) for i, n in enumerate(nodes)]
     steps = [abs(b[1] - a[1]) for a, b in zip(ticks, ticks[1:])]
     return {"scale": fit["scale"], "ticks": ticks, "label_text": label,
             "residual": fit["residual"], "step": min(steps) if steps else None}
@@ -369,6 +449,23 @@ def _dedup(pts, tol=0.05):
     return out
 
 
+def _value_label(spans, cx, ytop, y0, y1):
+    """numeric text printed on / just above a bar (data label), or None."""
+    best = None
+    for sp in spans:
+        if sp["rot"]:
+            continue
+        v = parse_num(sp["text"])
+        if v is None:
+            continue
+        x0, a, x1, b = sp["bbox"]
+        if x0 - 1 <= cx <= x1 + 1 and (min(y0, y1) - 14 <= (a + b) / 2 <= max(y0, y1) + 1):
+            d = abs((a + b) / 2 - ytop)
+            if best is None or d < best[0]:
+                best = (d, v)
+    return best[1] if best else None
+
+
 def _cat_label(spans, cx, bb):
     best = None
     for s in spans:
@@ -382,7 +479,7 @@ def _cat_label(spans, cx, bb):
     return best[1] if best else round(cx, 1)
 
 
-def _fill_series(panel, bb, spans, lines, markers, rects):
+def _fill_series(panel, bb, spans, lines, markers, rects, segs=()):
     xfit, yfit = panel["_fit"]
     xspan, yspan = bb[2] - bb[0], bb[3] - bb[1]
     series = []
@@ -416,6 +513,13 @@ def _fill_series(panel, bb, spans, lines, markers, rects):
                 legend.setdefault(l["color"], t)
                 swatch.add(("l", i))
 
+    for sg in segs:  # single-segment line swatches
+        (ax, ay), (bx, by) = sg["p"], sg["q"]
+        if abs(ay - by) < 1 and 3 < abs(bx - ax) < 0.2 * xspan and _in((ax, ay), bb, 2) and _in((bx, by), bb, 2):
+            t = near_text(max(ax, bx), ay)
+            if t:
+                legend.setdefault(sg["color"], t)
+
     def conv(pt, catx=None):
         y = _val(yfit, pt[1])
         x = _val(xfit, pt[0]) if xfit else (catx if catx is not None else round(pt[0], 2))
@@ -432,6 +536,8 @@ def _fill_series(panel, bb, spans, lines, markers, rects):
             continue  # frame
         if (max(xs) - min(xs) < 0.3 or max(ys) - min(ys) < 0.3) and len(pts) <= 3:
             continue  # grid / axis-aligned
+        if len(pts) <= 8 and all(abs(a[0] - b[0]) < 0.3 or abs(a[1] - b[1]) < 0.3 for a, b in zip(pts, pts[1:])):
+            continue  # frames, brackets, error-bar caps
         cp = _dedup([conv(p) for p in pts])
         if len(cp) >= 3:
             series.append({"color": l["color"], "kind": "line", "legend_label": legend.get(l["color"]), "points": cp})
@@ -457,12 +563,13 @@ def _fill_series(panel, bb, spans, lines, markers, rects):
             widths = [b[0]["r"][2] - b[0]["r"][0] for b in bs]
             gaps = [bs[i + 1][0]["r"][0] - bs[i][0]["r"][2] for i in range(len(bs) - 1)]
             is_hist = len(bs) >= 4 and max(abs(g) for g in gaps) < 0.6 and (max(widths) - min(widths)) < 0.15 * max(widths)
-            pts = []
+            pts, labels = [], []
             for r, top in bs:
                 cx = (r["r"][0] + r["r"][2]) / 2
                 pts.append(conv((cx, top), None if xfit else _cat_label(spans, cx, bb)))
+                labels.append(_value_label(spans, cx, top, r["r"][1], r["r"][3]))
             series.append({"color": col, "kind": "hist" if is_hist else "bar",
-                           "legend_label": legend.get(col), "points": pts})
+                           "legend_label": legend.get(col), "points": pts, "printed_labels": labels})
 
     # --- scatter markers
     bym = defaultdict(list)
@@ -514,11 +621,32 @@ def digitize_page(page, pno=None):
         return []
     segs, lines, markers, rects = _marks(page)
     out = []
+    tickable = list(segs)
+    for l in lines:
+        for a, b in zip(l["pts"], l["pts"][1:]):
+            if abs(a[0] - b[0]) < 0.2 or abs(a[1] - b[1]) < 0.2:
+                tickable.append({"p": a, "q": b})
     for p in panels_raw:
         yfit = fit_axis([(n["cy"], n["v"]) for n in p["yc"]])
         if not yfit or yfit["residual"] > 0.02:
             continue
+        ycoords = _snap(p["yc"], tickable, "y")
+        if ycoords:
+            f2 = fit_axis([(c, n["v"]) for c, n in zip(ycoords, p["yc"])])
+            if f2 and f2["residual"] <= max(0.01, yfit["residual"]):
+                yfit = f2
+            else:
+                ycoords = None
         xfit = fit_axis([(n["cx"], n["v"]) for n in p["xr"]]) if p["xr"] else None
+        xcoords = None
+        if xfit and p["xr"]:
+            xcoords = _snap(p["xr"], tickable, "x")
+            if xcoords:
+                f2 = fit_axis([(c, n["v"]) for c, n in zip(xcoords, p["xr"])])
+                if f2 and f2["residual"] <= max(0.01, xfit["residual"]):
+                    xfit = f2
+                else:
+                    xcoords = None
         notes = []
         if xfit and xfit["residual"] > 0.02:
             xfit = None
@@ -527,10 +655,10 @@ def digitize_page(page, pno=None):
         if bb[2] - bb[0] < 30 or bb[3] - bb[1] < 20:
             continue
         panel = {"bbox": tuple(round(v, 2) for v in bb), "notes": notes, "x_axis": None, "series": [],
-                 "y_axis": _axis_dict(p["yc"], "cy", _axis_label(spans, bb, "y"), yfit), "_fit": (xfit, yfit)}
+                 "y_axis": _axis_dict(p["yc"], "cy", _axis_label(spans, bb, "y"), yfit, ycoords), "_fit": (xfit, yfit)}
         if xfit:
-            panel["x_axis"] = _axis_dict(p["xr"], "cx", _axis_label(spans, bb, "x"), xfit)
-        _fill_series(panel, bb, spans, lines, markers, rects)
+            panel["x_axis"] = _axis_dict(p["xr"], "cx", _axis_label(spans, bb, "x"), xfit, xcoords)
+        _fill_series(panel, bb, spans, lines, markers, rects, segs)
         if panel["series"]:
             out.append(panel)
         else:
