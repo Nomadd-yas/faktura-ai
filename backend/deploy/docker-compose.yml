@@ -75,10 +75,11 @@ services:
       FAKTURA_CACHE_DIR: /app/var/cache
       FAKTURA_EXTRACTOR: http
       FAKTURA_EXTRACT_URL: ${FAKTURA_EXTRACT_URL:-http://ml-mock:8081}
+      FAKTURA_CHECK_SCRIPT: /case/tools/check_submission.py  # ?check=true у submission.zip
     depends_on:
       postgres: {condition: service_healthy}
       ml-mock: {condition: service_healthy}
-    volumes: ["files:/app/var"]
+    volumes: ["files:/app/var", "./case:/case:ro"]
     ports: ["127.0.0.1:${API_PORT:-8000}:8000"]  # только localhost сервера: доступ через ssh-туннель
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]

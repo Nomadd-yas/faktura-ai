@@ -30,8 +30,8 @@ echo "== код ($(git rev-parse --short HEAD)) -> $HOST:~/$REMOTE_DIR"
 ssh "$HOST" "bash -c 'mkdir -p ~/$REMOTE_DIR/deploy/case'"
 git archive --format=tar HEAD:backend | ssh "$HOST" "bash -c 'tar -x -C ~/$REMOTE_DIR'"
 
-echo "== эталон dev_gold для ml-mock"
-tar -C data/caseB_kejs5 -cf - dev_gold | ssh "$HOST" "bash -c 'rm -rf ~/$REMOTE_DIR/deploy/case/dev_gold && tar -x -C ~/$REMOTE_DIR/deploy/case'"
+echo "== эталон dev_gold для ml-mock и check_submission.py для api (?check=true)"
+tar -C data/caseB_kejs5 -cf - dev_gold tools/check_submission.py | ssh "$HOST" "bash -c 'rm -rf ~/$REMOTE_DIR/deploy/case/dev_gold ~/$REMOTE_DIR/deploy/case/tools && tar -x -C ~/$REMOTE_DIR/deploy/case'"
 
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
