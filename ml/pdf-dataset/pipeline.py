@@ -34,7 +34,8 @@ class PipelineError(Exception):
     code: pdf_broken | pdf_encrypted (422), ocr_unavailable | not_configured (503), ml_error (500).
     """
     STATUS = {"pdf_broken": 422, "pdf_encrypted": 422, "ocr_unavailable": 503,
-              "not_configured": 503, "ml_error": 500}
+              "not_configured": 503, "ml_error": 500,
+              "quota_exceeded": 402}  # [faktura-patch] исчерпан лимит трат ключа RouterAI — повтор не поможет
 
     def __init__(self, code, message, *, retryable=False):
         super().__init__(message)
@@ -646,6 +647,13 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
         extract_failed = str(e)
         failed_tables = ["<all>"]
         print(f"[!] извлечение прервано: {e}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        # [faktura-patch] лимит трат ключа RouterAI (HTTP 429 «spending limit») — отдельная понятная ошибка
+        msg = str(e)
+        if "spending limit" in msg or "insufficient" in msg.lower() or type(e).__name__ == "RateLimitError":
+            raise PipelineError("quota_exceeded",
+                                "Исчерпан лимит трат ключа RouterAI: " + msg[:200], retryable=False) from e
+        raise
 
     llm_wall = round(time.time() - _t_llm, 2)
     _t_snap = time.time()
@@ -687,6 +695,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
         "strip_tail": strip_info,
         "quote_snap": snap_stats,
         "total_seconds": round(time.time() - _t_start, 2),
+        "cost": round(sum(((s.get("usage") or {}).get("cost") or 0) for s in (meta.get("steps") or [])), 4),
         "timings": {"ocr": ocr_seconds, "llm_wall": llm_wall, "snap": snap_seconds,
                     "total": round(time.time() - _t_start, 2)},  # [faktura-patch]
         "failed_tables": meta.get("failed_tables", failed_tables),
