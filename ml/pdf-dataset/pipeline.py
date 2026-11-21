@@ -494,10 +494,26 @@ def mine_candidates(pdf, md, pages=None):
                                 "context": t[a:b].strip()})
     if md:
         out += _table_candidates(md)
+    # [faktura-patch] значения только в доп. материалах: «reported in Table S5», «Supplementary Table S2»
+    supp = _re.compile(r"(?:reported|summari[sz]ed|listed|given|provided|tabulated|presented|shown)\s+in\s+(?:the\s+)?(?:Supplementary\s+|Supporting\s+Information\s+)?Table\s*S\d+|Supplementary\s+Table\s*S?\d+", _re.I)
+    for i, t in enumerate(pages):
+        for sm in supp.finditer(t):
+            a0, b0 = max(0, sm.start() - 160), min(len(t), sm.end() + 60)
+            win = t[a0:b0]
+            supp_kw = {
+                "PCE": r"\bPCEs?\b|efficienc", "FF": r"\bFF\b|fill factor",
+                "Voc": r"V\s?_?\s?OC\b|\bV\s?oc\b|open[- ]circuit", "Jsc": r"J\s?_?\s?SC\b|\bJ\s?sc\b|short[- ]circuit",
+                "Rs": r"series resistance", "Rsh": r"shunt resistance"}
+            # общие формулировки («external/photovoltaic/J-V parameters») — про все параметры ВАХ
+            generic = _re.search(r"(?:external|photovoltaic|J\s?[-–]\s?V|device)\s+(?:performance\s+)?parameters", win, _re.I)
+            for m, key in supp_kw.items():
+                if _re.search(key, win, _re.I) or (generic and m in ("PCE", "Voc", "Jsc", "FF")):
+                    out.append({"metric": m, "value": None, "page": i + 1, "source": "supplementary",
+                                "context": win.strip()})
     # дубли кандидатов (метрика, значение, страница) — один
     seen, uniq = set(), []
     for c in out:
-        k = (c["metric"], round(c["value"], 6), c["page"])
+        k = (c["metric"], round(c["value"], 6) if c["value"] is not None else None, c["page"])
         if k not in seen:
             seen.add(k)
             uniq.append(c)
@@ -515,8 +531,17 @@ def uncovered(cands, results):
 
     def close(a, b):
         return abs(a - b) <= max(abs(b) * 0.005, 1e-9)
-    return [c for c in cands if not any(FAMILY.get(c["metric"], c["metric"]) == hm and close(c["value"], hv)
-                                        for hm, hv in have)]
+    pne = {FAMILY.get(r.get("metric_name") or "", r.get("metric_name") or "") for r in results
+           if r.get("extraction_status") == "present_not_extractable"}
+    out = []
+    for c in cands:
+        fam = FAMILY.get(c["metric"], c["metric"])
+        if c["value"] is None:
+            if fam not in pne:
+                out.append(c)
+        elif not any(fam == hm and close(c["value"], hv) for hm, hv in have):
+            out.append(c)
+    return out
 
 
 def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) -> dict:

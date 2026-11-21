@@ -131,4 +131,4 @@ def test_out_of_scope_stops(monkeypatch, tmp_path):
 def test_issues_light_no_retry(monkeypatch, tmp_path):
     c, order = _run_extract(monkeypatch, tmp_path)
     assert order.count("issues") == 1
-    assert c["issues"]["retry"] is False and c["issues"]["rt"] == 0 and c["issues"]["mt"] == 6144
+    assert c["issues"]["retry"] is True and c["issues"]["mt"] == 8192

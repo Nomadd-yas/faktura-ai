@@ -389,31 +389,37 @@ STEP_PROMPTS = {
   цитата (обычные слова вокруг числа; формулы LaTeX не переписывай — бери соседние слова).
 - note — только если формулировка в статье нестандартна.""",
 
-    "issues": """Проверь ГОТОВЫЙ датасет (JSON) — найди ТОЛЬКО реальные проблемы, видимые в данных/тексте.
-check_name — ровно одно из:
-- jv_consistency — PCE не согласуется с Voc×Jsc×FF/Pin (расхождение >10 %);
-- voc_limit — Voc выше Eg/q; range — значение вне физических пределов;
-- eqe_consistency — Jsc по ВАХ и по EQE расходятся (>5 %);
-- champion_vs_mean — среднее больше лучшего значения;
-- hysteresis_index — аномальный индекс гистерезиса;
-- contradiction — одно значение в разных местах статьи расходится (Table 4: 3.85 % против текста: 5.25 %);
+    "issues": """[faktura-patch v4] Прочитай СТАТЬЮ и сверь её с датасетом. Найди проблемы, которые видны
+только из ТЕКСТА статьи (числовые проверки jv_consistency, voc_limit, range, eqe_consistency,
+champion_vs_mean, hysteresis_index, voc_deficit_consistency делает программа — их НЕ пиши).
+Что искать (check_name — ровно одно из):
+- contradiction — одно и то же расходится в разных местах статьи: значение (аннотация 0.465 V, Table 2 —
+  456 mV), материал или структура (в методике Ag, на рисунке Au), подложка, толщины слоёв;
+- ambiguity — из текста нельзя однозначно понять: число приборов в статистике, прямая или обратная
+  развёртка, собственное это значение или повтор литературы, число без значения («rapid decay»);
+- derived_values — в тексте «производные» числа, а не результаты: разности строк таблицы, относительный
+  прирост («improved by 3.6% over the reference», «1.225% higher PCE», «increases Voc by 80 mV»);
+- figure_only — результаты (приборы, партии, распределения) есть только на рисунках, без чисел;
+- figure_mismatch — точки рисунка не совпадают с таблицей;
+- missing_conditions — не указаны условия измерения ВАХ: площадь, спектр/интенсивность, развёртка;
+  или они вынесены в Supporting Information;
+- measurement_conditions — нестандартные условия: не AM1.5G, «1 sun» по показаниям 1.2 sun, предобработка
+  светом/током, освещение с двух сторон;
+- comparability — результат нельзя сравнивать с другими статьями: мини-модуль (Voc всего модуля),
+  галогенная лампа, нестандартная площадь;
+- dedup_trap — две строки (разных таблиц/разделов) — один и тот же прибор, ИЛИ два разных прибора
+  с одинаковым значением, которые нельзя объединять;
+- cited_in_table — в таблице собственных результатов стоят строки из чужой работы;
+- text_mix — фраза объединяет максимумы разных приборов («values up to 41% and 0.46 V»);
+- possible_swap — значения, вероятно, перепутаны местами (средние/лучшие, EQE контроля и образца);
 - unit_inconsistency — единица не согласуется со значением (FF «0.71%» при доле);
-- possible_swap — значения, вероятно, перепутаны местами;
-- figure_mismatch — рисунок не совпадает с таблицей; figure_only — результаты только на графиках;
-- cited_in_table — чужие результаты стоят в таблице собственных;
-- dedup_trap — два разных прибора с одинаковым значением, объединять нельзя;
-- rounding / rounding_inconsistency — расхождение из-за округления;
-- plausibility — значение правдоподобно с трудом (FF 87 % при Voc 0.98 В);
-- missing_conditions — не указаны условия измерения (площадь, спектр, развёртка);
-- measurement_conditions — нестандартные условия измерения (не AM1.5G, предобработка светом);
-- comparability — результат несопоставим с остальными (модуль vs ячейка, нестандартное освещение);
-- ambiguity — неоднозначность в тексте; derived_values — «производные» числа в тексте (разности, относительный прирост);
-- typo — опечатка в статье; text_mix — фраза объединяет максимумы разных приборов;
-- voc_deficit_consistency — дефицит Voc не равен Eg/q − Voc.
-Каждая запись — ОДНА строка в description: числа с обеих сторон; record_ids — result_id через ;
-(можно null, если замечание не про конкретные результаты); source_page — страница по маркеру
-<!-- page N --> (если есть текст статьи) и дословный source_fragment.
-Если проблем нет — {"issues": []}. Максимум 20; только реальные проблемы, не выдумывай.""",
+- rounding_inconsistency — в разных местах одно значение с разным округлением (57.4 и 57.49);
+- plausibility — значение правдоподобно с трудом (FF 87 % при Voc 0.98 В и нестандартном освещении);
+- typo — опечатка в статье (CsCO3 вместо Cs2CO3, CIGS вместо CZTS).
+Каждая запись — ОДНА фраза-описание по-русски с конкретикой (числа/формулировки с обеих сторон).
+record_ids — result_id из датасета через «;», если замечание про конкретные результаты, иначе null.
+source_page — страница по маркеру <!-- page N -->; source_fragment — короткая дословная цитата.
+Если проблем нет — {"issues": []}. Не больше 10; только то, что реально есть в статье, не выдумывай.""",
 }
 
 STEP_ORDER = ["publications", "materials", "devices", "layers", "measurements", "results"]
@@ -669,6 +675,11 @@ GAPFILL_PROMPT = """Ниже — уже извлечённые строки resu
       duplicate_of = result_id основной (только если это действительно другое место статьи, обычно PCE);
   (в) не результат (часть другой фразы, условия эксперимента, номер, промежуточное значение,
       неверно распознанный показатель) — пропусти.
+  (г) упоминание «source=supplementary»: если по тексту значение показателя прибора есть ТОЛЬКО в
+      дополнительных материалах (Table S…, Supporting Information) или только на рисунке — добавь строку
+      extraction_status=present_not_extractable, raw_value/metric_value = null, source_fragment — дословная
+      ссылка из текста («reported in Table S5»), note — пояснение по-русски; device_id — какой прибор;
+      если упоминание не про значение показателя — пропусти.
 В контексте упоминания могут быть и другие значения (например «from 3.8% to over 26%») — добавь все,
 которые являются результатами.
 Верни ТОЛЬКО новые строки (не повторяй уже извлечённые) в ключе "results"; result_id — новые,
@@ -681,7 +692,7 @@ def gap_fill(client, args, text, state, mentions, pub_id, max_tokens, raw_path, 
     if not mentions:
         return []
     import json
-    lines = [f"- {m['metric']} = {m['value']:g} (с. {m['page']}, {m['source']}): «{m['context'][:220]}»"
+    lines = [f"- {m['metric']} = {(format(m['value'], 'g') if m['value'] is not None else 'без числа')} (с. {m['page']}, {m['source']}): «{m['context'][:220]}»"
              for m in mentions[:40]]
     compact = {k: state.get(k, []) for k in ("materials", "devices", "measurements", "results")}
     user = (f"publication_id = {pub_id}\n\nТекст статьи (Markdown):\n{text}\n\n"
@@ -708,7 +719,7 @@ def gap_fill(client, args, text, state, mentions, pub_id, max_tokens, raw_path, 
 
 def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             provider="wafer", no_strict=False, max_chars=200000,
-            max_tokens=24576, issues_max_tokens=6144, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
+            max_tokens=24576, issues_max_tokens=8192, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
             issues_with_text=False, meta_path=None, api_key=None, pdf_path=None) -> dict:
     """Извлекает датасет из markdown-статьи.
 
@@ -818,10 +829,14 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             apply(*f_lay.result())
 
     if not no_issues and (not state["publications"] or state["publications"][0].get("in_scope") is not False):
-        issues_user = (f"publication_id = {pub_id}\n\n"
-                       f"Датасет (JSON):\n{json.dumps(state, ensure_ascii=False, separators=(',', ':'))}")
-        if issues_with_text:
-            issues_user += f"\n\nТекст статьи (Markdown):\n{text}"
+        # [faktura-patch v4] замечания ищутся по ТЕКСТУ статьи: текст передаётся всегда, датасет — компактно
+        compact = {"devices": state.get("devices", []), "measurements": state.get("measurements", []),
+                   "results": [{k: r.get(k) for k in ("result_id", "device_id", "measurement_id", "metric_name",
+                                                      "raw_value", "raw_unit", "aggregation", "result_origin",
+                                                      "source_page", "source_table", "duplicate_of")}
+                               for r in state.get("results", [])]}
+        issues_user = (f"publication_id = {pub_id}\n\nТекст статьи (Markdown):\n{text}\n\n"
+                       f"Датасет (JSON):\n{json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}")
         messages = [{"role": "system", "content": COMMON_RULES + "\n" + STEP_PROMPTS["issues"]},
                     {"role": "user", "content": issues_user}]
         raw_path = src.with_name(f"{src.name}.issues.raw_response.txt")
@@ -829,7 +844,7 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             result = nullify_empties(call_llm(client, args, messages, "table_issues",
                                               table_schema("issues"), issues_max_tokens,
                                               "issues", raw_path, report,
-                                              retry=False, reasoning_tokens=0))  # [faktura-patch] лёгкий проход
+                                              retry=True))  # [faktura-patch] лёгкий проход
             issues = result.get("issues", []) if isinstance(result, dict) else []
             for r in issues:
                 r.setdefault("publication_id", pub_id)
