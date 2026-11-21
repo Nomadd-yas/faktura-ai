@@ -32,6 +32,9 @@ git archive --format=tar HEAD:backend | ssh "$HOST" "bash -c 'tar -x -C ~/$REMOT
 
 echo "== эталон dev_gold для ml-mock и check_submission.py для api (?check=true)"
 tar -C data/caseB_kejs5 -cf - dev_gold tools/check_submission.py | ssh "$HOST" "bash -c 'rm -rf ~/$REMOTE_DIR/deploy/case/dev_gold ~/$REMOTE_DIR/deploy/case/tools && tar -x -C ~/$REMOTE_DIR/deploy/case'"
+echo "== RAG: dev_gold (мок), tools + submission_template (check_submission ищет schema.json рядом)"
+ssh "$HOST" "bash -c 'mkdir -p ~/$REMOTE_DIR/deploy/case_rag'"
+tar -C data/caseA_drive -cf - dev_gold/results.csv dev_gold/publications.csv dev_gold/configurations.csv dev_gold/datasets.csv dev_gold/tasks.csv dev_gold/experiments.csv dev_gold/issues.csv tools submission_template | ssh "$HOST" "bash -c 'rm -rf ~/$REMOTE_DIR/deploy/case_rag/* && tar -x -C ~/$REMOTE_DIR/deploy/case_rag'"
 
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT

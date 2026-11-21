@@ -28,7 +28,8 @@ services:
     command: ["python", "-m", "faktura.ml.mock_server"]
     environment:
       FAKTURA_MOCK_GOLD_DIR: /case/dev_gold
-    volumes: ["./case:/case:ro"]
+      FAKTURA_RAG_CASE_DIR: /case_rag
+    volumes: ["./case:/case:ro", "./case_rag:/case_rag:ro"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health', timeout=3)"]
       interval: 10s
@@ -76,10 +77,11 @@ services:
       FAKTURA_EXTRACTOR: http
       FAKTURA_EXTRACT_URL: ${FAKTURA_EXTRACT_URL:-http://ml-mock:8081}
       FAKTURA_CHECK_SCRIPT: /case/tools/check_submission.py  # ?check=true у submission.zip
+      FAKTURA_RAG_CASE_DIR: /case_rag  # RAG: tools/check_submission.py + submission_template + dev_gold
     depends_on:
       postgres: {condition: service_healthy}
       ml-mock: {condition: service_healthy}
-    volumes: ["files:/app/var", "./case:/case:ro"]
+    volumes: ["files:/app/var", "./case:/case:ro", "./case_rag:/case_rag:ro"]
     ports: ["127.0.0.1:${API_PORT:-8000}:8000"]  # только localhost сервера: доступ через ssh-туннель
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
