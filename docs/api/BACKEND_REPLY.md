@@ -17,6 +17,23 @@
 | §10 | RAG: `domain=rag`, статус `ocr`, `ocr_confidence`, строки постранично, фильтры `/results` | §5 |
 | §11 | Скорость: `GET /runs/{id}` ≈ 25 мс, `/papers/rag/D014` ≈ 70 мс, `/results` (100 строк) ≈ 45 мс на 30 тыс. строк | `docs/eval/PERF_API.md` |
 
+### Что можно включать во фронте уже сейчас (сейчас там `disabled` с подсказкой «В разработке»)
+
+| Где во фронте | Кнопка / экран | Запрос |
+|---|---|---|
+| `RunView.vue`, `Sidebar.vue` | Переименовать, Закрепить | `PATCH /runs/{id}` `{title?, pinned?}` |
+| `RunView.vue`, `Sidebar.vue` | Удалить | `DELETE /runs/{id}` |
+| `RunView.vue` | Остановить | `POST /runs/{id}/stop` |
+| `RunView.vue` | Разобрать заново / Сменить область | `POST /runs/{id}/restart`, `POST /runs/{id}/rerun-as` |
+| `case/runs.ts` | Догрузка файлов в разбор | `POST /runs/{id}/files` |
+| `PaperView.vue` | Принять / Исправить / Отклонить значение | `PATCH /runs/{id}/papers/{domain}/{pid}/results/{rid}/review` |
+| `PaperView.vue`, `IssuesList.vue` | Исправлено / Всё верно / Открыть замечание | `PATCH /runs/{id}/papers/{domain}/{pid}/issues/{iid}` |
+| `/history` (сейчас `FrozenView`) | Журнал правок, отмена | `GET /history?run=`, `POST /actions/{id}/undo`, `POST /history/undo` |
+| `PassportView.vue` | Паспорт набора | `GET /runs/{id}/passport.json` |
+| `RunView.vue` | Прогресс без опроса | SSE `GET /runs/{id}/events?access_token=` |
+
+Вкладку «Связи» в карточке статьи (`PaperView.vue`, «4. Связи» → `CaseLinks`) стоит убрать: это похожие статьи по общим материалам (`/related`), их вычеркнули вместе с экраном «Связи».
+
 ## 2. Где бэк отступил от спеки или уточнил её
 
 1. **SSE и авторизация.** `EventSource` не умеет заголовки, поэтому `GET /runs/{id}/events` принимает и `?access_token=<access>` (только этот эндпоинт). Токен проверяется при подключении; по истечении access-токена переподключайтесь с новым. Имя события уровня разбора — `run.progress` (в спеке не было), конечное — `run.done`; после него поток закрывается. `Last-Event-ID` не поддерживается: при переподключении приходит свежий снимок.
