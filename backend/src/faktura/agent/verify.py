@@ -86,6 +86,24 @@ _TYPO = str.maketrans({"“": '"', "”": '"', "„": '"', "«": '"', "»": '"',
                        "\u00ad": None})
 
 
+BARE_LIST_ITEM = re.compile(r"\s*(?:\d+[.)]|[-*•])\s*")
+NUMBERED = re.compile(r"^(\s*)\d+([.)]\s)")
+
+
+def _renumber(lines: list[str]) -> list[str]:
+    """После отброшенных пунктов нумерация списка снова подряд: 1, 2, 3 (каждый список - с 1)."""
+    out, n = [], 0
+    for ln in lines:
+        m = NUMBERED.match(ln)
+        if m:
+            n += 1
+            ln = f"{m.group(1)}{n}{m.group(2)}{ln[m.end():]}"
+        else:
+            n = 0
+        out.append(ln)
+    return out
+
+
 def clean_quote(q: str | None) -> str | None:
     """Цитата из маркера без обрамляющих кавычек и многоточий: модель пишет `|"текст"` или `|«текст…»`."""
     if q is None:
@@ -216,6 +234,7 @@ class Verifier:
     def __init__(self, tb: Toolbox, question: str, mode: str = "drop") -> None:
         self.tb, self.mode = tb, mode
         self.qnums = {v for v in (_canon(m.group(0)) for m in NUMBER.finditer(question)) if v is not None}
+        self.seen: list[float] = []  # числа, подтверждённые в уже принятых пунктах ответа
 
     # --- проверка маркера и числа ----------------------------------------------------------------------------
 
@@ -288,6 +307,18 @@ class Verifier:
         cells = " ".join(str(x) for x in obj[1].values())
         return any(abs(x - w) < 0.5 * 10 ** (-d) + 1e-9 for x in _nums_in(cells))
 
+    def _seen_ok(self, txt: str) -> bool:
+        """Число уже подтверждено выше в этом же ответе (итог повторяет значения из пунктов)."""
+        w = _canon(txt)
+        return w is not None and any(abs(w - x) < 1e-9 for x in self.seen)
+
+    def remember(self, item: str) -> None:
+        """Числа принятого пункта считаются подтверждёнными для следующих пунктов ответа."""
+        for _s, _e, txt, _pct in number_spans(item, self.qnums):
+            w = _canon(txt)
+            if w is not None:
+                self.seen.append(w)
+
     def check_item(self, item: str) -> str | None:
         """None - пункт верен; иначе причина отбрасывания."""
         marks = find_markers(item)
@@ -296,8 +327,13 @@ class Verifier:
             err, _ = self._ref(kind, ref, quote)
             if err:
                 return err
+        objs = [(k, self._ref(k, r, clean_quote(q))[1], clean_quote(q)) for *_, k, r, q in marks]
         for (s, e, txt, pct), bound in bind(number_spans(item, self.qnums), marks):
             if not bound:
+                # число без своего маркера: годится, если его подтверждает любой источник этого же пункта
+                # (цитата «…+12%…» рядом с [[chunk:…|…+12%…]]) или оно уже подтверждено выше в ответе
+                if self._seen_ok(txt) or any(self._number_ok(k, o, q, txt, pct) for k, o, q in objs):
+                    continue
                 return f"number {txt} without marker"
             if not any(self._number_ok(k, self._ref(k, r, q)[1], q, txt, pct) for *_, k, r, q in bound):
                 return f"number {txt} does not match {', '.join(b[3] for b in bound)}"
@@ -307,6 +343,7 @@ class Verifier:
 
     def run(self, text: str) -> Verified:
         v = Verified("", [])
+        self.seen = []
         lines_out: list[str | None] = []
         src: list[str] = []
         for line in text.strip().splitlines():
@@ -319,13 +356,17 @@ class Verifier:
                 v.items_total += not sent.rstrip().endswith(":")  # считаются все предложения: пересказ без чисел не должен давать ложный откат
                 if err is None:
                     kept.append(sent)
+                    self.remember(sent)
                     continue
                 v.items_dropped += 1
                 v.dropped.append({"item": sent[:300], "reason": err, "mode": self.mode})
                 if self.mode == "mark":
                     kept.append(MARKER.sub("", sent).strip() + " (не подтверждено)")
                     v.unverified.append(sent)
-            lines_out.append(" ".join(kept) if kept else None)
+            joined = " ".join(kept) if kept else None
+            if joined is not None and BARE_LIST_ITEM.fullmatch(joined):  # от пункта списка остался только номер
+                joined = None
+            lines_out.append(joined)
         lines = []
         for i, ln in enumerate(lines_out):
             if ln is None:
@@ -336,7 +377,7 @@ class Verifier:
                 if all(lines_out[j] is None for j in nxt):
                     continue
             lines.append(ln)
-        v.text = "\n".join(lines)
+        v.text = "\n".join(_renumber(lines) if v.items_dropped else lines)
         self._footnotes(v)
         return v
 
