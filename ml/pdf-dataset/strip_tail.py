@@ -99,6 +99,38 @@ def strip_trailing_sections(md_text: str):
     }
 
 
+# [faktura-patch] RAG: приложения часто содержат таблицы результатов — режем только список литературы
+# (от заголовка References до следующего заголовка Appendix, если он есть; иначе до конца).
+_REFS_ONLY = re.compile(
+    r"^[\s>*#_-]*(?:(?:\d+(?:\.\d+)*|[A-Za-z])[.)]?\s+)?(?:references?(?:\s+and\s+notes)?|bibliography|works\s+cited|reference\s+list)[\s:.\-*_]*$",
+    re.IGNORECASE | re.MULTILINE)
+_APPENDIX = re.compile(
+    r"^[\s>*#_-]*(?:(?:\d+(?:\.\d+)*|[A-Za-z])[.)]?\s+)?(?:appendi(?:x|ces)|supplementary\s+(?:materials?|information|appendix))\b[^\n]{0,80}$",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def strip_references_only(md_text: str):
+    """Вернуть (текст без списка литературы, info | None); приложения после него сохраняются."""
+    limit = len(md_text) * MIN_CUT_FRACTION
+    m = next((x for x in _REFS_ONLY.finditer(md_text)
+              if x.start() + (len(x.group(0)) - len(x.group(0).lstrip())) >= limit), None)
+    if not m:
+        return md_text, None
+    start = m.start() + (len(m.group(0)) - len(m.group(0).lstrip()))
+    a = _APPENDIX.search(md_text, m.end())
+    end = a.start() + (len(a.group(0)) - len(a.group(0).lstrip())) if a else len(md_text)
+    if a:  # маркер страницы прямо перед заголовком приложения сохраняется (иначе source_page съедет)
+        mk = re.search(r"<!--\s*page\s+\d+\s*-->\s*\Z", md_text[m.end():end])
+        if mk:
+            end = m.end() + mk.start()
+    head = md_text[:start].rstrip()
+    tail = md_text[end:] if a else ""
+    cleaned = head + ("\n\n" + tail.lstrip("\n") if tail else "")
+    cleaned = _PAGE_MARKER_TAIL.sub("", cleaned).rstrip() + "\n"
+    return cleaned, {"line": md_text.count("\n", 0, start) + 1, "heading": md_text[start:m.end()].strip(),
+                     "removed_chars": len(md_text) - len(cleaned), "kept_appendix": bool(a)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Обрезать хвостовые разделы из .md")
     ap.add_argument("files", nargs="+", help="входные .md файлы")

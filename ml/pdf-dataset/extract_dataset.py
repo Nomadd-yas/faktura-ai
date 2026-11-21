@@ -717,16 +717,766 @@ def gap_fill(client, args, text, state, mentions, pub_id, max_tokens, raw_path, 
     return out
 
 
+# ====================================================================================================
+# [faktura-patch] Область RAG (domain="rag"): схемы, промпты, results по таблицам кусками.
+# Область solar выше не затронута; сюда попадаем только из extract(..., domain="rag").
+# Колонки — 1:1 с data/caseA_drive/submission_template/schema.json.
+# ====================================================================================================
+DOMAINS = ("solar", "rag")
+RAG_RESULT_ORIGINS = ["primary", "cited"]
+RAG_EXTRACTION_STATUS = ["extracted", "present_not_extractable", "absent"]
+RAG_METRIC_DIRECTIONS = ["higher_is_better", "lower_is_better", "target"]  # рекомендуемый словарь (null допустим)
+RAG_TABLE_CELLS = int(os.environ.get("RAG_TABLE_CELLS", "150"))      # числовых ячеек таблицы на один вызов
+RAG_RESULTS_MAX_TOKENS = int(os.environ.get("RAG_RESULTS_MAX_TOKENS", "32768"))
+RAG_WORKERS = 4
+
+RAG_PUB = PUB
+
+RAG_CONFIG = obj({
+    "publication_id": STR(),
+    "config_id": STR(),
+    "rag_variant": S(),
+    "retrieval_method": S(),
+    "retriever_model": S(),
+    "embedding_model": S(),
+    "embedding_version": S(),
+    "chunking_method": S(),
+    "chunk_size": N(),
+    "chunk_overlap": N(),
+    "chunk_unit": S(),
+    "index_type": S(),
+    "vector_store": S(),
+    "top_k": N(),
+    "reranker_model": S(),
+    "generator_model": S(),
+    "generator_version": S(),
+    "prompt_strategy": S(),
+    "context_strategy": S(),
+    "note": S(),
+})
+
+RAG_DATASET = obj({
+    "publication_id": STR(),
+    "dataset_id": STR(),
+    "dataset_name": S(),
+    "dataset_version": S(),
+    "language": S(),
+    "data_split": S(),
+    "scientific_domain": S(),
+    "note": S(),
+})
+
+RAG_TASK = obj({
+    "publication_id": STR(),
+    "task_id": STR(),
+    "task_type": S(),
+    "note": S(),
+})
+
+RAG_EXPERIMENT = obj({
+    "publication_id": STR(),
+    "experiment_id": STR(),
+    "evaluation_protocol": S(),
+    "baseline_name": S(),
+    "hardware": S(),
+    "latency_ms": N(),
+    "tokens_per_query": N(),
+    "sample_size": NS(),
+    "note": S(),
+})
+
+RAG_RESULT = obj({
+    "publication_id": STR(),
+    "result_id": STR(),
+    "experiment_id": S(),
+    "config_id": S(),
+    "dataset_id": S(),
+    "task_id": S(),
+    "metric_group": S(),
+    "metric_name": S(),
+    "metric_variant": S(),
+    "metric_direction": S(RAG_METRIC_DIRECTIONS),
+    "metric_k": N(),
+    "metric_value": N(),
+    "metric_unit": S(),
+    "baseline_value": N(),
+    "aggregation": S(),
+    "sample_size": NS(),
+    "raw_value": NS(),
+    "raw_unit": S(),
+    "normalized_value": N(),
+    "normalized_unit": S(),
+    "result_origin": S(RAG_RESULT_ORIGINS),
+    "cited_publication_id": S(),
+    "source_page": I(),
+    "source_section": S(),
+    "source_table": S(),
+    "source_figure": S(),
+    "source_fragment": S(),
+    "extraction_status": S(RAG_EXTRACTION_STATUS),
+    "duplicate_of": S(),
+    "note": S(),
+})
+
+RAG_ISSUE = ISSUE
+
+RAG_TABLES = {
+    "publications": RAG_PUB,
+    "configurations": RAG_CONFIG,
+    "datasets": RAG_DATASET,
+    "tasks": RAG_TASK,
+    "experiments": RAG_EXPERIMENT,
+    "results": RAG_RESULT,
+    "issues": RAG_ISSUE,
+}
+RAG_KEYS = {"publications": "publication_id", "configurations": "config_id", "datasets": "dataset_id",
+            "tasks": "task_id", "experiments": "experiment_id", "results": "result_id", "issues": "issue_id"}
+
+
+def rag_table_schema(name: str) -> dict:
+    return {"type": "object",
+            "properties": {name: {"type": "array", "items": RAG_TABLES[name]}},
+            "required": [name],
+            "additionalProperties": False}
+
+
+def check_dataset_rag(d: dict) -> list[str]:
+    """Аналог check_dataset для RAG: колонки/типы enum, уникальность id, ссылки results -> experiment/config/dataset/task,
+    duplicate_of, issues.record_ids. Рекомендуемый словарь metric_direction — предупреждение."""
+    problems = []
+    tabs = {}
+    for name in RAG_TABLES:
+        rows = d.get(name)
+        if not isinstance(rows, list):
+            problems.append(f"ключ {name}: ожидается массив")
+            rows = []
+        tabs[name] = [r for r in rows if isinstance(r, dict)]
+    pub_id = tabs["publications"][0].get("publication_id") if tabs["publications"] else None
+    if pub_id:
+        for t, rows in tabs.items():
+            for i, r in enumerate(rows):
+                if r.get("publication_id") not in (None, pub_id):
+                    problems.append(f"{t}[{i}]: publication_id={r.get('publication_id')!r} != {pub_id!r}")
+    for r in tabs["results"]:
+        for col, allowed in (("result_origin", RAG_RESULT_ORIGINS), ("extraction_status", RAG_EXTRACTION_STATUS)):
+            v = r.get(col)
+            if v is not None and v not in allowed:
+                problems.append(f"results {r.get('result_id')}: {col}={v!r} вне enum")
+        v = r.get("metric_direction")
+        if v is not None and v not in RAG_METRIC_DIRECTIONS:
+            problems.append(f"предупреждение: results {r.get('result_id')}: metric_direction={v!r} вне рекомендуемых")
+        sp = r.get("source_page")
+        if sp is not None and (not isinstance(sp, int) or isinstance(sp, bool) or sp < 1):
+            problems.append(f"results {r.get('result_id')}: source_page={sp!r} должен быть целым >= 1")
+    for r in tabs["publications"]:
+        if r.get("in_scope") is not None and not isinstance(r.get("in_scope"), bool):
+            problems.append("publications: in_scope должен быть boolean")
+    ids = {}
+    for t, key in RAG_KEYS.items():
+        seen = set()
+        for r in tabs[t]:
+            v = r.get(key)
+            if v is not None:
+                if v in seen:
+                    problems.append(f"{t}: дубликат {key}={v!r}")
+                seen.add(v)
+        ids[t] = seen
+    for r in tabs["results"]:
+        rid = r.get("result_id")
+        for col, tab in (("experiment_id", "experiments"), ("config_id", "configurations"),
+                         ("dataset_id", "datasets"), ("task_id", "tasks")):
+            v = r.get(col)
+            if v is not None and v not in ids[tab]:
+                problems.append(f"results {rid}: {col}={v!r} нет в {tab}")
+        dup = r.get("duplicate_of")
+        if dup is not None:
+            if dup == rid:
+                problems.append(f"results {rid}: duplicate_of ссылается на себя")
+            elif dup not in ids["results"]:
+                problems.append(f"results {rid}: duplicate_of={dup!r} не существует")
+    by_id = {r.get("result_id"): r for r in tabs["results"]}
+    for r in tabs["results"]:  # цикл по duplicate_of
+        seen, cur = set(), r
+        while cur is not None and cur.get("duplicate_of") is not None:
+            if cur.get("result_id") in seen:
+                problems.append(f"results {r.get('result_id')}: цикл duplicate_of")
+                break
+            seen.add(cur.get("result_id"))
+            cur = by_id.get(cur.get("duplicate_of"))
+    for r in tabs["issues"]:
+        for rid in (r.get("record_ids") or "").split(";"):
+            rid = rid.strip()
+            if rid and rid not in ids["results"]:
+                problems.append(f"issues {r.get('issue_id')}: record_id {rid!r} нет в results")
+    if tabs["publications"] and tabs["publications"][0].get("in_scope") is False:
+        for t in RAG_TABLES:
+            if t not in ("publications", "issues") and tabs[t]:
+                problems.append(f"in_scope=false, но в {t} есть строки")
+    return problems
+
+
+RAG_COMMON_RULES = """Ты — экстрактор данных из научных статей о RAG-системах (Retrieval-Augmented Generation:
+система находит сведения во внешней коллекции документов и использует найденный контекст при формировании ответа).
+Извлекай ТОЛЬКО то, что прямо написано в тексте статьи. Ничего не додумывай.
+Ключевые правила:
+- Верхний ключ JSON — ТОЛЬКО указанный в задании. Значение — массив объектов.
+- publication_id везде равен заданному в задании.
+- Пустая ячейка = null (не "", не "N/A", не "unknown", не "-"). Ноль — это 0, а не null.
+- СТРОГО: ячейка заполняется, только если значение ЯВНО указано в статье именно для этой записи; иначе null.
+  Не достраивай версии моделей, параметры, шкалы и условия по известным настройкам библиотек, по «типичной
+  практике» или по другим статьям. Сохраняй исходное обозначение (имя модели, метода, набора данных, метрики —
+  как в статье); неоднозначность поясняй в note. Одинаковые названия моделей или наборов не дают права
+  объединять разные эксперименты. Лучше пустая ячейка, чем догадка.
+- ID короткие и уникальные внутри публикации: C1.. (configurations), DS1.. (datasets), T1.. (tasks), E1.. (experiments),
+  R001.. (results), I1.. (issues). Если передаётся «Уже извлечено» — используй те же id, не переименовывай.
+- Числовые поля — JSON-числа без единиц и множителей. Если параметр дан диапазоном или словами — числовое поле
+  null, исходная запись — в note. Среднее вместо диапазона не подставлять.
+- Страницы: перед содержимым каждой PDF-страницы стоит маркер <!-- page N -->. source_page = N ближайшего
+  ПРЕДШЕСТВУЮЩЕГО маркера (страница PDF, с 1; не номер страницы журнала). source_fragment — короткая (до ~120 симв.)
+  ДОСЛОВНАЯ цитата из текста этой страницы: символ в символ, без перефразирования; не склеивай разные места.
+- Выводи ТОЛЬКО JSON-объект, без пояснений и markdown-ограждений.
+"""
+
+RAG_STEP_PROMPTS = {
+    "publications": """Заполни таблицу publications РОВНО ОДНОЙ записью:
+- title, year (целое), DOI (только если указан в тексте статьи, иначе null), authors (через «; »);
+- in_scope (true/false). Предметная область: система находит сведения во внешней коллекции документов и
+  использует найденный контекст при формировании ответа; статья описывает конфигурацию такой системы и результаты
+  её оценки. Решение — по СОДЕРЖАНИЮ, а не по слову RAG в названии. in_scope=true, если в статье есть
+  RAG-система (поиск по коллекции + генерация ответа с использованием найденного контекста, в том числе графовые,
+  агентные, мультимодальные варианты, бенчмарки для оценки RAG) и приведены результаты её оценки (метрики).
+  in_scope=false, если: обзор/позиционная статья без собственной оценки; нет поиска по внешней коллекции или
+  найденный контекст не используется при генерации ответа (чистая LLM, только дообучение модели, только
+  оценка поиска без генерации ответа); статья не про RAG, хотя слово встречается.
+- exclusion_reason — только при in_scope=false (иначе null): одно–два предложения по-русски — что сделано в
+  работе и почему это не подходит.""",
+
+    "configurations": """Заполни configurations — все конфигурации RAG-систем и сравниваемые baseline-варианты, для которых
+в статье есть числовые результаты (в таблицах, тексте, ablation):
+- ОТДЕЛЬНАЯ конфигурация на каждый вариант системы/baseline, на каждый генератор, на каждый ablation-вариант и
+  каждую отличающуюся настройку. Строка таблицы результатов = обычно одна конфигурация (если одна и та же система
+  оценена с разными генераторами/настройками — отдельная конфигурация на каждую пару). Не объединяй разные.
+  Не создавай конфигурации для методов, у которых в статье нет ни одного числового результата.
+- rag_variant — название варианта/baseline как в статье (метка строки таблицы, «w/o reranker»).
+- retrieval_method (исходная формулировка: BM25, dense, hybrid, graph...), retriever_model, embedding_model +
+  embedding_version (версия — отдельно и только если указана явно), chunking_method, chunk_size + chunk_overlap
+  (числа, если указаны численно) + chunk_unit (tokens/characters... по источнику), index_type, vector_store
+  (одно не выводится из другого), top_k (число извлекаемых элементов; НЕ k метрики; 0 — если контекст не
+  извлекается), reranker_model, generator_model + generator_version (только явная), prompt_strategy,
+  context_strategy.
+- Параметры, общие для всех систем статьи (одна и та же модель-генератор, один и тот же поиск), записывай в каждую
+  конфигурацию, к которой они относятся по тексту.
+- note — где описана конфигурация («Table 1, строка X; generator LLaMA3-8B»), дополнительные параметры,
+  неоднозначности, диапазоны параметров.""",
+
+    "datasets": """Заполни datasets — наборы данных, на которых оценивались системы:
+- dataset_name — как в статье; dataset_version, language, data_split (train/dev/test/выборка), scientific_domain —
+  ТОЛЬКО если указаны в статье.
+- Разные версии или разбиения набора, участвующие в разных сравнениях, — отдельные записи; один набор в одном
+  разбиении — одна запись.
+- note — где упомянут/описан (страницы, раздел) и неоднозначности.""",
+
+    "tasks": """Заполни tasks — задачи оценки:
+- task_type — как в статье (например «open-domain multi-hop question answering», «fact verification»,
+  «retrieval», «long-form generation»). Не закрытый словарь: сохраняй формулировку статьи.
+- Связь задачи с набором фиксируется в results, здесь её не пиши. note — где описана.
+- Обычно задач немного (1–7): не дроби задачу по наборам данных, если статья относит их к одному типу.""",
+
+    "experiments": """Заполни experiments — протоколы/условия эксперимента (отдельный эксперимент — когда меняются протокол,
+условия оценки, способ расчёта метрик, оборудование, размер выборки; одна основная таблица/раздел оценки обычно = один
+эксперимент):
+- evaluation_protocol — протокол, условия оценки, способ расчёта, ограничения сравнения (по-русски/как в статье, кратко);
+- baseline_name — названия сравниваемых baseline через «;» (если указаны);
+- hardware — оборудование и число устройств по статье;
+- latency_ms — задержка в МИЛЛИСЕКУНДАХ числом, только если исходная единица известна (иначе null, исходная запись — в note);
+- tokens_per_query — число токенов на запрос (общий расход не делить на запросы без основания);
+- sample_size — размер ОЦЕНОЧНОЙ выборки (не размер всего датасета);
+- note — уточнения, где описан протокол. Значения, зависящие от конфигурации (задержка, токены), не распространяй на
+  все конфигурации — их оформит results.""",
+}
+
+RAG_RESULT_FIELDS = """Правила полей results (одна строка = ОДНО значение ОДНОЙ метрики для ОДНОЙ связки конфигурация ×
+набор данных × задача (× эксперимент) при одном k):
+- experiment_id, config_id, dataset_id, task_id — ТОЛЬКО id из «Уже извлечено»; если подходящей записи нет — null
+  (не выдумывай id). Строка таблицы -> config_id по метке строки (и генератору/настройке); столбец/блок столбцов ->
+  dataset_id и метрика.
+- metric_group — группа показателей по смыслу источника, свободный текст («answer quality», «retrieval quality»,
+  «efficiency», «robustness»); metric_name — название метрики как в статье (EM, F1, Accuracy, Recall@5, NDCG@10,
+  latency...). Если у метрики есть @k, metric_name — без «@k», а k — в metric_k (число); отдельная строка на каждый k.
+  metric_variant — определение/вариант (token-level F1, macro, micro, judge-based, «LLM-as-judge GPT-4o»), только если
+  указан. metric_direction — higher_is_better / lower_is_better / target (стрелка ↑/↓ в заголовке, явное указание
+  или очевидная природа метрики: ошибка, задержка — lower; неясно -> null).
+- baseline_value — значение baseline, ТОЛЬКО если оно стоит рядом в той же ячейке/строке сравнения для сопоставимых
+  задачи, набора, метрики и протокола; иначе null.
+- aggregation — среднее/медиана/champion/CI и т.п. ТОЛЬКО при явном указании. sample_size — размер выборки для
+  этого результата, если указан отдельно.
+- raw_value — значение ТАК, КАК НАПЕЧАТАНО в статье (строка: ".204", "63.2", "12.5±0.3", «>90»), raw_unit — единица/знак
+  как в статье («%», «ms», null). metric_value + metric_unit и normalized_value + normalized_unit — одно и то же:
+  число без изменения масштаба (только добавь ведущий ноль «.204» -> 0.204, раздели «±», запятая -> точка). НЕ ПЕРЕСЧИТЫВАЙ
+  доли/проценты, BLEU/ROUGE, время по имени метрики: если шкала не установлена статьёй — normalized_value = число как
+  есть, normalized_unit = null (или «%» / «fraction», если статья прямо задаёт шкалу: «all scores in %»; значение 0–1 без
+  пометки — «fraction» не ставь). Для диапазона/неточного значения — normalized_value = null, исходное в raw_value и note.
+  metric_unit = normalized_unit.
+- result_origin: primary — число получено в данной работе (в том числе воспроизведённый авторами baseline);
+  cited — перенесено из другой работы (в подписи/тексте сказано «reported in [12]», «results from Lewis et al.») —
+  тогда cited_publication_id = метка ссылки как в статье («[12]», «Lewis et al., 2020»), иначе null. Название baseline
+  само по себе НЕ делает число cited.
+- extraction_status: extracted; present_not_extractable — значение действительно обозначено, но достоверно извлечь
+  его нельзя (ссылка на отсутствующее приложение; raw_value/metric_value = null, source_fragment — дословная ссылка);
+  absent — не использовать без необходимости. Не создавай декартово произведение метрик и конфигураций с
+  искусственными пустыми значениями: строка — только для реально напечатанного числа.
+- duplicate_of — result_id основной записи (в рамках этого вызова), если то же значение того же результата повторно
+  встречено в другом месте (в другой таблице/разделе); у основной записи null. Разные числа дублями не объявляй.
+- source_page — страница PDF по маркеру <!-- page N -->; source_section — раздел (например «4.2»); source_table —
+  «Table N»; source_figure — только для графика (в этом проходе графики не извлекаются — не заполняй); source_fragment:
+  для значения из таблицы — «Table N, строка <метка строки как в таблице>» (например «Table 1, строка RA-CoT»),
+  для значения из текста — короткая дословная цитата (слова вокруг числа).
+- note — уточнение столбца/блока столбцов («column EM, dataset HotpotQA»), нестандартность значения, ссылка на условие.
+- result_id в этом проходе — локальные R1, R2, ... (позже будут перенумерованы)."""
+
+RAG_RESULTS_TABLE_TASK = """Заполни results по ОДНОЙ таблице, данной ниже в виде HTML (она может быть частью большой таблицы:
+строки с номерами указаны). Каждая числовая ячейка с результатом метрики = отдельная строка results; пропуск
+ячеек не допускается. Нечисловые ячейки («-», «N/A») строк не дают. Метки столбцов (метрика, набор данных, @k,
+единицы) могут занимать несколько строк заголовка (colspan/rowspan) — сопоставляй столбцы внимательно. Столбцы с
+явной разностью/приростом («Δ», «improvement») — отдельная метрика (metric_group «derived», metric_variant разности), не
+подменяй ими обычные значения. Значения других работ в таблице (строки со ссылкой) — result_origin=cited.
+Для всех строк этой таблицы source_page = страница, указанная в задании, source_table = номер из задания."""
+
+RAG_RESULTS_PROSE_TASK = """Заполни results значениями, которые приводятся в ТЕКСТЕ статьи (аннотация, введение, результаты,
+обсуждение, заключение, подписи), а НЕ в таблицах: таблицы в тексте заменены пометками «[ТАБЛИЦА ...]» и обрабатываются
+отдельно. Записывай результаты метрик систем/конфигураций (собственные primary и чужие cited, например «outperforms X by 5.2
+points», «achieves 63.1 EM on HotpotQA», «reduces latency by 40%»). Числа, не являющиеся результатом метрики
+(гиперпараметры, размеры датасетов, годы, номера разделов) НЕ записывай. Если то же значение явно относится к строке
+таблицы, всё равно запиши его (повтор определит программа); при этом config_id/dataset_id/experiment_id определи по
+смыслу из «Уже извлечено». Относительные приросты («+5.2%», «improves by 3 points») — metric_group «derived», raw_value со
+знаком как в статье, normalized_value не пересчитывай. Для значений только в приложениях/на графиках без чисел в тексте —
+extraction_status=present_not_extractable только если в тексте прямо названо конкретное значение или таблица, недоступные
+в PDF; иначе пропусти."""
+
+RAG_ISSUES_PROMPT = """Прочитай СТАТЬЮ и сверь её с датасетом. Найди проблемы, видимые из текста и чисел статьи, для которых важно
+замечание (check_name — короткий код/название правила, открытый список; рекомендуемые: metric_scale, metric_k,
+protocol_mismatch, normalization, contradiction):
+- contradiction — одно и то же значение/условие расходится в разных местах (аннотация vs таблица; размер выборки; модель);
+- metric_scale — шкала метрики не названа/смешана (доли и проценты, значение вне диапазона метрики, «%» у абсолютной
+  разности — percentage points vs relative percent);
+- metric_k — k метрики путается с top_k конфигурации или не указан;
+- protocol_mismatch — значения нельзя сравнивать: разные протоколы, наборы, разбиения, модели оценки, перенос чисел baseline из
+  других работ с другим протоколом;
+- normalization — округление/пересчёт/арифметика не сходятся (суммы, разности, «improves by» не совпадает со строками);
+- ambiguity — из текста нельзя однозначно понять модель/версию/выборку/агрегацию;
+- figure_only — результаты есть только на графиках, без чисел (графики в этом проходе не извлечены).
+Каждая запись — ОДНА фраза-описание по-русски с конкретикой (числа и условия с обеих сторон). record_ids — result_id из
+датасета через «;», если замечание про конкретные результаты, иначе null. source_page — страница по маркеру
+<!-- page N -->; source_fragment — короткая дословная цитата. Если проблем нет — {"issues": []}. Не больше 12;
+только то, что реально есть в статье."""
+
+_RAG_TABLE_RX = re.compile(r"<table\b.*?</table>", re.S | re.I)
+_RAG_TR_RX = re.compile(r"<tr\b[^>]*>.*?</tr>", re.S | re.I)
+_RAG_CELL_RX = re.compile(r"<t([dh])\b[^>]*>(.*?)</t\1>", re.S | re.I)
+_RAG_MARK_RX = re.compile(r"<!-- page (\d+) -->")
+_RAG_NUMCELL_RX = re.compile(r"[\s$\\{}^_~≈<>±+\-−–.,:;%()\d/×*†‡§‖]*")
+
+
+def _rag_cell_texts(tr_html: str) -> list[str]:
+    import html as _h
+    return [_h.unescape(re.sub(r"<[^>]+>", "", c)).strip() for _, c in _RAG_CELL_RX.findall(tr_html)]
+
+
+def _rag_is_num(cell: str) -> bool:
+    c = re.sub(r"\\[A-Za-z]+", "", cell or "")
+    return bool(re.search(r"\d", c)) and bool(_RAG_NUMCELL_RX.fullmatch(c)) and len(c) <= 40
+
+
+def _rag_row_numcells(tr_html: str) -> int:
+    return sum(1 for c in _rag_cell_texts(tr_html) if _rag_is_num(c))
+
+
+def rag_split_table(table_html: str, max_cells: int = RAG_TABLE_CELLS) -> list[dict]:
+    """Разбивает HTML-таблицу на куски по группам строк так, чтобы в куске было <= max_cells числовых ячеек.
+    Строки заголовка (ведущие строки без числовых ячеек, до 3) повторяются в каждом куске. Возвращает список
+    {header: [tr...], rows: [tr...], lo, hi, total, cells}; lo/hi — номера строк данных (с 1)."""
+    trs = _RAG_TR_RX.findall(table_html)
+    if not trs:
+        return [{"header": [], "rows": [], "lo": 1, "hi": 1, "total": 0, "cells": 0, "raw": table_html}]
+    h = 0
+    while h < min(3, len(trs) - 1) and _rag_row_numcells(trs[h]) == 0:
+        h += 1
+    header, body = trs[:h], trs[h:]
+    counts = [_rag_row_numcells(t) for t in body]
+    if sum(counts) <= max_cells or len(body) <= 1:
+        return [{"header": header, "rows": body, "lo": 1, "hi": len(body), "total": len(body), "cells": sum(counts)}]
+    chunks, cur, cur_n, lo = [], [], 0, 1
+    for i, (t, n) in enumerate(zip(body, counts), start=1):
+        if cur and cur_n + n > max_cells:
+            chunks.append({"header": header, "rows": cur, "lo": lo, "hi": i - 1, "total": len(body), "cells": cur_n})
+            cur, cur_n, lo = [], 0, i
+        cur.append(t)
+        cur_n += n
+    if cur:
+        chunks.append({"header": header, "rows": cur, "lo": lo, "hi": len(body), "total": len(body), "cells": cur_n})
+    return chunks
+
+
+def _rag_chunk_html(ch: dict) -> str:
+    if ch.get("raw"):
+        return ch["raw"]
+    return "<table>\n" + "\n".join(ch["header"] + ch["rows"]) + "\n</table>"
+
+
+def rag_plan_results(text: str, max_cells: int = RAG_TABLE_CELLS):
+    """Markdown статьи -> (куски таблиц для вызовов results, текст без таблиц для «прозаического» вызова).
+    Кусок: {label, page, caption, before, after, header, rows, lo, hi, total, cells}."""
+    marks = [(m.start(), int(m.group(1))) for m in _RAG_MARK_RX.finditer(text)]
+    tables = list(_RAG_TABLE_RX.finditer(text))
+    cap_rx = re.compile(r"(?:^|\n)[#*_\s]*((?:Table|TABLE)\s*[A-Z]?\d+[A-Za-z]?[^\n]{0,250})")
+    chunks, prose, last = [], [], 0
+    for i, tm in enumerate(tables):
+        s, e = tm.start(), tm.end()
+        page = max([p for pos, p in marks if pos < s] or [1])
+        prev_end = tables[i - 1].end() if i else 0
+        next_start = tables[i + 1].start() if i + 1 < len(tables) else len(text)
+        before = text[max(prev_end, s - 1500):s].strip()
+        after = text[e:min(next_start, e + 800)].strip()
+        found = cap_rx.findall(before[-700:])
+        caption = found[-1].strip() if found else ""
+        if not caption:
+            fa = cap_rx.findall("\n" + after[:400])
+            caption = fa[0].strip() if fa else ""
+        lm = re.match(r"(?i)table\s*([A-Z]?\d+[A-Za-z]?)", caption)
+        label = f"Table {lm.group(1)}" if lm else None
+        for ch in rag_split_table(tm.group(0), max_cells):
+            ch.update({"label": label, "page": page, "caption": caption, "before": before, "after": after,
+                       "index": len(chunks)})
+            chunks.append(ch)
+        prose.append(text[last:s])
+        prose.append(f"[ТАБЛИЦА {label or '?'} (с. {page}) — значения извлекаются отдельно, здесь не нужны]")
+        last = e
+    prose.append(text[last:])
+    return chunks, "".join(prose)
+
+
+def _rag_split_chunk(ch: dict):
+    """Пополам по строкам данных (повтор после усечения ответа)."""
+    n = len(ch["rows"])
+    if n <= 1 or ch.get("raw"):
+        return None
+    m = n // 2
+    a = dict(ch, rows=ch["rows"][:m], hi=ch["lo"] + m - 1)
+    b = dict(ch, rows=ch["rows"][m:], lo=ch["lo"] + m)
+    for x in (a, b):
+        x["cells"] = sum(_rag_row_numcells(t) for t in x["rows"])
+    return a, b
+
+
+def _rag_compact(state: dict, with_pubs=False) -> dict:
+    def slim(r, note=160):
+        out = {k: v for k, v in r.items() if v is not None and k != "publication_id"}
+        if isinstance(out.get("note"), str) and len(out["note"]) > note:
+            out["note"] = out["note"][:note] + "…"
+        return out
+    keys = ("configurations", "datasets", "tasks", "experiments")
+    d = {k: [slim(r) for r in state.get(k, [])] for k in keys}
+    if with_pubs:
+        d = {"publications": state.get("publications", []), **d}
+    return d
+
+
+def _rag_num(v):
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace("−", "-").replace(",", ".")
+    if re.fullmatch(r"-?\d*\.?\d+", s):
+        return float(s)
+    return None
+
+
+def fix_rag_results(rows):
+    """Детерминированные поправки: origin/status по умолчанию, metric_value == normalized_value, пустые строки."""
+    for r in rows:
+        if not r.get("result_origin"):
+            r["result_origin"] = "cited" if r.get("cited_publication_id") else "primary"
+        if not r.get("extraction_status"):
+            r["extraction_status"] = "extracted"
+        if r.get("normalized_value") is None and r.get("metric_value") is not None:
+            r["normalized_value"] = r["metric_value"]
+        elif r.get("metric_value") is None and r.get("normalized_value") is not None:
+            r["metric_value"] = r["normalized_value"]
+        if r.get("normalized_unit") is None and r.get("metric_unit") is not None:
+            r["normalized_unit"] = r["metric_unit"]
+        elif r.get("metric_unit") is None and r.get("normalized_unit") is not None:
+            r["metric_unit"] = r["normalized_unit"]
+        if r.get("raw_value") is not None and not isinstance(r["raw_value"], str):
+            r["raw_value"] = str(r["raw_value"])
+
+
+def rag_renumber(rows, id_prefix="R"):
+    """rows: строки с временными result_id (уникальными), duplicate_of — на временные id. Перенумеровывает R001..
+    в порядке списка; ссылки duplicate_of переписываются; висячие/на себя -> None. Возвращает карту старый->новый."""
+    mapping = {}
+    for i, r in enumerate(rows, start=1):
+        mapping[r["result_id"]] = f"{id_prefix}{i:03d}"
+    for r in rows:
+        d = r.get("duplicate_of")
+        new = mapping.get(d) if d is not None else None
+        r["result_id"] = mapping[r["result_id"]]
+        r["duplicate_of"] = new if new != r["result_id"] else None
+    return mapping
+
+
+def rag_link_duplicates(rows) -> int:
+    """Одно и то же значение (эксперимент, конфигурация, набор, задача, метрика, вариант, k, значение), найденное в РАЗНЫХ
+    местах (страница/таблица), — повтор: у более позднего duplicate_of -> основная запись (предпочтительно из таблицы).
+    Не трогает строки, у которых duplicate_of уже задан моделью. Возвращает число проставленных ссылок."""
+    groups = {}
+    for r in rows:
+        v = _rag_num(r.get("normalized_value") if r.get("normalized_value") is not None else r.get("raw_value"))
+        if v is None or not r.get("config_id") or not r.get("metric_name") or r.get("extraction_status") not in (None, "extracted"):
+            continue
+        key = (r.get("experiment_id"), r.get("config_id"), r.get("dataset_id"), r.get("task_id"),
+               re.sub(r"\W+", "", str(r.get("metric_name")).lower()), (r.get("metric_variant") or "").lower(),
+               r.get("metric_k"), round(v, 6))
+        groups.setdefault(key, []).append(r)
+    n = 0
+    for grp in groups.values():
+        if len(grp) < 2:
+            continue
+        base = sorted(grp, key=lambda r: (0 if r.get("source_table") else 1))[0]
+        while base.get("duplicate_of") is not None:  # основная — конечная в цепочке
+            nxt = next((x for x in rows if x["result_id"] == base["duplicate_of"]), None)
+            if nxt is None or nxt is base:
+                break
+            base = nxt
+        for r in grp:
+            if r is base or r.get("duplicate_of") is not None:
+                continue
+            if (r.get("source_page"), r.get("source_table")) == (base.get("source_page"), base.get("source_table")):
+                continue
+            r["duplicate_of"] = base["result_id"]
+            n += 1
+    return n
+
+
+def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_tokens, no_issues, out, meta_path,
+                 pdf_path, model, provider, report) -> dict:
+    """Конвейер области RAG: publications ‖ configurations ‖ datasets ‖ tasks -> experiments -> results (кусками) ->
+    проверка значений -> issues. Графики не извлекаются (glmocr их пропускает): meta.figures_skipped."""
+    from concurrent.futures import ThreadPoolExecutor
+    state: dict = {t: [] for t in RAG_TABLES}
+    failed: list[str] = []
+
+    def step_user(table: str) -> str:
+        return (f"publication_id = {pub_id}\n\n"
+                f"Текст статьи (Markdown):\n{text}\n\n"
+                f"Уже извлечено (JSON):\n{json.dumps(_rag_compact(state, True), ensure_ascii=False, separators=(',', ':'))}\n\n"
+                f"Задание ({table}):\n{RAG_STEP_PROMPTS[table]}")
+
+    def run_step(step):
+        messages = [{"role": "system", "content": RAG_COMMON_RULES},
+                    {"role": "user", "content": step_user(step)}]
+        raw_path = src.with_name(f"{src.name}.{step}.raw_response.txt")
+        try:
+            result = nullify_empties(call_llm(client, args, messages, f"table_{step}", rag_table_schema(step),
+                                              max_tokens, step, raw_path, report))
+            rows = result.get(step, []) if isinstance(result, dict) else []
+            for r in rows:
+                r.setdefault("publication_id", pub_id)
+            return step, rows, None
+        except LLMError as e:
+            return step, None, e
+
+    def apply(step, rows, err):
+        if err is not None:
+            print(f"[!] {err}; таблица {step} будет пустой, продолжаю.", flush=True)
+            failed.append(step)
+        else:
+            state[step] = rows
+
+    def out_of_scope():
+        return bool(state["publications"]) and state["publications"][0].get("in_scope") is False
+
+    rag_meta = {"domain": "rag", "figures_skipped": True, "chunks": []}
+
+    def run_chunk(ch, prose=False, depth=0):
+        """Один вызов results -> (список строк с локальными id, ошибка | None). При обрезке ответа — деление пополам."""
+        if prose:
+            label = "results:prose"
+            task = RAG_RESULTS_PROSE_TASK
+            body = f"Текст статьи (Markdown; таблицы заменены пометками):\n{ch['text']}\n\n"
+        else:
+            rng = f"{ch['lo']}-{ch['hi']}"
+            label = f"results:{ch['label'] or 'table'}#{ch['index']}:{rng}"
+            task = RAG_RESULTS_TABLE_TASK
+            part = "" if ch["lo"] == 1 and ch["hi"] == ch["total"] else f" (ЧАСТЬ таблицы: строки данных {rng} из {ch['total']}; строки заголовка повторены)"
+            body = (f"Таблица: {ch['label'] or 'номер не определён (source_table = null)'}; страница PDF (source_page) = {ch['page']}{part}\n"
+                    f"Подпись: {ch['caption'] or 'не найдена'}\n\n"
+                    f"Текст перед таблицей:\n{ch['before']}\n\nТекст после таблицы:\n{ch['after']}\n\n"
+                    f"HTML таблицы:\n{_rag_chunk_html(ch)}\n\n")
+        user = (f"publication_id = {pub_id}\n\n{body}"
+                f"Уже извлечено (JSON):\n{json.dumps(_rag_compact(state), ensure_ascii=False, separators=(',', ':'))}\n\n"
+                f"Задание (results):\n{task}\n\n{RAG_RESULT_FIELDS}")
+        messages = [{"role": "system", "content": RAG_COMMON_RULES}, {"role": "user", "content": user}]
+        raw_path = src.with_name(f"{src.name}.{re.sub(r'[^A-Za-z0-9_.-]+', '_', label)}.raw_response.txt")
+        try:
+            res = nullify_empties(call_llm(client, args, messages, "table_results", rag_table_schema("results"),
+                                           max(max_tokens, RAG_RESULTS_MAX_TOKENS), label, raw_path, report))
+            rows = res.get("results", []) if isinstance(res, dict) else []
+            for r in rows:
+                r.setdefault("publication_id", pub_id)
+                if not prose:  # детерминированно: страница и номер таблицы известны
+                    if r.get("source_page") is None:
+                        r["source_page"] = ch["page"]
+                    if r.get("source_table") is None and ch["label"]:
+                        r["source_table"] = ch["label"]
+            return rows, None
+        except LLMError as e:
+            halves = None if prose or depth >= 2 else _rag_split_chunk(ch)
+            if halves is None:
+                return None, e
+            print(f"[{label}] делю кусок пополам после сбоя: {e}", flush=True)
+            a, ea = run_chunk(halves[0], depth=depth + 1)
+            b, eb = run_chunk(halves[1], depth=depth + 1)
+            if a is None and b is None:
+                return None, ea
+            return (a or []) + (b or []), None
+
+    def run_results():
+        chunks, prose_text = rag_plan_results(text)
+        jobs = [(ch, False) for ch in chunks] + [({"text": prose_text}, True)]
+        with ThreadPoolExecutor(max_workers=RAG_WORKERS) as pool:
+            futs = [pool.submit(run_chunk, ch, p) for ch, p in jobs]
+            done = [f.result() for f in futs]
+        merged, nrows = [], 0
+        for ji, ((ch, is_prose), (rows, err)) in enumerate(zip(jobs, done)):
+            label = "prose" if is_prose else f"{ch['label'] or 'table'}#{ch['index']}:{ch['lo']}-{ch['hi']}"
+            if err is not None:
+                print(f"[!] results {label}: {err}", flush=True)
+                failed.append(f"results[{label}]")
+                rag_meta["chunks"].append({"label": label, "cells": None if is_prose else ch["cells"], "error": str(err)[:200]})
+                continue
+            rows = [r for r in rows if isinstance(r, dict)]
+            local = {}
+            for k, r in enumerate(rows, start=1):  # локальные id -> глобально уникальные временные
+                rid = r.get("result_id") or f"R{k}"
+                tmp = f"c{ji}:{rid}"
+                while tmp in local.values():
+                    tmp += "'"
+                local[rid] = tmp
+                r["result_id"] = tmp
+                r["_local_dup"] = r.get("duplicate_of")
+            for r in rows:
+                d = r.pop("_local_dup")
+                r["duplicate_of"] = local.get(d) if d is not None else None
+            fix_rag_results(rows)
+            merged.extend(rows)
+            rag_meta["chunks"].append({"label": label, "cells": None if is_prose else ch["cells"], "results": len(rows)})
+            nrows += len(rows)
+        return merged
+
+    def quality(rows):
+        """verify_values: значение должно встречаться в тексте PDF или OCR-markdown; дозаполнения (mining) для RAG нет."""
+        st = {"step": "quality"}
+        if pdf_path is None or not rows:
+            return rows
+        try:
+            from pipeline import _page_texts, verify_values
+            keep, vst = verify_values(rows, pdf_path, _page_texts(pdf_path), md=text, leading_zero=True)
+            st["verify"] = vst
+            rows = keep
+        except Exception as e:  # noqa: BLE001 — улучшение качества не роняет прогон
+            st["error"] = f"{type(e).__name__}: {e}"[:200]
+        print(f"      качество: {st}", flush=True)
+        report.append(st)
+        return rows
+
+    with ThreadPoolExecutor(max_workers=RAG_WORKERS) as ex:
+        futs = {s: ex.submit(run_step, s) for s in ("publications", "configurations", "datasets", "tasks")}
+        apply(*futs["publications"].result())
+        rest = {s: futs[s].result() for s in ("configurations", "datasets", "tasks")}
+        if out_of_scope():
+            print("[i] статья вне области (in_scope=false) — пропускаю остальные таблицы", flush=True)
+        else:
+            for s in ("configurations", "datasets", "tasks"):
+                apply(*rest[s])
+            apply(*run_step("experiments"))
+            rows = quality(run_results())
+            # перенумерация R001.. + ссылки; id вне извлечённых таблиц -> null
+            rag_renumber(rows)
+            ids = {t: {r.get(RAG_KEYS[t]) for r in state[t]} for t in ("experiments", "configurations", "datasets", "tasks")}
+            nfix = 0
+            for r in rows:
+                for col, tab in (("experiment_id", "experiments"), ("config_id", "configurations"),
+                                 ("dataset_id", "datasets"), ("task_id", "tasks")):
+                    if r.get(col) is not None and r[col] not in ids[tab]:
+                        r[col] = None
+                        nfix += 1
+            rag_meta["ref_nullified"] = nfix
+            rag_meta["duplicates_linked"] = rag_link_duplicates(rows)
+            state["results"] = rows
+
+    if not no_issues and not out_of_scope():
+        compact = _rag_compact(state)
+        compact["results"] = [{k: r.get(k) for k in ("result_id", "experiment_id", "config_id", "dataset_id", "metric_name",
+                                                     "metric_variant", "metric_k", "raw_value", "raw_unit", "result_origin",
+                                                     "source_page", "source_table", "duplicate_of")}
+                              for r in state["results"][:1500]]
+        issues_user = (f"publication_id = {pub_id}\n\nТекст статьи (Markdown):\n{text}\n\n"
+                       f"Датасет (JSON):\n{json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}")
+        messages = [{"role": "system", "content": RAG_COMMON_RULES + "\n" + RAG_ISSUES_PROMPT},
+                    {"role": "user", "content": issues_user}]
+        raw_path = src.with_name(f"{src.name}.issues.raw_response.txt")
+        try:
+            result = nullify_empties(call_llm(client, args, messages, "table_issues", rag_table_schema("issues"),
+                                              issues_max_tokens, "issues", raw_path, report, retry=True))
+            issues = result.get("issues", []) if isinstance(result, dict) else []
+            for r in issues:
+                r.setdefault("publication_id", pub_id)
+            state["issues"] = issues
+        except LLMError as e:
+            print(f"[!] issues не получены: {e}\n    Основной датасет сохраню без issues.", flush=True)
+            failed.append("issues")
+
+    dataset = {k: state[k] for k in RAG_TABLES}
+    out_path = Path(out) if out else src.with_name(src.stem + ".dataset.json")
+    out_path.write_text(json.dumps(dataset, ensure_ascii=False, indent=2), encoding="utf-8")
+    counts = {k: len(v) for k, v in dataset.items()}
+    meta_out = None
+    if meta_path:
+        meta_out = Path(meta_path)
+        meta = {"input_md": str(src), "publication_id": pub_id, "model": model,
+                "provider": [p.strip() for p in provider.split(",") if p.strip()] or "auto",
+                "steps": report, "failed_tables": failed, "counts": counts,
+                "domain": "rag", "figures_skipped": True, "rag": rag_meta}
+        meta_out.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("\nСтрок по таблицам:", json.dumps(counts, ensure_ascii=False), flush=True)
+    if failed:
+        print("[!] таблицы/куски, которые НЕ удалось извлечь:", ", ".join(failed), flush=True)
+    problems = check_dataset_rag(dataset)
+    if problems:
+        print(f"Замечания валидатора ({len(problems)}):", flush=True)
+        for p in problems[:50]:
+            print("   -", p, flush=True)
+    else:
+        print("Валидация: замечаний нет", flush=True)
+    print(f"\nСохранено: {out_path}", flush=True)
+    return {"dataset": dataset, "counts": counts, "failed_tables": failed, "problems": problems,
+            "out_path": str(out_path), "meta_path": str(meta_out) if meta_out else None, "publication_id": pub_id}
+
+
 def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             provider="wafer", no_strict=False, max_chars=200000,
             max_tokens=24576, issues_max_tokens=16384, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
-            issues_with_text=False, meta_path=None, api_key=None, pdf_path=None) -> dict:
+            issues_with_text=False, meta_path=None, api_key=None, pdf_path=None,
+            domain="solar") -> dict:  # [faktura-patch] domain: solar (по умолчанию) | rag
     """Извлекает датасет из markdown-статьи.
 
     Возвращает dict: dataset, counts, failed_tables, problems, out_path,
     meta_path, publication_id. Ненулевой код возврата не формирует — ошибки
     приходят исключениями (LLMError / FileNotFoundError).
     """
+    if domain not in DOMAINS:  # [faktura-patch]
+        raise ValueError(f"domain_not_supported: {domain!r}")
     key = api_key or os.environ.get("ROUTERAI_API_KEY")
     if not key:
         raise LLMError("Нет ключа RouterAI: задайте ROUTERAI_API_KEY или передайте api_key=...")
@@ -743,6 +1493,11 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
     client = OpenAI(api_key=key, base_url=BASE_URL)
     args = argparse.Namespace(model=model, provider=provider, no_strict=no_strict)
     report = []
+
+    if domain == "rag":  # [faktura-patch] область RAG — отдельный конвейер (см. _extract_rag)
+        return _extract_rag(src=src, text=text, pub_id=pub_id, client=client, args=args, max_tokens=max_tokens,
+                            issues_max_tokens=issues_max_tokens, no_issues=no_issues, out=out, meta_path=meta_path,
+                            pdf_path=pdf_path, model=model, provider=provider, report=report)
 
     # общий префикс: системная часть + текст статьи (фиксированный, дружит с prompt-cache)
     state: dict = {t: [] for t in TABLES}
@@ -906,6 +1661,7 @@ def main() -> int:
     ap.add_argument("--no-issues", action="store_true")
     ap.add_argument("--issues-with-text", action="store_true",
                     help="к issues-проходу добавить текст статьи (дороже)")
+    ap.add_argument("--domain", default="solar", choices=list(DOMAINS), help="предметная область [solar]")  # [faktura-patch]
     ap.add_argument("--api-key", default=os.environ.get("ROUTERAI_API_KEY"))
     ap.add_argument("--meta", help="куда сохранить метаданные прогона (пошаговые токены/время/finish_reason)")
     args = ap.parse_args()
@@ -916,7 +1672,7 @@ def main() -> int:
                 max_chars=args.max_chars, max_tokens=args.max_tokens,
                 issues_max_tokens=args.issues_max_tokens, no_issues=args.no_issues,
                 issues_with_text=args.issues_with_text, meta_path=args.meta,
-                api_key=args.api_key)
+                api_key=args.api_key, domain=args.domain)
     except (LLMError, FileNotFoundError) as e:
         sys.exit(f"Ошибка: {e}")
     return 0

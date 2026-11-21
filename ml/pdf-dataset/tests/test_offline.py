@@ -132,3 +132,129 @@ def test_issues_light_no_retry(monkeypatch, tmp_path):
     c, order = _run_extract(monkeypatch, tmp_path)
     assert order.count("issues") == 1
     assert c["issues"]["retry"] is True and c["issues"]["mt"] == 16384
+
+
+# ---------- [faktura-patch] область RAG ----------
+def test_rag_schemas_match_schema_json():
+    import json
+    sj = SVC.parents[1] / "data" / "caseA_drive" / "submission_template" / "schema.json"
+    if not sj.exists():
+        pytest.skip("schema.json недоступен")
+    spec = json.loads(sj.read_text(encoding="utf-8"))
+    assert list(ed.RAG_TABLES) == list(spec["tables"])
+    for name, cols in spec["tables"].items():
+        assert list(ed.RAG_TABLES[name]["properties"]) == cols, name
+        assert ed.RAG_TABLES[name]["required"] == cols  # strict: все ключи обязательны
+    assert ed.RAG_KEYS == spec["keys"]
+    res = ed.RAG_TABLES["results"]["properties"]
+    assert res["result_origin"]["anyOf"][0]["enum"] == spec["enums"]["results.result_origin"]
+    assert res["extraction_status"]["anyOf"][0]["enum"] == spec["enums"]["results.extraction_status"]
+    assert res["metric_direction"]["anyOf"][0]["enum"] == spec["recommended_enums"]["results.metric_direction"]
+
+
+def _rag_fake(calls, lock, pub_in_scope=True):
+    import re as _re
+
+    def fake(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None,
+             retry=True, reasoning_tokens=None):
+        with lock:
+            calls.append(label)
+        if label == "publications":
+            return {"publications": [{"in_scope": pub_in_scope}]}
+        if label == "configurations":
+            return {"configurations": [{"config_id": "C1", "rag_variant": "A"}, {"config_id": "C2", "rag_variant": "B"}]}
+        if label == "datasets":
+            return {"datasets": [{"dataset_id": "DS1", "dataset_name": "HotpotQA"}]}
+        if label == "tasks":
+            return {"tasks": [{"task_id": "T1", "task_type": "multi-hop QA"}]}
+        if label == "experiments":
+            return {"experiments": [{"experiment_id": "E1"}]}
+        if label.startswith("results:"):
+            user = messages[1]["content"]
+            row = {"result_id": "R1", "experiment_id": "E1", "config_id": "C1", "dataset_id": "DS1", "task_id": "T1",
+                   "metric_name": "EM", "extraction_status": "extracted"}
+            if label == "results:prose":
+                return {"results": [dict(row, raw_value="0.2", normalized_value=0.2, source_page=1),
+                                    dict(row, result_id="R2", config_id="C9", raw_value="0.9", normalized_value=0.9,
+                                         source_page=1, duplicate_of="R7")]}
+            n = int(_re.search(r"Таблица: Table (\d)", user).group(1))
+            return {"results": [dict(row, raw_value=str(n / 10), normalized_value=n / 10),
+                                dict(row, result_id="R2", config_id="C2", raw_value=str(n / 10 + 0.05),
+                                     normalized_value=n / 10 + 0.05, duplicate_of="R1")]}
+        return {schema_name.replace("table_", ""): []}
+    return fake
+
+
+_RAG_MD = ("<!-- page 1 -->\n\nTable 1: Main results.\n\n<table><tr><td>Method</td><td>EM</td></tr>"
+           "<tr><td>A</td><td>.1</td></tr></table>\n\n<!-- page 2 -->\n\nTable 2: Ablation.\n\n"
+           "<table><tr><td>Method</td><td>EM</td></tr><tr><td>A</td><td>.2</td></tr></table>\n\n"
+           "<!-- page 3 -->\n\nTable 3: Latency.\n\n<table><tr><td>Method</td><td>EM</td></tr>"
+           "<tr><td>A</td><td>.3</td></tr></table>\n\nOur method gets 0.2 EM.\n")
+
+
+def test_rag_chunking_three_tables_and_renumber(monkeypatch, tmp_path):
+    import json
+    import threading
+    calls, lock = [], threading.Lock()
+    monkeypatch.setattr(ed, "call_llm", _rag_fake(calls, lock))
+    monkeypatch.setattr(ed, "OpenAI", lambda **kw: object())
+    md = tmp_path / "a.md"
+    md.write_text(_RAG_MD, encoding="utf-8")
+    res = ed.extract(md, publication_id="P1", out=str(tmp_path / "o.json"), api_key="k", domain="rag",
+                     meta_path=str(tmp_path / "m.json"))
+    rcalls = [c for c in calls if c.startswith("results:")]
+    assert len([c for c in rcalls if c != "results:prose"]) == 3 and "results:prose" in rcalls
+    # порядок шагов: experiments после publications/configurations/datasets/tasks, issues последним
+    assert calls.index("experiments") > max(calls.index(s) for s in ("publications", "configurations", "datasets", "tasks"))
+    assert calls[-1] == "issues"
+    rows = res["dataset"]["results"]
+    assert [r["result_id"] for r in rows] == ["R%03d" % i for i in range(1, len(rows) + 1)] and len(rows) == 8
+    by = {r["result_id"]: r for r in rows}
+    assert by["R002"]["duplicate_of"] == "R001"          # локальная ссылка переписана на глобальный id
+    assert all(r["duplicate_of"] is None or r["duplicate_of"] in by for r in rows)
+    assert by["R008"]["config_id"] is None                # prose: config_id C9 вне configurations -> null
+    assert by["R008"]["duplicate_of"] is None             # висячая ссылка R7 обнулена
+    assert by["R007"]["duplicate_of"] == "R003"           # 0.2 в тексте = значение Table 2 (C1, EM) -> повтор
+    assert by["R001"]["source_table"] == "Table 1" and by["R001"]["source_page"] == 1
+    assert by["R003"]["source_page"] == 2 and by["R005"]["source_page"] == 3
+    assert ed.check_dataset_rag(res["dataset"]) == []
+    meta = json.loads((tmp_path / "m.json").read_text(encoding="utf-8"))
+    assert meta["domain"] == "rag" and meta["figures_skipped"] is True
+
+
+def test_rag_split_large_table_keeps_header():
+    rows = "".join("<tr><td>m%d</td>%s</tr>" % (i, "<td>1.5</td>" * 10) for i in range(40))
+    tbl = "<table><tr><td>Method</td>" + "<td>EM</td>" * 10 + "</tr>" + rows + "</table>"
+    chunks = ed.rag_split_table(tbl, max_cells=150)
+    assert len(chunks) == 3 and sum(len(c["rows"]) for c in chunks) == 40
+    assert all(c["header"] and c["cells"] <= 150 for c in chunks)
+    assert [(c["lo"], c["hi"]) for c in chunks][0][0] == 1 and chunks[-1]["hi"] == 40
+    assert "m0<" in ed._rag_chunk_html(chunks[0]) and "m0<" not in ed._rag_chunk_html(chunks[1])
+    assert ed._rag_chunk_html(chunks[1]).count("<tr") == 1 + len(chunks[1]["rows"])
+
+
+def test_solar_default_domain_steps_unchanged(monkeypatch, tmp_path):
+    _, order = _run_extract(monkeypatch, tmp_path)
+    assert sorted(order) == sorted(["publications", "materials", "devices", "layers", "measurements", "results", "issues"])
+
+
+def test_rag_out_of_scope_only_publications(monkeypatch, tmp_path):
+    import threading
+    calls, lock = [], threading.Lock()
+    monkeypatch.setattr(ed, "call_llm", _rag_fake(calls, lock, pub_in_scope=False))
+    monkeypatch.setattr(ed, "OpenAI", lambda **kw: object())
+    md = tmp_path / "a.md"
+    md.write_text(_RAG_MD, encoding="utf-8")
+    res = ed.extract(md, publication_id="P1", out=str(tmp_path / "o.json"), api_key="k", domain="rag")
+    ds = res["dataset"]
+    assert len(ds["publications"]) == 1 and all(not ds[t] for t in ds if t != "publications")
+    assert not any(c in calls for c in ("experiments", "issues")) and not any(c.startswith("results:") for c in calls)
+
+
+def test_extract_endpoint_rejects_unknown_domain():
+    pytest.importorskip("fastapi.testclient")
+    pytest.importorskip("multipart")
+    from fastapi.testclient import TestClient
+    import api
+    r = TestClient(api.app).post("/extract", files={"file": ("a.pdf", b"%PDF-1.4")}, data={"domain": "chem"})
+    assert r.status_code == 422 and r.json()["code"] == "domain_not_supported"

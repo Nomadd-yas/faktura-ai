@@ -36,12 +36,12 @@ OUT_DIR = Path(os.environ.get("OUT_DIR", "/out"))
 _PIPELINE_LOCK = threading.BoundedSemaphore(max(1, int(os.environ.get("ML_CONCURRENCY", "1"))))
 
 
-def _child_run(pdf_path, out_dir, pub_id, no_strip):
+def _child_run(pdf_path, out_dir, pub_id, no_strip, domain="solar"):
     """[faktura-patch] Выполняется в ОТДЕЛЬНОМ процессе: torch/glmocr на CPU не отдают память системе,
     поэтому после каждой статьи процесс завершается и память освобождается целиком.
     Исключения возвращаются словарём (PipelineError не всегда сериализуется pickle)."""
     try:
-        return {"result": run_pipeline(pdf_path, out_dir=out_dir, publication_id=pub_id, no_strip=no_strip)}
+        return {"result": run_pipeline(pdf_path, out_dir=out_dir, publication_id=pub_id, no_strip=no_strip, domain=domain)}
     except PipelineError as e:
         return {"perr": {"code": e.code, "message": e.message, "retryable": e.retryable, "status": e.status}}
     except Exception as e:  # noqa: BLE001
@@ -84,11 +84,11 @@ def _reset_pool(broken):
         pass
 
 
-def _run_isolated(pdf_path, out_dir, pub_id, no_strip):
+def _run_isolated(pdf_path, out_dir, pub_id, no_strip, domain="solar"):
     from concurrent.futures.process import BrokenProcessPool
     pool = _get_pool()
     try:
-        return pool.submit(_child_run, str(pdf_path), str(out_dir), pub_id, no_strip).result()
+        return pool.submit(_child_run, str(pdf_path), str(out_dir), pub_id, no_strip, domain).result()
     except BrokenProcessPool:  # процесс убит (OOM по лимиту контейнера) — пул пересоздаётся для следующего запроса
         _reset_pool(pool)
         return {"perr": {"code": "ml_error", "retryable": False, "status": 500,
@@ -135,7 +135,8 @@ def health():
 @app.post("/extract")
 def extract_pdf(file: UploadFile = File(...),
                       publication_id: str | None = Form(None),
-                      no_strip: bool = Form(False)):
+                      no_strip: bool = Form(False),
+                      domain: str = Form("solar")):  # [faktura-patch] solar | rag
     """Загружает PDF, прогоняет конвейер, возвращает датасет и метаданные.
 
     Результат также сохраняется в файлы: /out/<id>/<id>.dataset.json и .meta.json.
@@ -143,6 +144,9 @@ def extract_pdf(file: UploadFile = File(...),
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="нет имени файла")
+    domain = (domain or "solar").strip().lower()
+    if domain not in ("solar", "rag"):  # [faktura-patch]
+        return _error(422, "domain_not_supported", f"область {domain!r} не поддерживается (solar | rag)")
 
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(file.filename).stem).strip("_") or "paper"
     pub_id = (publication_id or safe).strip()
@@ -156,7 +160,7 @@ def extract_pdf(file: UploadFile = File(...),
 
     try:
         with _PIPELINE_LOCK:
-            out = _run_isolated(pdf_path, out_dir, pub_id, no_strip)
+            out = _run_isolated(pdf_path, out_dir, pub_id, no_strip, domain)
     except Exception as e:  # noqa: BLE001 - сбой запуска процесса -> 500 ml_error
         return _error(500, "ml_error", f"{type(e).__name__}: {e}")
     if "perr" in out:

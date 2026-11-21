@@ -35,7 +35,8 @@ class PipelineError(Exception):
     """
     STATUS = {"pdf_broken": 422, "pdf_encrypted": 422, "ocr_unavailable": 503,
               "not_configured": 503, "ml_error": 500,
-              "quota_exceeded": 402}  # [faktura-patch] исчерпан лимит трат ключа RouterAI — повтор не поможет
+              "quota_exceeded": 402,
+              "domain_not_supported": 422}  # [faktura-patch] неизвестное значение поля domain  # [faktura-patch] исчерпан лимит трат ключа RouterAI — повтор не поможет
 
     def __init__(self, code, message, *, retryable=False):
         super().__init__(message)
@@ -377,10 +378,12 @@ def _forms(v):
     return out
 
 
-def _has_value(text, v):
+def _has_value(text, v, leading_zero=False):
     for s in _forms(v):
         ip, _, dp = s.partition(".")
         rx = r"(?<![\d.])" + _re.escape(ip) + (r"[.,]" + _re.escape(dp) + r"0*" if dp else r"(?:[.,]0+)?") + r"(?![\d])"
+        if leading_zero and ip == "0" and dp:  # [faktura-patch] RAG: «.204» без ведущего нуля
+            rx = r"(?<![\d.])0?[.,]" + _re.escape(dp) + r"0*(?![\d])"
         if _re.search(rx, text):
             return True
     return False
@@ -398,7 +401,7 @@ def _md_pages(md):
     return out
 
 
-def verify_values(results, pdf, pages=None, md=None):
+def verify_values(results, pdf, pages=None, md=None, leading_zero=False):
     """Числовое значение должно встречаться в тексте PDF ИЛИ в OCR-markdown (таблица может быть картинкой —
     тогда чисел нет в текстовом слое, но OCR их прочитал). Нет нигде -> строка отбрасывается (выдумка);
     есть только на другой странице -> исправить source_page. Возвращает (оставленные строки, статистика)."""
@@ -417,11 +420,11 @@ def verify_values(results, pdf, pages=None, md=None):
             n = int(r.get("source_page")) - 1
         except (TypeError, ValueError):
             n = -1
-        if 0 <= n < len(pages) and _has_value(pages[n], v):
+        if 0 <= n < len(pages) and _has_value(pages[n], v, leading_zero):
             st["page"] += 1
             keep.append(r)
             continue
-        other = [k for k, t in enumerate(pages) if _has_value(t, v)]
+        other = [k for k, t in enumerate(pages) if _has_value(t, v, leading_zero)]
         if other:
             if len(other) == 1:
                 r["source_page"] = other[0] + 1
@@ -624,7 +627,7 @@ def fill_pub_meta(dataset_path, pdf) -> dict:
     return st
 
 
-def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) -> dict:
+def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, domain="solar") -> dict:
     """Прогоняет PDF через весь конвейер. Бросает исключение при фатальной ошибке
     (PDF не найден, glmocr не установлен/не создал md).
 
@@ -632,6 +635,8 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
     out_dir, paths {markdown,dataset,meta}, plus метаданные в meta.
     """
     _t_start = time.time()  # [faktura-patch] общее время разбора -> meta.total_seconds
+    if domain not in ("solar", "rag"):  # [faktura-patch]
+        raise PipelineError("domain_not_supported", f"область {domain!r} не поддерживается (solar | rag)")
     pdf = Path(pdf)
     if not pdf.exists():
         raise FileNotFoundError(f"Файл не найден: {pdf}")
@@ -694,8 +699,9 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
         clean_md = md_src
         print("[2/3] strip_tail пропущен (--no-strip)", flush=True)
     else:
-        from strip_tail import strip_trailing_sections
-        md_clean, strip_info = strip_trailing_sections(md_text)
+        from strip_tail import strip_trailing_sections, strip_references_only
+        # [faktura-patch] RAG: приложения с таблицами результатов сохраняем — режется только список литературы
+        md_clean, strip_info = (strip_references_only(md_text) if domain == "rag" else strip_trailing_sections(md_text))
         clean_md = work / f"{stem}.clean.md"
         clean_md.write_text(md_clean, encoding="utf-8")
         if strip_info:
@@ -720,7 +726,8 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
                       model=os.environ.get("ROUTERAI_MODEL", DEFAULT_MODEL),
                       provider=os.environ.get("ROUTERAI_PROVIDER", "wafer"),
                       meta_path=str(meta_out),
-                      pdf_path=pdf)
+                      pdf_path=pdf,
+                      **({"domain": domain} if domain != "solar" else {}))  # [faktura-patch] solar — вызов как раньше
         failed_tables = res["failed_tables"]
     except LLMError as e:
         extract_failed = str(e)
@@ -767,6 +774,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
     shutil.copy(clean_md, md_copy)
     meta.update({
         "input_pdf": str(pdf),
+        "domain": domain,  # [faktura-patch]
         "publication_id": pub_id,
         "pages": pages,
         "page_markers": paged,
@@ -822,12 +830,13 @@ def main() -> int:
     ap.add_argument("--out-dir", default="/out", help="куда писать результаты [/out]")
     ap.add_argument("--publication-id", default=None, help="id публикации (по умолчанию — имя файла)")
     ap.add_argument("--no-strip", action="store_true", help="не обрезать хвостовые разделы")
+    ap.add_argument("--domain", default="solar", choices=["solar", "rag"], help="предметная область [solar]")  # [faktura-patch]
     args = ap.parse_args()
 
     try:
         result = run_pipeline(args.pdf, out_dir=args.out_dir,
                               publication_id=args.publication_id,
-                              no_strip=args.no_strip)
+                              no_strip=args.no_strip, domain=args.domain)
     except (FileNotFoundError, RuntimeError, PipelineError) as e:
         sys.exit(f"Ошибка: {e}")
     return 0 if result["ok"] else 2
