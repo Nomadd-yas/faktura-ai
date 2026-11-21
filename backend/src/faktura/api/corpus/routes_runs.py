@@ -27,7 +27,7 @@ from .views import (DOMAIN, CORPUS_KIND, RunData, corpus_id_of, default_title, g
 log = logging.getLogger("faktura.api")
 router = APIRouter(tags=["runs"])
 
-_REJECT_CODES = {"duplicate_name": "duplicate", "pdf_broken": "broken_pdf", "pdf_encrypted": "broken_pdf",
+_REJECT_CODES = {"duplicate_name": "duplicate", "pdf_broken": "broken_pdf", "pdf_encrypted": "encrypted_pdf",
                  "pdf_no_text": "broken_pdf"}
 _NOT_PDF_MSG = "Можно загрузить только PDF"
 _MB = 1024 * 1024
@@ -134,7 +134,8 @@ def create_run(request: Request, file: list[UploadFile] | None = File(default=No
         name = (title or "").strip() or zip_name or default_title(n_guess, now)
         corpus = cs.create(user.workspace_id, user.id, name, DOMAIN, kind=CORPUS_KIND)
         try:
-            intake = cs.add_inputs(corpus.id, collected, mode="api", dedupe=True, reuse_existing=False)
+            intake = cs.add_inputs(corpus.id, collected, mode="api", dedupe=True, reuse_existing=False,
+                                  allow_same_names=True)
         except BaseException:
             _drop(services, corpus.id)
             raise
@@ -190,7 +191,7 @@ def list_runs(limit: int = Query(20, ge=1, le=200), cursor: str | None = None, f
         page = corpora[offset:offset + limit]
         data = [run_view(uow, c, files="short" if files else "none") for c in page]
     nxt = encode_cursor(["runs", offset + limit]) if offset + limit < len(corpora) else None
-    return {"data": data, "next_cursor": nxt}
+    return {"data": data, "total": len(corpora), "next_cursor": nxt}
 
 
 @router.get("/runs/{run_id}", summary="Разбор целиком")

@@ -59,7 +59,7 @@ def test_duplicate_same_value_other_place_is_linked_to_earlier(mk):
     rs = [mk.result("R001", "PCE", "15", source_table="Table 1"),
           mk.result("R002", "PCE", "15", source_figure="Fig. 2")]
     links = link_duplicates(mk.bundle(rs))
-    assert links == [DuplicateLink(result_id="R002", duplicate_of="R001", note="связано бэком")]
+    assert links == [DuplicateLink(result_id="R002", duplicate_of="R001", note="связано сервисом разбора")]
 
 
 def test_three_copies_all_point_to_first(mk):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from typing import Any
 
@@ -25,7 +26,7 @@ CORS_ALLOW_HEADERS = ("Authorization", "Content-Type", "X-Request-Id", "Last-Eve
                       "If-None-Match", "If-Range")
 CORS_EXPOSE_HEADERS = ("X-Action-Id", "X-Request-Id", "Content-Disposition", "X-Check-Status", "X-Faktura-Stub",
                        "Retry-After", "ETag", "Content-Range", "Accept-Ranges", "X-Export-Tables",
-                       "X-Export-Results", "X-Export-Papers", "X-Export-Filename")
+                       "X-Export-Results", "X-Export-Papers", "X-Export-Filename", "X-Export-Rejected")
 CORS_MAX_AGE = 600
 
 
@@ -64,12 +65,22 @@ class RequestIdMiddleware:
         rid = given.strip() if given and _SAFE_RID.match(given.strip()) else new_request_id()
         _state(scope)["request_id"] = rid
 
+        started = time.perf_counter()
+        status = 500
+
         async def send_with_id(message: Message) -> None:
+            nonlocal status
             if message["type"] == "http.response.start":
+                status = message["status"]
                 MutableHeaders(scope=message)[REQUEST_ID_HEADER] = rid
             await send(message)
 
-        await self.app(scope, receive, send_with_id)
+        try:
+            await self.app(scope, receive, send_with_id)
+        finally:
+            user = getattr(_state(scope).get("faktura_user"), "id", None) or "-"
+            log.info("%s %s -> %s %.0f мс request_id=%s user=%s", scope.get("method", "-"), scope.get("path", "-"),
+                     status, (time.perf_counter() - started) * 1000, rid, user)
 
 
 class CorsMiddleware:

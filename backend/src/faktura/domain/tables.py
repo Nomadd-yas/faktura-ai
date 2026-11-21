@@ -148,6 +148,6 @@ CHECK_CATALOG: dict[str, CheckInfo] = {
     "voc_deficit_consistency": _c("warn", "warn", "solar", "Дефицит Voc не равен Eg/q - Voc", "backend", on=True),
     # внутренние правила интерфейса, в issues.csv не выгружаются
     "unit_conversion": _c("info", "doubt", "core", "Единица пересчитана", "backend", exp=False),
-    "low_confidence": _c("info", "doubt", "core", "Низкая уверенность ML", "backend", exp=False),
+    "low_confidence": _c("info", "doubt", "core", "Низкая уверенность модели", "backend", exp=False),
     "ocr_low_confidence": _c("info", "doubt", "core", "Низкая уверенность OCR", "backend", exp=False),
 }

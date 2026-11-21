@@ -68,7 +68,8 @@ class CorpusService:
     # --- приём файлов ----------------------------------------------------------------------------
 
     def add_inputs(self, corpus_id: str, inputs: CollectResult, *, mode: Literal["api", "cli"],
-                   dedupe: bool = True, reuse_existing: bool = True) -> AddFilesResult:
+                   dedupe: bool = True, reuse_existing: bool = True, allow_same_names: bool = False
+                   ) -> AddFilesResult:
         """Таблица случаев api/cli - в docstring модуля (отказы inspect_pdf, duplicate_name, тот же sha256)."""
         if mode not in ("api", "cli"):
             raise ValueError(f"mode: api | cli, получено {mode!r}")
@@ -79,9 +80,13 @@ class CorpusService:
                 raise AppError("not_found", f"Корпус {corpus_id} не найден")
             existing_names = {f.name for f in uow.files.list(corpus_id)}
         result = AddFilesResult(rejected=list(inputs.rejected))
-        dd = dedupe_names(list(inputs.files), existing_names=existing_names)
-        result.rejected.extend(dd.rejected)
-        for f in dd.files:
+        if allow_same_names:  # API: одинаковые имена допустимы (id вида P042-2), отклоняется только тот же sha256
+            files = list(inputs.files)
+        else:
+            dd = dedupe_names(list(inputs.files), existing_names=existing_names)
+            result.rejected.extend(dd.rejected)
+            files = dd.files
+        for f in files:
             try:
                 with PDF_LOCK:
                     info = inspect_pdf(f.path, max_mb=s.max_file_mb, max_pages=s.max_pages)

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from ..config import Settings
-from ..domain.errors import AppError, ExtractError
+from ..domain.errors import AppError, ExtractError, extract_error
 from ..domain.extraction import ExtractOutcome, ExtractRequest, MlHealth
 from ..domain.io import parse_cell, read_tables
 from ..domain.ports import ExtractAdapter, FileStore
@@ -84,7 +84,7 @@ class MockGoldExtractor:
                 return
             gd = self.gold_dir
             if gd is None or not gd.is_dir() or not (gd / "publications.csv").is_file():
-                raise ExtractError("ml_error", f"Нет эталона для мока: {gd}", retryable=False)
+                raise extract_error("ml_error", f"Нет эталона для мока: {gd}", retryable=False)
             import hashlib
 
             h = hashlib.sha256()
@@ -255,7 +255,7 @@ class HttpExtractor:
         try:
             content = pdf_path.read_bytes()
         except OSError as e:
-            raise ExtractError("ml_error", f"Не прочитан файл {pdf_path.name}: {e}") from e
+            raise extract_error("ml_error", f"Не прочитан файл {pdf_path.name}: {e}") from e
         request_id = req.request_id or f"{req.publication_id}-{uuid.uuid4().hex[:12]}"
         form = self._form(req, request_id)
         filename = f"{req.publication_id}.pdf"
@@ -270,13 +270,13 @@ class HttpExtractor:
                                        data=form,
                                        files={"file": (filename, content, "application/pdf")})
             except httpx.TimeoutException as e:
-                last = ExtractError("ml_timeout", f"ML-1 не ответил за {self.timeout_s:g} с", retryable=True)
+                last = extract_error("ml_timeout", f"ML-1 не ответил за {self.timeout_s:g} с", retryable=True)
                 log.warning("ML-1 %s: таймаут (попытка %d/%d)", req.publication_id, attempt + 1, attempts)
                 last.__cause__ = e
                 if not self.retry_on_timeout:
                     raise last
             except httpx.TransportError as e:  # ConnectError, ReadError, RemoteProtocolError ...
-                last = ExtractError("ml_unavailable", f"Нет связи с ML-1: {type(e).__name__}", retryable=True)
+                last = extract_error("ml_unavailable", f"Нет связи с ML-1: {type(e).__name__}", retryable=True)
                 log.warning("ML-1 %s: %s (попытка %d/%d)", req.publication_id, type(e).__name__, attempt + 1, attempts)
                 last.__cause__ = e
             else:
@@ -284,24 +284,24 @@ class HttpExtractor:
                     try:
                         data = resp.json()
                     except Exception as e:  # noqa: BLE001
-                        raise ExtractError("ml_schema_mismatch", "Ответ ML-1 не JSON") from e
+                        raise extract_error("ml_schema_mismatch", "Ответ ML-1 не JSON") from e
                     if self.protocol == "pdf_dataset":
                         data = pdf_dataset_to_contract(data, req.publication_id)
                     return parse_extract_response(data, req.publication_id)
                 body = _error_body(resp)
                 if self.protocol == "pdf_dataset" and resp.status_code == 500:
                     detail = str(body.get("message") or "") or "HTTP 500"
-                    raise ExtractError("ml_error", f"ML-1: {detail}", retryable=False,
+                    raise extract_error("ml_error", f"ML-1: {detail}", retryable=False,
                                        details={"status": 500, "body": body or None, "request_id": request_id})
                 code = str(body.get("code") or "")
                 message = str(body.get("message") or "") or f"HTTP {resp.status_code}"
                 details = {"status": resp.status_code, "body": body or None, "request_id": request_id}
                 if resp.status_code in RETRY_STATUSES:
                     if resp.status_code == 504:
-                        last = ExtractError("ml_timeout", f"ML-1: таймаут ({message})", retryable=True,
+                        last = extract_error("ml_timeout", f"ML-1: таймаут ({message})", retryable=True,
                                             details=details)
                     else:
-                        last = ExtractError("ml_unavailable", f"ML-1 недоступен: {message}", retryable=True,
+                        last = extract_error("ml_unavailable", f"ML-1 недоступен: {message}", retryable=True,
                                             details=details)
                     if resp.status_code in (429, 503):
                         retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
@@ -309,12 +309,12 @@ class HttpExtractor:
                                 attempt + 1, attempts)
                 elif resp.status_code == 422:
                     c = code if code in PDF_ERROR_CODES else "ml_error"
-                    raise ExtractError(c, f"ML-1: {message}", retryable=False, details=details)
+                    raise extract_error(c, f"ML-1: {message}", retryable=False, details=details)
                 elif resp.status_code in (400, 413):
-                    raise ExtractError("ml_error", f"ML-1 отклонил запрос (HTTP {resp.status_code}): {message}",
+                    raise extract_error("ml_error", f"ML-1 отклонил запрос (HTTP {resp.status_code}): {message}",
                                        retryable=False, details=details)
                 else:
-                    raise ExtractError("ml_error", f"ML-1: HTTP {resp.status_code}: {message}",
+                    raise extract_error("ml_error", f"ML-1: HTTP {resp.status_code}: {message}",
                                        retryable=bool(body.get("retryable", False)), details=details)
             if attempt < attempts - 1:
                 delay = self.retry_delays[attempt]
@@ -362,11 +362,11 @@ class RawDirExtractor:
     def extract(self, req: ExtractRequest) -> ExtractOutcome:
         p = self.raw_dir / f"{req.publication_id}.json"
         if not p.is_file():
-            raise ExtractError("ml_error", f"Нет файла ответа ML: {p.name} в {self.raw_dir}", retryable=False)
+            raise extract_error("ml_error", f"Нет файла ответа ML: {p.name} в {self.raw_dir}", retryable=False)
         try:
             data = json.loads(p.read_text(encoding="utf-8-sig"))
         except (ValueError, UnicodeDecodeError) as e:
-            raise ExtractError("ml_schema_mismatch", f"{p.name}: не JSON ({e})") from e
+            raise extract_error("ml_schema_mismatch", f"{p.name}: не JSON ({e})") from e
         return parse_extract_response(data, req.publication_id)
 
     def health(self) -> MlHealth:
@@ -512,14 +512,14 @@ class CachedExtractor:
         if hit is None:
             raise err
         v, raw = hit
-        return self._from_cache(req, v, raw, f"ML недоступен: взят сохранённый ответ версии {v}")
+        return self._from_cache(req, v, raw, f"Сервис разбора недоступен: взят сохранённый ответ версии {v}")
 
     def extract(self, req: ExtractRequest) -> ExtractOutcome:
         version = req.model_version
         if not version or version == "latest":
             h = self.inner.health()
             if h.status == "down":
-                return self._offline(req, ExtractError(
+                return self._offline(req, extract_error(
                     "ml_unavailable", "Сервис извлечения недоступен, сохранённого ответа нет", retryable=True))
             version = h.model_version
         if version and version != self.inner.name:

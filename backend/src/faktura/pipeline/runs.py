@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from ..domain.entities import (CorpusFile, CorpusFileStatus, PaperStatus, ProcessOutcome, Run, RunCounts, RunKind,
                                RunOutput, RunStatus)
-from ..domain.errors import AppError, ExtractError
+from ..domain.errors import INTERNAL_REASON, PUBLIC_REASONS, AppError, ExtractError, public_reason
 from ..domain.ports import CancelToken
 from ..domain.profile import BUILTIN_SOLAR_ID, ExtractionProfile, builtin_solar_profile
 from ..domain.services import Services
@@ -509,7 +509,10 @@ class RunService:
                                                 keep_review=ctx.keep_review)
                 break
             except ExtractError as e:
-                code, message = e.code, e.message
+                code, message = e.code, public_reason(e.code, e.message)
+                log.warning("Статья %s (файл %s, разбор %s): ошибка извлечения %s: %s", f.paper_id, file_id,
+                            ctx.run_id, e.code, (e.details or {}).get("technical") if isinstance(e.details, dict)
+                            else e.message)
                 if e.code == "ml_unavailable" and gate is not None and attempts < MAX_FILE_RETRIES \
                         and gate.on_unavailable(seen):
                     attempts += 1
@@ -519,8 +522,9 @@ class RunService:
                 code, message = e.code, e.message
                 break
             except Exception as e:  # noqa: BLE001 - сбой одной статьи не роняет прогон
-                log.exception("Статья %s: внутренняя ошибка", f.paper_id)
-                code, message = "internal_error", f"{type(e).__name__}: {e}"
+                log.exception("Статья %s (файл %s, разбор %s): внутренняя ошибка: %s: %s", f.paper_id, file_id,
+                              ctx.run_id, type(e).__name__, e)
+                code, message = "internal_error", INTERNAL_REASON
                 break
         if outcome is not None and outcome.status == PaperStatus.done:
             with db.uow() as uow:
@@ -530,6 +534,10 @@ class RunService:
         if outcome is not None:
             code, message = outcome.error_code or code or "internal_error", outcome.error_message or message
         code = code or "internal_error"
+        if code in PUBLIC_REASONS:
+            message = PUBLIC_REASONS[code]
+        elif code == "internal_error" or not message:
+            message = INTERNAL_REASON
         with db.uow() as uow:
             f = uow.files.update_status(file_id, CorpusFileStatus.failed, error_code=code, error_message=message)
             if f.paper_id:

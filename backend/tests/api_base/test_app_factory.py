@@ -48,7 +48,7 @@ class TestCreateApp:
 
     @pytest.mark.parametrize("method,path", [
         ("GET", "/health"), ("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout"),
-        ("POST", "/auth/register"), ("GET", "/auth/me"), ("GET", "/me"), ("PATCH", "/me"), ("GET", "/collections"),
+        ("GET", "/auth/me"), ("GET", "/me"), ("PATCH", "/me"), ("GET", "/collections"),
         ("GET", "/admin/users"), ("POST", "/admin/users"), ("PATCH", "/admin/users/{user_id}"),
     ])
     def test_base_routes_registered(self, app, method, path):

@@ -1,7 +1,7 @@
 """Единый формат ошибок API (api_contract §1.5, BACKEND §8.3) и обработчики исключений FastAPI.
 
 Тело любой ошибки: ``{"error": {"code", "message", "field", "details", "request_id"}}``.
-``request_id`` заполняется только у 5xx (у остальных - ``null``), заголовок ``X-Request-Id`` есть всегда.
+``request_id`` заполняется у всех ошибок (§11), заголовок ``X-Request-Id`` есть всегда.
 """
 from __future__ import annotations
 
@@ -46,6 +46,8 @@ API_ERROR_CODES: dict[str, tuple[int, str]] = {
     "no_files": (400, "Не выбрано ни одного файла"),
     "too_large": (413, "Слишком большая загрузка"),
     "unsupported_media_type": (415, "Нужны PDF-файлы или один ZIP-архив"),
+    "extractor_unavailable": (503, "Сервис разбора временно недоступен"),
+    "issue_auto_fixed": (409, "Замечание уже исправлено автоматически"),
     "run_in_progress": (409, "Разбор ещё идёт — выгрузка будет готова после завершения"),
 }
 for _code, _val in API_ERROR_CODES.items():
@@ -61,9 +63,11 @@ _FRIENDLY = {
 
 _HTTP_CODES = {
     400: "validation_error", 401: "unauthorized", 403: "forbidden", 404: "not_found", 405: "method_not_allowed",
-    409: "conflict", 410: "gone", 413: "payload_too_large", 415: "unsupported_file", 429: "too_many_requests",
-    501: "not_implemented", 503: "ml_unavailable",
+    409: "conflict", 410: "gone", 413: "too_large", 415: "unsupported_media_type", 429: "too_many_requests",
+    501: "not_implemented", 502: "extractor_unavailable", 503: "extractor_unavailable",
 }
+
+_EXTRACTOR_CODES = {"ml_unavailable", "ml_timeout", "ml_schema_mismatch", "ml_error"}
 
 RETRY_AFTER_CODES = {"too_many_attempts", "too_many_requests", "rate_limited"}
 
@@ -82,7 +86,7 @@ def error_payload(code: str, message: str | None = None, *, field: str | None = 
     st = status or ERROR_CATALOG.get(code, (500, code))[0]
     msg = message or _FRIENDLY.get(code) or ERROR_CATALOG.get(code, (500, "Ошибка"))[1]
     return {"error": {"code": code, "message": msg, "field": field, "details": details,
-                      "request_id": request_id if st >= 500 else None}}
+                      "request_id": request_id}}
 
 
 def error_response(code: str, message: str | None = None, *, field: str | None = None, details: Any = None,
@@ -96,7 +100,7 @@ def error_response(code: str, message: str | None = None, *, field: str | None =
         hdrs.setdefault("Retry-After", str(int(details["retry_after"])))
     if st == 401:
         hdrs.setdefault("WWW-Authenticate", "Bearer")
-    if st >= 500 and rid:
+    if rid:
         hdrs.setdefault("X-Request-Id", rid)
     body = error_payload(code, message, field=field, details=details, status=st, request_id=rid)
     return JSONResponse(body, status_code=st, headers=hdrs, media_type=JSON_MEDIA_TYPE)
@@ -105,6 +109,10 @@ def error_response(code: str, message: str | None = None, *, field: str | None =
 def app_error_response(exc: AppError, request: Request | None = None,
                        headers: dict[str, str] | None = None) -> JSONResponse:
     message = exc.message
+    if exc.code in _EXTRACTOR_CODES:  # внутренние коды ML наружу не выходят (§11)
+        return error_response("extractor_unavailable", message, field=exc.field, details=None,
+                              status=exc.http_status if exc.http_status in (502, 503) else 503,
+                              request=request, headers=headers)
     # сообщение по умолчанию из общего каталога - заменить на дружелюбное
     if exc.code in _FRIENDLY and message == ERROR_CATALOG.get(exc.code, (0, None))[1]:
         message = _FRIENDLY[exc.code]

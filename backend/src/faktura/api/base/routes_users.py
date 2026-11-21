@@ -28,7 +28,10 @@ HEALTH_RETRY_AFTER_S = 30
 
 def _health_sync(request: Request) -> tuple[int, dict[str, Any]]:
     ctx = get_context(request)
-    body: dict[str, Any] = {"status": "ok", "db": "ok", "storage": "ok", "ml": "ok", "ml_model_version": None}
+    from ... import __version__
+
+    body: dict[str, Any] = {"status": "ok", "version": __version__, "model_version": None, "db": "ok",
+                            "storage": "ok", "ml": "ok", "ml_model_version": None}
     try:
         services = ctx.get_services()
     except Exception:  # noqa: BLE001 - health не падает
@@ -48,9 +51,9 @@ def _health_sync(request: Request) -> tuple[int, dict[str, Any]]:
     try:
         h = services.extractor_factory().health()
         body["ml"] = "ok" if getattr(h, "status", None) == "ok" else "degraded"
-        body["ml_model_version"] = getattr(h, "model_version", None)
+        body["ml_model_version"] = body["model_version"] = getattr(h, "model_version", None)
     except Exception as e:  # noqa: BLE001
-        log.warning("health: ML-1 недоступен: %s", type(e).__name__)
+        log.warning("health: сервис извлечения недоступен: %s", type(e).__name__)
         body["ml"] = "degraded"
     if body["db"] == "error" or body["storage"] == "error":
         body["status"] = "error"

@@ -93,7 +93,7 @@ def cli() -> None:
 @click.option("--cache-dir", type=click.Path(path_type=Path), default=None,
               help="Кеш ответов ML-1 (вне --out)")
 @click.option("--no-cache", is_flag=True)
-@click.option("--no-backend-rules", is_flag=True, help="Без правил бэка: замечания только от ML")
+@click.option("--no-backend-rules", is_flag=True, help="Без правил бэка: замечания только от модели")
 @click.option("--server", default=None, help="URL API (удалённый режим, P2-R)")
 @click.option("--api-key", default=None, hidden=True)
 def extract(**kw) -> int:
@@ -247,15 +247,26 @@ def users() -> None:
 
 
 @users.command("create")
-@click.argument("email")
-@click.option("--password", default=None, help="Без пароля - сгенерировать и показать один раз")
+@click.argument("email_arg", metavar="[EMAIL]", required=False)
+@click.option("--email", "email_opt", default=None, help="Почта пользователя")
+@click.option("--name", default=None, help="Имя (по умолчанию - часть почты до @)")
+@click.option("--password", default=None, help="Пароль (или --generate)")
+@click.option("--generate", is_flag=True, help="Сгенерировать пароль и показать один раз")
 @click.option("--admin", is_flag=True)
 @click.option("--db", default=None, help="URL БД или путь к SQLite-файлу (по умолчанию FAKTURA_DB_URL)")
-def users_create(email: str, password: str | None, admin: bool, db: str | None) -> int:
+def users_create(email_arg: str | None, email_opt: str | None, name: str | None, password: str | None,
+                 generate: bool, admin: bool, db: str | None) -> int:
     from ..domain.security import generate_password, hash_password
     from ..storage import DEFAULT_WORKSPACE_ID
 
     def go() -> None:
+        email = (email_opt or email_arg or "").strip()
+        if not email:
+            raise UsageProblem("Укажите почту: --email")
+        if password is None and not generate:
+            raise UsageProblem("Укажите пароль: --password или --generate")
+        if password is not None and generate:
+            raise UsageProblem("--password и --generate вместе не используются")
         pw = password if password is not None else generate_password()
         h = hash_password(pw)
         d = _db(db)
@@ -265,11 +276,12 @@ def users_create(email: str, password: str | None, admin: bool, db: str | None) 
                     raise UsageProblem(f"Пользователь {email} уже есть")
                 uow.workspaces.ensure(DEFAULT_WORKSPACE_ID)
                 uow.users.create(workspace_id=DEFAULT_WORKSPACE_ID, email=email, is_admin=bool(admin),
-                                 disabled=False, password_hash=h)
+                                 disabled=False, password_hash=h,
+                                 name=(name or "").strip() or email.split("@", 1)[0], role="", team="")
         finally:
             d.dispose()
         _err(f"Создан пользователь {email.strip().lower()}" + (" (администратор)" if admin else ""))
-        if password is None:
+        if generate:
             _out(pw)
 
     return _users_run(go)

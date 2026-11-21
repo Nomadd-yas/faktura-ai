@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..domain.errors import ExtractError
+from ..domain.errors import ExtractError, extract_error
 
 log = logging.getLogger(__name__)
 
@@ -28,13 +28,13 @@ def _rename(table: str, row: Any) -> Any:
 
 def pdf_dataset_to_contract(body: dict, publication_id: str) -> dict:
     if not isinstance(body, dict):
-        raise ExtractError("ml_schema_mismatch", "Ответ ML не соответствует контракту прототипа: ответ не JSON-объект")
+        raise extract_error("ml_schema_mismatch", "Ответ ML не соответствует контракту прототипа: ответ не JSON-объект")
     ds = body.get("dataset")
     if not isinstance(ds, dict):
         if body.get("ok") is False:
-            raise ExtractError("ml_error", "ML-1: " + (str(body.get("extract_error") or "") or "извлечение не удалось"),
+            raise extract_error("ml_error", "ML-1: " + (str(body.get("extract_error") or "") or "извлечение не удалось"),
                                retryable=False)
-        raise ExtractError("ml_schema_mismatch", "Ответ ML не соответствует контракту прототипа: нет dataset")
+        raise extract_error("ml_schema_mismatch", "Ответ ML не соответствует контракту прототипа: нет dataset")
     meta = body.get("meta")
     model = meta.get("model") if isinstance(meta, dict) else None
     pubs = ds.get("publications")
@@ -53,5 +53,5 @@ def pdf_dataset_to_contract(body: dict, publication_id: str) -> dict:
         failed = ", ".join(map(str, body.get("failed_tables") or [])) or "-"
         msg = f"прототип ML-1: извлечение частичное ({body.get('extract_error') or 'ошибка'}); не получены таблицы: {failed}"
         log.warning("%s: %s", publication_id, msg)
-        out["warnings"] = [msg]  # parse_extract_response переносит их в ExtractOutcome.warnings
+        out["warnings"] = [f"Модель разобрала статью частично; не получены таблицы: {failed}"]  # parse_extract_response переносит их в ExtractOutcome.warnings
     return out

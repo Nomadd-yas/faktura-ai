@@ -325,54 +325,6 @@ class TestAuthMe:
 
 # --- register ----------------------------------------------------------------------------------
 
-class TestRegister:
-    BODY = {"name": "Новый Исследователь", "email": "new@example.com", "password": "new-password-1"}
-
-    def test_disabled_by_default_403(self, client, h):
-        h.assert_error(client.post(h.url("/auth/register"), json=self.BODY), 403, "registration_disabled")
-
-    def test_disabled_even_for_invalid_body(self, client, h):
-        h.assert_error(client.post(h.url("/auth/register"), json={}), 403, "registration_disabled")
-
-    @pytest.fixture
-    def signup_client(self, settings, services):
-        from fastapi.testclient import TestClient
-
-        from faktura.api.base import create_app
-
-        return TestClient(create_app(settings.model_copy(update={"allow_signup": True}), services))
-
-    def test_enabled_creates_user_and_logs_in(self, signup_client, h):
-        r = signup_client.post(h.url("/auth/register"), json=self.BODY)
-        assert r.status_code in (200, 201), r.text
-        body = r.json()
-        assert body["access_token"] and body["token_type"] == "Bearer" and body["expires_in"] == 900
-        assert body["user"]["email"] == "new@example.com" and body["user"]["is_admin"] is False
-        assert h.cookie_value(r)
-        # вход новым паролем работает
-        assert h.login(signup_client, "new@example.com", "new-password-1").status_code == 200
-
-    def test_enabled_short_password_400_field_password(self, signup_client, h):
-        r = signup_client.post(h.url("/auth/register"), json={**self.BODY, "password": "short"})
-        h.assert_error(r, 400, "validation_error", field="password")
-
-    def test_enabled_password_exactly_8_ok(self, signup_client, h):
-        r = signup_client.post(h.url("/auth/register"), json={**self.BODY, "password": "12345678"})
-        assert r.status_code in (200, 201)
-
-    def test_enabled_password_7_rejected(self, signup_client, h):
-        r = signup_client.post(h.url("/auth/register"), json={**self.BODY, "password": "1234567"})
-        h.assert_error(r, 400, "validation_error", field="password")
-
-    def test_enabled_duplicate_email_409(self, signup_client, admin_creds, h):
-        r = signup_client.post(h.url("/auth/register"), json={**self.BODY, "email": admin_creds[0]})
-        h.assert_error(r, 409, "email_taken", field="email")
-
-    def test_enabled_invalid_email_400(self, signup_client, h):
-        r = signup_client.post(h.url("/auth/register"), json={**self.BODY, "email": "not-an-email"})
-        h.assert_error(r, 400, "validation_error", field="email")
-
-    def test_registered_user_is_never_admin_even_if_requested(self, signup_client, h):
-        r = signup_client.post(h.url("/auth/register"), json={**self.BODY, "is_admin": True})
-        assert r.status_code in (200, 201)
-        assert r.json()["user"]["is_admin"] is False
+def test_register_route_removed(client, h):
+    r = client.post(h.url("/auth/register"), json={"email": "new@example.com", "password": "new-password-1"})
+    assert r.status_code in (404, 405)

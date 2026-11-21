@@ -1,4 +1,4 @@
-"""Вход: POST /auth/login|refresh|logout|register, GET /auth/me (BACKEND §2.1-2.2, api_contract §4.2)."""
+"""Вход: POST /auth/login|refresh|logout, GET /auth/me (BACKEND §2.1-2.2, api_contract §4.2)."""
 from __future__ import annotations
 
 import json
@@ -218,44 +218,3 @@ def auth_me(request: Request, user: CurrentUser = Depends(current_user)) -> dict
     if u is None:  # pragma: no cover - удалён между проверкой и чтением
         raise AppError("unauthorized", "Нужно войти")
     return user_out(u)
-
-
-# --- register ----------------------------------------------------------------------------------
-
-class RegisterIn(BaseModel):
-    name: str | None = None
-    email: Any = None
-    password: Any = None
-
-
-@router.post("/auth/register", status_code=201, summary="Регистрация (по умолчанию выключена)")
-async def register(request: Request) -> JSONResponse:
-    ctx = get_context(request)
-    if not ctx.settings.allow_signup:
-        raise AppError("registration_disabled")
-    data = await read_json_object(request)
-    body = parse_model(RegisterIn, data)
-    email = check_email(body.email)
-    if not isinstance(body.password, str):
-        raise AppError("validation_error", "Введите пароль", field="password")
-    validate_password(body.password)
-    name = (body.name or "").strip() or email.split("@", 1)[0]
-    if len(name) > 80:
-        raise AppError("validation_error", "Имя длиннее 80 символов", field="name")
-
-    pw_hash = await run_in_threadpool(hash_password, body.password)
-
-    def _create() -> auth.SessionTokens:
-        from ...storage import DEFAULT_WORKSPACE_ID  # noqa: PLC0415
-
-        services = get_services(request)
-        with services.db.uow() as uow:
-            if uow.users.get_by_email(email) is not None:
-                raise AppError("email_taken", field="email")
-            user = uow.users.create(workspace_id=DEFAULT_WORKSPACE_ID, email=email, name=name,
-                                    password_hash=pw_hash, is_admin=False, disabled=False)
-            return ctx.sessions.start(uow, user, remember=bool(data.get("remember", False)), now=auth.utcnow(),
-                                      ip=client_ip(request), user_agent=request.headers.get("user-agent"))
-
-    tokens = await run_in_threadpool(_create)
-    return _token_response(ctx, tokens, with_user=True, status=201)

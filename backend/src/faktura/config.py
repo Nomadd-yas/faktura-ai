@@ -54,15 +54,15 @@ class Settings(BaseSettings):
     admin_email: str | None = None
     admin_password: str | None = None
     allow_signup: bool = False
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5200"])
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://localhost:5200"])
     # лимиты
     max_file_mb: int = 50
     max_pages: int = 300
     max_upload_files: int = 200
     max_upload_mb: int = 1024
     max_zip_mb: int = 2048
-    zip_max_unpacked_gb: int = 10
-    zip_max_files: int = 20000
+    zip_max_unpacked_gb: int = 2
+    zip_max_files: int = 500
     zip_max_depth: int = 10
     run_concurrency: int = 4
     export_sync_limit: int = 50000

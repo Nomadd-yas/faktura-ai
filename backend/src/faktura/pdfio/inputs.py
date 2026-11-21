@@ -50,8 +50,8 @@ class CollectResult(BaseModel):
 
 class ZipLimits(BaseModel):
     max_zip_mb: int = 2048
-    max_unpacked_gb: int = 10
-    max_files: int = 20000
+    max_unpacked_gb: int = 2
+    max_files: int = 500
     max_depth: int = 10
 
     @classmethod

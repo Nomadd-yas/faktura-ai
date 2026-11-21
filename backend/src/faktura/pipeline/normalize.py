@@ -150,8 +150,8 @@ def _step_result_value(r: Result, normalizer: Normalizer, trace: list[TraceStep]
         else:
             ml_dec = _dec(ml)
             if ml_dec is None or ml_dec != pm:
-                _add_backend_note(r.meta, f"spread_value: ML дал {_text(ml)}, в тексте ± {_text(pm)}; "
-                                          f"оставлено значение ML")
+                _add_backend_note(r.meta, f"spread_value: модель дала {_text(ml)}, в тексте ± {_text(pm)}; "
+                                          f"оставлено значение модели")
 
 
 # --- поля других таблиц ---------------------------------------------------------------------------

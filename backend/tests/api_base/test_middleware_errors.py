@@ -92,7 +92,7 @@ class TestErrorFormat:
         err = h.assert_error(TestClient(app).get(h.url("/_t/apperror")), 400, "validation_error", field="name")
         assert err["message"] == "Поле «name» не может быть пустым"
         assert err["details"] == {"max": 80}
-        assert err["request_id"] is None
+        assert isinstance(err["request_id"], str)
 
     def test_apperror_with_custom_http_status(self, app, h):
         def route():

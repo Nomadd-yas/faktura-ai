@@ -58,14 +58,15 @@ def get_corpus(uow, user: CurrentUser, run_id: str):
     """Корпус разбора пользователя или 404 (чужие разборы не видны)."""
     c = uow.corpora.get(corpus_id_of(run_id))
     if (c is None or c.deleted_at is not None or c.workspace_id != user.workspace_id
-            or c.collection != DOMAIN or c.kind != CORPUS_KIND):
+            or c.created_by != user.id or c.collection != DOMAIN or c.kind != CORPUS_KIND):
         raise AppError("not_found", "Разбор не найден")
     return c
 
 
 def user_corpora(uow, user: CurrentUser) -> list:
     """Разборы пользователя, новые сверху."""
-    items = uow.corpora.list(user.workspace_id, collection=DOMAIN, kind=CORPUS_KIND)
+    items = [c for c in uow.corpora.list(user.workspace_id, collection=DOMAIN, kind=CORPUS_KIND)
+             if c.created_by == user.id]
     return sorted(items, key=lambda c: (c.created_at or datetime.min.replace(tzinfo=None), c.id), reverse=True)
 
 

@@ -306,7 +306,8 @@ def _sub_table(name: str) -> sa.Table:
         idx += [sa.Index("ix_sub_results_corpus_pub", "corpus_id", "publication_id"),
                 sa.Index("ix_sub_results_corpus_metric", "corpus_id", "metric_name")]
     if name == "issues":
-        idx += [sa.Index("ix_sub_issues_corpus_pub", "corpus_id", "publication_id")]
+        idx += [sa.Index("ix_sub_issues_corpus_pub", "corpus_id", "publication_id"),
+                sa.Index("ix_sub_issues_corpus_check", "corpus_id", "check_name")]
     return sa.Table(f"sub_{name}", metadata, *cols, *idx)
 
 
@@ -340,8 +341,8 @@ users = sa.Table(
     sa.Column("is_admin", sa.Boolean, nullable=False),
     sa.Column("disabled", sa.Boolean, nullable=False),
     sa.Column("password_hash", sa.String(500), nullable=True),
-    sa.Column("role", sa.String(80), nullable=True),
-    sa.Column("team", sa.String(80), nullable=True),
+    sa.Column("role", sa.String(80), nullable=True, default="", server_default=""),
+    sa.Column("team", sa.String(80), nullable=True, default="", server_default=""),
     sa.Column("color", sa.String(16), nullable=True),
     sa.Column("focus", sa.String(300), nullable=True),
     sa.Column("created_at", UTCDateTime, nullable=False),

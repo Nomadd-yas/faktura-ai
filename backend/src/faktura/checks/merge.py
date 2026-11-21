@@ -75,7 +75,7 @@ def _collapse(items: list[IssueRecord], *, by_paper_check: bool) -> list[IssueRe
                     {"description": i.description, "source_page": i.source_page,
                      "source_fragment": i.source_fragment})
                 first.description = f"{first.description or ''} | {i.description}".strip(" |")
-                first.meta.notes_backend.append("объединены находки ML с одинаковыми check_name и record_ids")
+                first.meta.notes_backend.append("объединены находки модели с одинаковыми check_name и record_ids")
             continue
         c = i.model_copy(deep=True)
         seen[key] = c

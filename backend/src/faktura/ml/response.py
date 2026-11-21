@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ..domain.errors import ExtractError
+from ..domain.errors import ExtractError, extract_error
 from ..domain.extraction import ExtractOutcome
 from ..domain.ids import issue_key
 from ..domain.io import parse_cell
@@ -43,7 +43,7 @@ class _Bad(Exception):
 
 
 def _schema_error(message: str) -> ExtractError:
-    return ExtractError("ml_schema_mismatch", f"Ответ ML не соответствует контракту §7.0.1: {message}")
+    return extract_error("ml_schema_mismatch", f"Ответ ML не соответствует контракту §7.0.1: {message}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -204,7 +204,7 @@ def _build_record(table: str, obj: Any, publication_id: str, order: int, where: 
             continue
         if k == "publication_id":
             if v not in (None, "") and str(v) != publication_id:
-                notes.append(f"publication_id от ML «{v}» заменён на «{publication_id}»")
+                notes.append(f"publication_id от модели «{v}» заменён на «{publication_id}»")
             continue
         if table == "results" and k in BACKEND_RESULT_FIELDS:
             continue
@@ -273,7 +273,7 @@ def _build_publication(obj: dict, publication_id: str, warnings: list[str]) -> P
             extra[k] = copy.deepcopy(v)
     ml_pid = obj.get("publication_id")
     if str(ml_pid).strip() != publication_id:
-        notes.append(f"publication_id от ML «{ml_pid}» заменён на «{publication_id}»")
+        notes.append(f"publication_id от модели «{ml_pid}» заменён на «{publication_id}»")
     meta = RecordMeta(ml_order=0, confidence=_confidence(obj.get("_confidence"), "publication", warnings),
                       page=_page(obj.get("_page"), "publication", warnings),
                       bbox=_bbox(obj.get("_bbox"), "publication", warnings), notes_backend=notes, extra=extra)
@@ -325,6 +325,6 @@ def parse_extract_response(data: dict, publication_id: str) -> ExtractOutcome:
 
     ml_warnings = data.get("warnings")
     if isinstance(ml_warnings, list):
-        warnings.extend(f"ML: {w}" for w in ml_warnings if isinstance(w, str) and w.strip())
+        warnings.extend(f"Модель: {w}" for w in ml_warnings if isinstance(w, str) and w.strip())
 
     return ExtractOutcome(bundle=bundle, model_version=model_version, warnings=warnings, raw=copy.deepcopy(data))

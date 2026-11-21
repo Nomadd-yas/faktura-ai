@@ -76,7 +76,7 @@ def test_autolink_true_returns_links_and_does_not_mutate_bundle(mk, solar_profil
     b = mk.bundle(rs)
     snap = b.model_dump()
     out = check_paper(b, solar_profile, autolink=True)
-    assert out.links == [DuplicateLink(result_id="R002", duplicate_of="R001", note="связано бэком")]
+    assert out.links == [DuplicateLink(result_id="R002", duplicate_of="R001", note="связано сервисом разбора")]
     assert b.model_dump() == snap
 
 

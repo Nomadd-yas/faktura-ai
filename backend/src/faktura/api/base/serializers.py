@@ -98,7 +98,8 @@ def user_out(u: User, *, admin: bool = False, extra: dict[str, Any] | None = Non
     """``User`` (§3.1); ``admin=True`` добавляет ``disabled``, ``created_at``, ``last_login_at`` (для /admin/users)."""
     out: dict[str, Any] = {
         "id": u.id, "user_id": u.id, "email": u.email, "name": u.name,
-        "role": getattr(u, "role", None), "team": getattr(u, "team", None),
+        "role": getattr(u, "role", None) or "", "team": getattr(u, "team", None) or "",
+        "pending_email": None,
         "color": getattr(u, "color", None) or DEFAULT_COLOR, "focus": getattr(u, "focus", None),
         "is_admin": bool(u.is_admin),
     }

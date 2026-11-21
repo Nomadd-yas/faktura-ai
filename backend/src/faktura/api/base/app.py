@@ -79,7 +79,7 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     """services=None -> лениво faktura.pipeline.build_services (при первом обращении). Роутеры модулей из
     api.ROUTER_MODULES подключаются через importlib внутри функции: если пакета нет (ModuleNotFoundError именно
     этого модуля) - пропуск с предупреждением в лог; любая другая ошибка импорта роняет запуск. Префикс API_PREFIX.
-    Эндпоинты base: GET /health; POST /auth/login|refresh|logout|register, GET /auth/me; GET/PATCH /me;
+    Эндпоинты base: GET /health; POST /auth/login|refresh|logout, GET /auth/me; GET/PATCH /me;
     GET /collections; GET/POST /admin/users, PATCH /admin/users/{id}; заглушки P2 (X-Faktura-Stub: 1)."""
     from .. import API_PREFIX  # noqa: PLC0415
     from . import routes_auth, routes_stubs, routes_users  # noqa: PLC0415

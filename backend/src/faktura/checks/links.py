@@ -13,7 +13,7 @@ from ._util import HUNDRED, PaperIndex, area_cm2, effective, fmt, is_am15, is_re
 class DuplicateLink(BaseModel):
     result_id: str
     duplicate_of: str
-    note: str = "связано бэком"
+    note: str = "связано сервисом разбора"
 
 
 def link_duplicates(bundle: PaperBundle) -> list[DuplicateLink]:

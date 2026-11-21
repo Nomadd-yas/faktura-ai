@@ -55,7 +55,7 @@ def test_not_ok_null_dataset(extract_req):
     ext, calls = make(lambda r: httpx.Response(200, json=body(ok=False, dataset=None, extract_error="boom")))
     with pytest.raises(ExtractError) as e:
         ext.extract(extract_req())
-    assert e.value.code == "ml_error" and "boom" in e.value.message
+    assert e.value.code == "ml_error" and "boom" in e.value.details["technical"] and "ML" not in e.value.message
 
 
 def test_partial_has_warning(extract_req):
@@ -68,7 +68,7 @@ def test_500_no_retry(extract_req):
     ext, calls = make(lambda r: httpx.Response(500, json={"detail": "no api key"}))
     with pytest.raises(ExtractError) as e:
         ext.extract(extract_req())
-    assert e.value.code == "ml_error" and "no api key" in e.value.message and not e.value.retryable
+    assert e.value.code == "ml_error" and "no api key" in e.value.details["technical"] and not e.value.retryable
     assert len(calls) == 1
 
 

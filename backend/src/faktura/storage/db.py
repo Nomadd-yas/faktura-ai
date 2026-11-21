@@ -236,6 +236,9 @@ class Database:
     def create_all(self) -> None:
         """Создаёт недостающие таблицы и встроенный профиль; повторный вызов безопасен."""
         S.metadata.create_all(self.engine)
+        for ix in S.sub_issues.indexes:  # индексы, добавленные после первого развёртывания (create_all их не трогает)
+            if ix.name == "ix_sub_issues_corpus_check":
+                ix.create(self.engine, checkfirst=True)
         with self.uow() as u:
             u.profiles.ensure_builtin()
 
