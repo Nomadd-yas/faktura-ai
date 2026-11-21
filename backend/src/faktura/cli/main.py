@@ -381,6 +381,55 @@ def users_list(db: str | None) -> int:
     return _users_run(go)
 
 
+@cli.group("textindex", cls=click.Group)
+def textindex() -> None:
+    """Полнотекстовый индекс статей прогонов (docs/design/TEXT_INDEX.md)."""
+
+
+@textindex.command("rebuild")
+@click.option("--run", "run_id", default=None, help="Идентификатор прогона (run_... или crp_...); по умолчанию все")
+@click.option("--db", default=None, help="URL БД или путь к SQLite-файлу (по умолчанию FAKTURA_DB_URL)")
+@click.option("--storage-dir", type=click.Path(path_type=Path), default=None,
+              help="Каталог файлового хранилища (по умолчанию FAKTURA_STORAGE_DIR / настройки)")
+@click.option("--only-missing", is_flag=True, help="Только статьи без индекса")
+def textindex_rebuild(run_id: str | None, db: str | None, storage_dir: Path | None, only_missing: bool) -> int:
+    """Строит индекс из PDF файлового хранилища (текстовый слой); OCR-текст сканов добавляется только при разборе."""
+    from ..config import Settings
+    from ..storage import build_file_store
+    from ..textindex.sources import rebuild_corpus
+    from ..textindex.store import norm_corpus_id
+
+    def go() -> None:
+        settings = Settings()
+        if storage_dir is not None:
+            settings = settings.model_copy(update={"storage_dir": storage_dir})
+        store = build_file_store(settings)
+        d = _db(db)
+        try:
+            with d.uow() as uow:
+                if run_id:
+                    cid = norm_corpus_id(run_id)
+                    if uow.corpora.get(cid) is None:
+                        raise UsageProblem(f"Прогон {run_id} не найден")
+                    ids = [cid]
+                else:
+                    ids = []
+                    for w in uow.workspaces.list():
+                        ids.extend(c.id for c in uow.corpora.list(w.id))
+            total_p = total_c = 0
+            for cid in ids:
+                with d.uow() as uow:
+                    res = rebuild_corpus(uow, store, cid, only_missing=only_missing)
+                total_p += res["papers"]
+                total_c += res["chunks"]
+                _out(f"{cid}	статей {res['papers']}	чанков {res['chunks']}	пропущено {res['skipped']}")
+            _err(f"Готово: прогонов {len(ids)}, статей {total_p}, чанков {total_c}")
+        finally:
+            d.dispose()
+
+    return _users_run(go)
+
+
 @cli.command("serve")
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8000, type=click.IntRange(1, 65535), show_default=True)

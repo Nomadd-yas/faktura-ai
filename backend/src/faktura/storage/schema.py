@@ -380,6 +380,35 @@ LATE_INDEXES: dict[sa.Table, tuple[str, ...]] = {
     sub_rows: ("ix_sub_rows_corpus_paper_metric", "ix_sub_rows_corpus_id", "ix_sub_rows_paper_metric"),
 }
 
+# --- полнотекстовый индекс статей прогона (docs/design/TEXT_INDEX.md) -------------------------------
+# FTS5 (SQLite) и generated tsvector + GIN (PostgreSQL) создаются отдельно: faktura.textindex.store.ensure_fts
+
+text_pages = sa.Table(
+    "text_pages", metadata,
+    _seq(),
+    sa.Column("corpus_id", sa.String(64), sa.ForeignKey("corpora.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("paper_id", sa.String(64), sa.ForeignKey("papers.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("pid", sa.String(200), nullable=False),
+    sa.Column("page", sa.Integer, nullable=False),
+    sa.Column("total_pages", sa.Integer, nullable=False),
+    sa.Column("text", sa.Text, nullable=False),
+    sa.Index("ix_text_pages_paper", "paper_id", "page"),
+    sa.Index("ix_text_pages_corpus", "corpus_id", "pid", "page"),
+)
+
+text_chunks = sa.Table(
+    "text_chunks", metadata,
+    _seq(), _id(),
+    sa.Column("corpus_id", sa.String(64), sa.ForeignKey("corpora.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("paper_id", sa.String(64), sa.ForeignKey("papers.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("pid", sa.String(200), nullable=False),
+    sa.Column("page", sa.Integer, nullable=False),
+    sa.Column("chunk_no", sa.Integer, nullable=False),
+    sa.Column("text", sa.Text, nullable=False),
+    sa.Index("ix_text_chunks_paper", "paper_id"),
+    sa.Index("ix_text_chunks_corpus", "corpus_id", "pid"),
+)
+
 # --- кеш агрегатов корпуса (REQ-101) -----------------------------------------------------------
 
 corpus_stats = sa.Table(

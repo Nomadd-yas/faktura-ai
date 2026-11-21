@@ -47,6 +47,7 @@ class ExtractOutcome(BaseModel):
     from_cache: bool = False
     ocr_confidence: float | None = None  # 0..1: надёжность текста файла (ML meta.ocr_confidence)
     suggested_domain: str | None = None  # solar | rag: к какой области, вероятно, относится статья вне области
+    page_texts: list[str] | None = None  # OCR-текст страниц (индекс 0 = стр. 1; "" - нет), для полнотекстового индекса
 
 
 class MlHealth(BaseModel):
@@ -64,3 +65,4 @@ class GenericOutcome(BaseModel):
     from_cache: bool = False
     ocr_confidence: float | None = None
     suggested_domain: str | None = None
+    page_texts: list[str] | None = None

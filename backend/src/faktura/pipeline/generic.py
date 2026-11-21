@@ -29,6 +29,7 @@ from ..domain.extraction import ExtractRequest, GenericOutcome
 from ..domain.registry import DomainSpec, get_domain
 from ..ml.validate import invalid_error
 from ..norm.user_dict import _collapse, rag_metric_map, version_suffix
+from ..textindex.sources import index_pdf
 from ._pdf import local_pdf
 from .processor import file_ml_meta
 
@@ -330,6 +331,7 @@ class GenericProcessor:
                 fields["page_count"] = file.page_count
             uow.papers.update(paper.id, **fields)
             uow.files.update(file.id, **ml_meta)
+        index_pdf(s.db, paper, pdf, out.page_texts)  # полнотекстовый индекс: текстовый слой + OCR для сканов
         log.info("rag %s: извлечение %.2f с, проверка %.2f с, цитаты %.2f с, сохранение %.2f с (results=%d, issues=%d)",
                  paper.publication_id, t1 - t0, t2 - t1, t3 - t2, time.monotonic() - t3, n_res, n_iss)
         p._publish(paper.workspace_id, "paper.done", {"paper_id": paper.id, "chat_id": None, "title": pub.get("title"),

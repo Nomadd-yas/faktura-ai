@@ -246,6 +246,9 @@ class Database:
                 if ix.name in names:
                     ix.create(self.engine, checkfirst=True)
         self._migrate_sub_rows()
+        from ..textindex.store import ensure_fts  # FTS5 / tsvector+GIN: DDL вне metadata, идемпотентно
+
+        ensure_fts(self.engine)
         with self.uow() as u:
             u.profiles.ensure_builtin()
 
