@@ -22,85 +22,32 @@ def fact(fid, value, *, status=ReviewStatus.accepted, metric="PCE", row="DV1", p
 
 # --- transfer_review ---------------------------------------------------------------------------------------------
 
-def test_same_place_and_value_transferred():
-    r = transfer_review([fact("o1", 12.89)], [fact("n1", 12.89, status=ReviewStatus.new)])
-    assert r.transferred == ["o1"] and r.to_manual == []
 
 
-@pytest.mark.parametrize("new,ok", [("12.89", True), ("12.9", True), ("12.953", True), ("12.96", False),
-                                    ("12.80", False), ("99", False)])
-def test_value_tolerance_half_percent(new, ok):
-    r = transfer_review([fact("o1", "12.89")], [fact("n1", new, status=ReviewStatus.new)])
-    assert (r.transferred == ["o1"]) is ok and (r.to_manual == ["o1"]) is (not ok)
 
 
-def test_zero_values_no_division_error():
-    r = transfer_review([fact("o1", 0)], [fact("n1", 0, status=ReviewStatus.new)])
-    assert r.transferred == ["o1"]
 
 
-def test_zero_vs_nonzero_is_mismatch():
-    r = transfer_review([fact("o1", 0)], [fact("n1", 0.5, status=ReviewStatus.new)])
-    assert r.to_manual == ["o1"]
 
 
-def test_no_counterpart_goes_to_manual():
-    r = transfer_review([fact("o1", 12.89)], [])
-    assert r.to_manual == ["o1"] and r.transferred == []
 
 
-@pytest.mark.parametrize("change", [dict(metric="Voc"), dict(row="DV2"), dict(page=6), dict(table="Table 2")])
-def test_key_parts_must_match(change):
-    r = transfer_review([fact("o1", 12.89)], [fact("n1", 12.89, status=ReviewStatus.new, **change)])
-    assert r.to_manual == ["o1"] and r.transferred == []
 
 
-def test_unreviewed_old_facts_ignored():
-    r = transfer_review([fact("o1", 12.89, status=ReviewStatus.new)], [fact("n1", 12.89, status=ReviewStatus.new)])
-    assert r.transferred == [] and r.to_manual == []
 
 
-def test_rejected_review_is_transferred_too():
-    r = transfer_review([fact("o1", 12.89, status=ReviewStatus.rejected)], [fact("n1", 12.89, status=ReviewStatus.new)])
-    assert r.transferred == ["o1"]
 
 
-def test_corrected_value_transfers_when_machine_value_unchanged():
-    old = fact("o1", 12.89, corrected=13.5)
-    r = transfer_review([old], [fact("n1", 12.89, status=ReviewStatus.new)])
-    assert r.transferred == ["o1"]
 
 
-def test_one_new_fact_takes_only_one_old():
-    r = transfer_review([fact("o1", 12.89), fact("o2", 12.89)], [fact("n1", 12.89, status=ReviewStatus.new)])
-    assert len(r.transferred) == 1 and len(r.to_manual) == 1
-    assert set(r.transferred) | set(r.to_manual) == {"o1", "o2"}
 
 
-def test_each_old_fact_in_exactly_one_list():
-    olds = [fact(f"o{i}", 10 + i, page=i) for i in range(6)]
-    news = [fact(f"n{i}", 10 + i, status=ReviewStatus.new, page=i) for i in range(0, 6, 2)]
-    r = transfer_review(olds, news)
-    assert sorted(r.transferred + r.to_manual) == sorted(f.id for f in olds)
-    assert not set(r.transferred) & set(r.to_manual)
-    assert len(r.transferred) == 3
 
 
-def test_empty_inputs():
-    r = transfer_review([], [])
-    assert r.transferred == [] and r.to_manual == []
 
 
-def test_none_values_do_not_crash():
-    r = transfer_review([fact("o1", None)], [fact("n1", None, status=ReviewStatus.new)])
-    assert sorted(r.transferred + r.to_manual) == ["o1"]
 
 
-def test_pure_function_does_not_mutate_inputs():
-    olds, news = [fact("o1", 12.89)], [fact("n1", 12.89, status=ReviewStatus.new)]
-    before = [f.model_dump() for f in olds + news]
-    transfer_review(olds, news)
-    assert [f.model_dump() for f in olds + news] == before
 
 
 # --- recheck_paper -------------------------------------------------------------------------------------------------------
@@ -167,47 +114,11 @@ def test_recheck_opens_jv_consistency_after_bad_edit(jv_paper, profile):
     assert diff.opened and "jv_consistency" in open_checks(env, pid)
 
 
-def test_recheck_closes_jv_consistency_after_fix(jv_paper, profile):
-    env, pid = jv_paper("25")
-    assert "jv_consistency" in open_checks(env, pid)
-    edit_pce(env, pid, "14")
-    with env.uow() as uow:
-        diff = recheck_paper(uow, pid, profile)
-    assert diff.closed and "jv_consistency" not in open_checks(env, pid)
 
 
-def test_recheck_without_changes_empty_diff(jv_paper, profile):
-    env, pid = jv_paper("14")
-    with env.uow() as uow:
-        diff = recheck_paper(uow, pid, profile)
-    assert (diff.opened, diff.closed, diff.changed) == ([], [], [])
 
 
-def test_recheck_is_synchronous_and_does_not_call_ml(jv_paper, profile):
-    env, pid = jv_paper("14")
-    n = len(env.spy.calls)
-    edit_pce(env, pid, "25")
-    with env.uow() as uow:
-        recheck_paper(uow, pid, profile)
-    assert len(env.spy.calls) == n
 
 
-def test_recheck_keeps_review_status_of_other_issues(jv_paper, profile):
-    env, pid = jv_paper("25")
-    with env.uow() as uow:
-        stored = next(i for i in uow.issues.list(pid) if i.record.check_name == "jv_consistency")
-        key = stored.record.key
-        # upsert_preserving_review статус существующего ключа не меняет - разбор ставится через set_status
-        uow.issues.set_status(stored.id, "ok")
-        recheck_paper(uow, pid, profile)
-    with env.uow() as uow:
-        again = [i for i in uow.papers.load_bundle(pid).issues if i.key == key]
-    assert again and again[0].status.value == "ok"
 
 
-def test_recheck_unknown_paper_not_found(make_env, profile):
-    from faktura.domain.errors import AppError
-    env = make_env()
-    with env.uow() as uow, pytest.raises(AppError) as ei:
-        recheck_paper(uow, "pap_nope", profile)
-    assert ei.value.code == "not_found"

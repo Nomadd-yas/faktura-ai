@@ -19,3 +19,9 @@ def test_dropped_list_items_leave_no_bare_numbers_and_list_is_renumbered():
     assert BARE_LIST_ITEM.fullmatch("1.") and BARE_LIST_ITEM.fullmatch(" - ") and not BARE_LIST_ITEM.fullmatch("1. текст")
     assert _renumber(["Итог:", "2. второй", "4. четвёртый", "Текст", "3. новый список"]) == \
         ["Итог:", "1. второй", "2. четвёртый", "Текст", "1. новый список"]
+
+
+def test_pdf_ligature_glyph_in_text_layer_matches_plain_letters():
+    page = "exhibited a drop of its initial PCE by 50% a\ue09der 35 h (T50) and lost"
+    assert quote_in("a drop of its initial PCE by 50% after 35 h (T50)", page)
+    assert not quote_in("a drop of its initial PCE by 50% before 35 h", page)

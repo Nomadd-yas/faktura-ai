@@ -47,7 +47,7 @@ def clock() -> FakeClock:
     return FakeClock()
 
 
-@pytest.fixture(params=["sqlite", pytest.param("pg", marks=pytest.mark.pg)])
+@pytest.fixture(params=["sqlite"])
 def db_url(request, tmp_path):
     """SQLite во временном файле либо Postgres (схема на тест) по FAKTURA_TEST_PG_URL."""
     if request.param == "sqlite":

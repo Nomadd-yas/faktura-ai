@@ -131,7 +131,21 @@ def quote_in(quote: str, text: str) -> bool:
         return True
     alnum = re.compile(r"[\W_]+")
     qa = alnum.sub("", q)
-    return len(qa) >= 8 and qa in alnum.sub("", t)
+    if len(qa) < 8:
+        return False
+    if qa in alnum.sub("", t):
+        return True
+    if not PUA.search(t):
+        return False
+    # лигатура в текстовом слое PDF - символ частной области Unicode («after» -> «a\ue09der»): на его месте
+    # в цитате может стоять ff, fi, fl, ft, ffi, ffl, st
+    ta = re.sub(r"[^\w\ue000-\uf8ff]+|_", "", t)
+    pat = LIGATURES.sub(lambda m: f"(?:{m.group(0)}|[\ue000-\uf8ff])", re.escape(qa))
+    return re.search(pat, ta) is not None
+
+
+PUA = re.compile(r"[\ue000-\uf8ff]")
+LIGATURES = re.compile(r"ffi|ffl|ff|fi|fl|ft|st")
 
 
 def _nums_in(text: str) -> list[float]:
@@ -300,8 +314,10 @@ class Verifier:
             cands += [(float(obj["n"]), "count"), (float(len(obj["ids"])), "count"),
                       (float(len({i.split("/", 1)[0] for i in obj["ids"]})), "count")]
             return any(_value_match(w, d, pct, x, u) for x, u in cands)
-        if kind == "calc":
-            return _value_match(w, d, pct, obj["value"], "")
+        if kind == "calc":  # результат, входы и числа самой формулы («(18.45-17.66)/17.66*100»)
+            xs = [obj["value"]] + [i.get("value") for i in (obj.get("inputs") or {}).values() if isinstance(i, dict)]
+            xs += _nums_in(obj.get("expr") or "")
+            return any(x is not None and _value_match(w, d, pct, x, "") for x in xs)
         if kind in ("chunk", "page"):
             return any(abs(x - w) < 1e-9 for x in _nums_in((quote or "") + " " + obj["text"]))
         cells = " ".join(str(x) for x in obj[1].values())
@@ -310,7 +326,8 @@ class Verifier:
     def _seen_ok(self, txt: str) -> bool:
         """Число уже подтверждено выше в этом же ответе (итог повторяет значения из пунктов)."""
         w = _canon(txt)
-        return w is not None and any(abs(w - x) < 1e-9 for x in self.seen)
+        tol = 0.5 * 10 ** (-_decimals(txt)) + 1e-9  # «4.5 %» после подтверждённых «4.47 %»
+        return w is not None and any(abs(w - x) < tol for x in self.seen)
 
     def remember(self, item: str) -> None:
         """Числа принятого пункта считаются подтверждёнными для следующих пунктов ответа."""

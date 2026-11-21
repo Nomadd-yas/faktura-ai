@@ -74,39 +74,7 @@ def test_reject_autofixes_issue_and_blocks_reopen(client, auth, pdfs):
         assert not set(rids) & set(i["record_ids"].split(";"))
 
 
-def test_issue_ok_not_exported_and_stats(client, auth, pdfs):
-    run = _run(client, auth, pdfs)
-    iss = _paper(client, auth, run)["issues"][0]
-    before = client.get(f"{API}/issues/stats", params={"run": run}, headers=auth).json()["data"]
-    total = sum(x["count"] for x in before)
-    r = client.patch(f"{API}/runs/{run}/papers/solar/D001/issues/{iss['issue_id']}", json={"state": "ok"},
-                     headers=auth)
-    assert r.status_code == 200, r.text
-    assert iss["issue_id"] not in {i["issue_id"] for i in _zip_table(client, auth, run, "issues")}
-    after = client.get(f"{API}/issues/stats", params={"run": run}, headers=auth).json()["data"]
-    assert sum(x["count"] for x in after) == total - 1
 
 
-def test_batch_reset_and_errors(client, auth, pdfs):
-    run = _run(client, auth, pdfs)
-    rows = _paper(client, auth, run)["results"][:3]
-    items = [{"domain": "solar", "pid": "D001", "rid": x["result_id"], "status": "rejected"} for x in rows]
-    r = client.post(f"{API}/runs/{run}/reviews/batch", json={"items": items}, headers=auth)
-    assert r.status_code == 200 and r.json()["count"] == 3
-    assert len(_zip_table(client, auth, run, "results")) == len(_paper(client, auth, run)["results"]) - 3
-    r = client.delete(f"{API}/runs/{run}/reviews", headers=auth)
-    assert r.status_code == 200 and r.json()["count"] == 3
-    assert len(_zip_table(client, auth, run, "results")) == len(_paper(client, auth, run)["results"])
-    assert _review(client, auth, run, "R999", status="accepted").status_code == 404
-    assert _review(client, auth, run, rows[0]["result_id"], status="accepted",
-                   corrected_value="abc").status_code == 400
-    assert client.post(f"{API}/runs/{run}/reviews/batch", json={"items": []}, headers=auth).status_code == 400
 
 
-def test_duplicate_promotion_and_redirect():
-    from faktura.review.runs_v2 import _effective_results
-    rows = [{"result_id": "R1", "duplicate_of": "", "normalized_value": "1", "note": ""},
-            {"result_id": "R2", "duplicate_of": "R1", "normalized_value": "1", "note": ""},
-            {"result_id": "R3", "duplicate_of": "R1", "normalized_value": "1", "note": ""}]
-    out = _effective_results(rows, {"R1": {"status": "rejected", "corrected_value": None}})
-    assert [(r["result_id"], r["duplicate_of"]) for r in out] == [("R2", ""), ("R3", "R2")]

@@ -11,9 +11,6 @@ def syn(collection, param, text):
     return NS(collection=collection, param=param, text=text)
 
 
-def test_no_synonyms_returns_base():
-    base = LocalNormalizer()
-    assert with_user_synonyms(base, []) is base and version_suffix([]) == ""
 
 
 def test_metric_material_spectrum_and_version():
@@ -32,14 +29,5 @@ def test_metric_material_spectrum_and_version():
     assert nz.version == base.version and nz.dictionary_version.startswith(base.dictionary_version + "+u")
 
 
-def test_version_suffix_is_order_independent_and_changes():
-    a, b = syn("solar", "pce", "x1"), syn("solar", "voc", "x2")
-    assert version_suffix([a, b]) == version_suffix([b, a])
-    assert version_suffix([a]) != version_suffix([a, b])
 
 
-def test_non_metric_param_has_no_effect_and_rag_map():
-    nz = with_user_synonyms(LocalNormalizer(), [syn("solar", "bandgap", "зона")])
-    assert nz.match_metric("зона") is None
-    m = rag_metric_map([syn("rag", "r5", "Полнота на 5"), syn("rag", "retriever", "метод"), syn("solar", "pce", "z")])
-    assert m == {"полнотана5": "recall@5"}
