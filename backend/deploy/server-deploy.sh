@@ -32,7 +32,12 @@ overlay() {
     exit 1
   fi
   local base; base="$(cat "$stamp")"
-  if ! git -C "$REPO" diff --quiet "$base" "$REF" -- "$@"; then
+  # Изменения только в строках COPY у Dockerfile (список файлов кода) зависимостей не трогают: код и так
+  # приносит overlay-образ. Любое другое изменение - как раньше, нужен deploy.sh с локальной машины.
+  local real
+  real="$(git -C "$REPO" diff -U0 "$base" "$REF" -- "$@" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' \
+          | grep -vE '^[+-]COPY ' || true)"
+  if [[ -n "$real" ]]; then
     echo "!! с отправки образа $name ($base) поменялись зависимости/Dockerfile:" >&2
     git -C "$REPO" diff --stat "$base" "$REF" -- "$@" >&2
     echo "   отправьте образ с локальной машины: bash backend/deploy/deploy.sh $( [[ $name == ml ]] && echo --ml )" >&2
