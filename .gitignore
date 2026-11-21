@@ -36,3 +36,6 @@ backend/deploy/case/
 
 # reference archive of a third-party project (not published)
 papertail_last_ver.tar.gz
+
+# server backups (contain secrets: .env, DB dump)
+backups/
