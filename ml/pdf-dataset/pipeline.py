@@ -545,6 +545,70 @@ def uncovered(cands, results):
     return out
 
 
+
+
+# ---------- [faktura-patch] DOI и год из текстового слоя PDF: glmocr отбрасывает колонтитулы ----------
+DOI_RX = _re.compile(r"\b(10\.\d{4,9}/[^\s\"<>,;]+)", _re.I)
+YEAR = r"((?:19|20)\d\d)"
+
+
+def _clean_doi(d):
+    d = d.rstrip(".)]")
+    return d
+
+
+def pub_meta_from_pdf(pdf, pages=3):
+    """-> (doi | None, year | None) по первым страницам PDF."""
+    import pymupdf
+    doc = pymupdf.open(str(pdf))
+    text = "\n".join(doc[i].get_text() for i in range(min(pages, len(doc))))
+    text = text.replace("‐", "-").replace("‑", "-")
+    doi = None
+    # приоритет: явная метка DOI / doi.org, затем любое 10.xxxx/...
+    m = _re.search(r"(?:doi\.org/|DOI[:\s]*|doi[:\s]+)" + DOI_RX.pattern, text, _re.I)
+    if m:
+        doi = _clean_doi(m.group(1))
+    else:
+        m = DOI_RX.search(text)
+        if m:
+            doi = _clean_doi(m.group(1))
+    year = None
+    for rx in (r"Published(?:\s+online)?[:\s]+[^\n]{0,40}?" + YEAR,
+               r"(?:Version of Record|Available online)[:\s]+[^\n]{0,40}?" + YEAR,
+               r"©\s*" + YEAR, r"\(c\)\s*" + YEAR, r"Copyright\s*©?\s*" + YEAR):
+        m = _re.search(rx, text, _re.I)
+        if m:
+            year = m.group(1)
+            break
+    if year is None and doi:
+        m = _re.search(r"[./](20\d\d)\d{2,}", doi)   # solr.202200501, j.mtener.2024.101715
+        if m:
+            year = m.group(1)
+    if year is None:
+        ys = _re.findall(r"(?:Received|Accepted|Revised)[:\s]+[^\n]{0,40}?" + YEAR, text, _re.I)
+        if ys:
+            year = max(ys)
+    return doi, year
+
+
+def fill_pub_meta(dataset_path, pdf) -> dict:
+    """Пустые DOI/year в publications заполняются из PDF; заполненные моделью не трогаем."""
+    data = json.loads(Path(dataset_path).read_text(encoding="utf-8"))
+    pubs = data.get("publications") or []
+    st = {}
+    if pubs:
+        doi, year = pub_meta_from_pdf(pdf)
+        p0 = pubs[0]
+        if not p0.get("DOI") and doi:
+            p0["DOI"] = doi
+            st["DOI"] = "pdf"
+        if not p0.get("year") and year:
+            p0["year"] = int(year)
+            st["year"] = "pdf"
+        Path(dataset_path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return st
+
+
 def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) -> dict:
     """Прогоняет PDF через весь конвейер. Бросает исключение при фатальной ошибке
     (PDF не найден, glmocr не установлен/не создал md).
@@ -661,6 +725,9 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
     if dataset_out.exists():
         try:
             snap_stats = snap_fragments(dataset_out, pdf)
+            pub_fill = fill_pub_meta(dataset_out, pdf)
+            if pub_fill:
+                snap_stats = {**snap_stats, "pub_meta": pub_fill}
             print(f"      цитаты: {snap_stats}", flush=True)
         except Exception as e:  # цитаты — улучшение, не роняем прогон
             print(f"[!] подтяжка цитат не удалась: {e}", flush=True)
