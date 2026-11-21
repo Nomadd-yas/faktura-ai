@@ -262,5 +262,7 @@ def run_check_script(script: Path, csv_dir: Path, pdf_dir: Path, timeout_s: int 
     except OSError as e:
         return CheckReport(ran=False, ok=False, crashed=True, raw_output=f"не удалось запустить проверку: {e}")
     out, err = _decode(proc.stdout), _decode(proc.stderr)
+    # предупреждения pypdf о шрифтах («fontTools is required…») к проверке не относятся и забивают отчёт
+    err = "\n".join(ln for ln in err.splitlines() if not ln.startswith("fontTools is required"))
     text = out if not err else (out + ("\n" if out and not out.endswith("\n") else "") + err)
     return parse_check_output(text, proc.returncode)
