@@ -749,6 +749,7 @@ class LLMError(Exception):
 
 
 REASONING_TOKENS = int(os.environ.get("ROUTERAI_REASONING_TOKENS", "6000"))
+RETRY_MAX_TOKENS = int(os.environ.get("ROUTERAI_RETRY_MAX_TOKENS", "65536"))  # [faktura-patch] потолок повтора
 SEED = int(os.environ.get("ROUTERAI_SEED", "42"))
 
 
@@ -770,7 +771,10 @@ def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw
         print(f"[{label}] повтор после сбоя: {e}", flush=True)
         # [faktura-patch] провайдер (wafer) игнорирует reasoning.max_tokens: модель иногда рассуждает до конца
         # лимита и отдаёт пустой ответ. Повтор — с выключенным рассуждением (reasoning.enabled=false работает).
-        return _call_llm_once(client, args, messages, schema_name, schema, max_tokens, label + ":retry",
+        # [faktura-patch] обрезка по длине: повтор с удвоенным лимитом (до RETRY_MAX_TOKENS) — длинные таблицы
+        # (≈120 строк results) без рассуждения не помещаются в 24576; платятся только реально выданные токены
+        mt = min(max(max_tokens * 2, max_tokens), RETRY_MAX_TOKENS) if "finish_reason=length" in str(e) else max_tokens
+        return _call_llm_once(client, args, messages, schema_name, schema, max(mt, max_tokens), label + ":retry",
                               raw_path, report, reasoning_tokens=0)
 
 
@@ -2011,7 +2015,8 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             result = nullify_empties(call_llm(client, args, messages, "table_issues",
                                               table_schema("issues"), issues_max_tokens,
                                               "issues", raw_path, report,
-                                              retry=True))  # [faktura-patch] лёгкий проход
+                                              retry=True,  # [faktura-patch] лёгкий проход
+                                              reasoning_tokens=RAG_ISSUES_REASONING))  # первый вызов всегда сгорал
             issues = result.get("issues", []) if isinstance(result, dict) else []
             for r in issues:
                 r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
