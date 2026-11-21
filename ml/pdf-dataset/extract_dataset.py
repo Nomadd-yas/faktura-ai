@@ -1319,9 +1319,21 @@ _RAG_MARK_RX = re.compile(r"<!-- page (\d+) -->")
 _RAG_NUMCELL_RX = re.compile(r"[\s$\\{}^_~≈<>±+\-−–.,:;%()\d/×*†‡§‖]*")
 
 
-def _rag_cell_texts(tr_html: str) -> list[str]:
+_BREAK_TAG_RX = re.compile(r"<\s*(?:br|/p|/div|/li|/tr|/td|/th|p|div|li)\b[^>]*>", re.I)
+
+
+def html_cell_text(cell_html: str) -> str:
+    """[faktura-patch] Текст ячейки HTML-таблицы. Разрывающие теги (<br>, <p>, <div>, <li>) -> пробел, иначе
+    «GEMINI<br>1.0 Pro» склеивается в «GEMINI1.0 Pro»; строчные (<sub>, <sup>, <b>, <i>, <span>) -> без пробела
+    («V<sub>OC</sub>» -> «VOC»). Пробелы внутри ячейки схлопываются; внутренние пробелы модели не трогаются."""
     import html as _h
-    return [_h.unescape(re.sub(r"<[^>]+>", "", c)).strip() for _, c in _RAG_CELL_RX.findall(tr_html)]
+    s = _BREAK_TAG_RX.sub(" ", cell_html or "")
+    s = re.sub(r"<[^>]+>", "", s)
+    return re.sub(r"\s+", " ", _h.unescape(s)).strip()
+
+
+def _rag_cell_texts(tr_html: str) -> list[str]:
+    return [html_cell_text(c) for _, c in _RAG_CELL_RX.findall(tr_html)]
 
 
 def _rag_is_num(cell: str) -> bool:

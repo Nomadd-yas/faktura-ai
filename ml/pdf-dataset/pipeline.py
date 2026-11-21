@@ -169,8 +169,57 @@ def snap_fragments(dataset_path, pdf) -> dict:
     return st
 
 
+# [faktura-patch] ручки настройки OCR из env поверх базового glmocr-конфига (YAML руками не правим):
+#   OCR_PDF_DPI -> pipeline.page_loader.pdf_dpi; OCR_MAX_TOKENS -> pipeline.page_loader.max_tokens (лимит на ЛЮБОЙ запрос
+#   к модели, в т.ч. на каждый блок: glmocr не разделяет лимиты по типам блоков); OCR_LAYOUT_THRESHOLD ->
+#   pipeline.layout.threshold; OCR_LAYOUT_THRESHOLD_BY_CLASS (JSON {"table": 0.2}) -> layout.threshold_by_class;
+#   OCR_LAYOUT_UNCLIP ("1.05" или "1.05,1.1") -> layout.layout_unclip_ratio (расширение рамки блока: ближайший аналог
+#   padding кропа, отдельного padding в glmocr 0.1.5 нет). Не заданы — конфиг не трогаем.
+OCR_KNOBS = ("OCR_PDF_DPI", "OCR_MAX_TOKENS", "OCR_LAYOUT_THRESHOLD", "OCR_LAYOUT_THRESHOLD_BY_CLASS", "OCR_LAYOUT_UNCLIP")
+
+
+def apply_ocr_overlay(base: Path, env=None) -> Path:
+    """Базовый конфиг + env-ручки -> путь к эффективному конфигу (новый файл во временном каталоге, по хешу)."""
+    env = os.environ if env is None else env
+    if not any((env.get(k) or "").strip() for k in OCR_KNOBS):
+        return Path(base)
+    import hashlib
+    import tempfile
+    import yaml
+    cfg = yaml.safe_load(Path(base).read_text(encoding="utf-8")) or {}
+    pl = cfg.setdefault("pipeline", {})
+    loader, layout = pl.setdefault("page_loader", {}), pl.setdefault("layout", {})
+
+    def get(k):
+        v = (env.get(k) or "").strip()
+        return v or None
+    try:
+        if get("OCR_PDF_DPI"):
+            loader["pdf_dpi"] = int(get("OCR_PDF_DPI"))
+        if get("OCR_MAX_TOKENS"):
+            loader["max_tokens"] = int(get("OCR_MAX_TOKENS"))
+        if get("OCR_LAYOUT_THRESHOLD"):
+            layout["threshold"] = float(get("OCR_LAYOUT_THRESHOLD"))
+        if get("OCR_LAYOUT_THRESHOLD_BY_CLASS"):
+            layout["threshold_by_class"] = {k: float(v) for k, v in json.loads(get("OCR_LAYOUT_THRESHOLD_BY_CLASS")).items()}
+        if get("OCR_LAYOUT_UNCLIP"):
+            parts = [float(x) for x in get("OCR_LAYOUT_UNCLIP").split(",")]
+            layout["layout_unclip_ratio"] = parts[0] if len(parts) == 1 else parts
+    except (ValueError, TypeError, AttributeError) as e:
+        raise PipelineError("not_configured", f"неверное значение OCR_* ручки: {e}") from e
+    text = yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False)
+    h = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    d = Path(tempfile.gettempdir()) / "glmocr_cfg"
+    d.mkdir(parents=True, exist_ok=True)
+    out = d / f"glmocr.{h}.yaml"
+    if not out.exists():
+        out.write_text(text, encoding="utf-8")
+    return out
+
+
 def config_path() -> Path:
-    return Path(os.environ.get("GLMOCR_CONFIG", BASE / "glmocr.config.yaml"))
+    base = Path(os.environ.get("GLMOCR_CONFIG", BASE / "glmocr.config.yaml"))
+    return apply_ocr_overlay(base)
 
 
 def ocr_endpoint(config: Path):
@@ -881,7 +930,8 @@ def _table_candidates(md):
         caption = capm[-1].strip() if capm else ""
         rows = []
         for tr in _re.findall(r"<tr>(.*?)</tr>", tm.group(0), _re.S):
-            cells = [_html.unescape(_re.sub(r"<[^>]+>", "", c)).strip() for c in _re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, _re.S)]
+            from extract_dataset import html_cell_text
+            cells = [html_cell_text(c) for c in _re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, _re.S)]
             rows.append(cells)
         if not rows:
             continue
