@@ -51,9 +51,41 @@ def _note(rec: Any, text: str) -> None:
         pass
 
 
+def _repair_unreferenced_ids(bundle: PaperBundle, warnings: list[str]) -> None:
+    """Повторы id в таблицах, на которые никто не ссылается, чинятся, а не роняют статью: модель нумерует слои
+    заново у каждого прибора (L1, L2… у DV1 и у DV2) -> «<device_id>-<layer_id>», как в эталоне (DV1-L1);
+    повторный issue_id очищается - бэк присвоит свой."""
+    from collections import Counter
+
+    layers = list(getattr(bundle, "layers", []) or [])
+    cnt = Counter(str(getattr(r, "layer_id", "") or "").strip() for r in layers)
+    used = {k for k in cnt if k}
+    for rec in layers:
+        lid = str(getattr(rec, "layer_id", "") or "").strip()
+        if not lid or cnt[lid] < 2:
+            continue
+        dev = str(getattr(rec, "device_id", "") or "").strip()
+        base = f"{dev}-{lid}" if dev and not lid.startswith(f"{dev}-") else lid
+        new, i = base, 2
+        while new in used:
+            new, i = f"{base}-{i}", i + 1
+        used.add(new)
+        setattr(rec, "layer_id", new)
+        _note(rec, f"layer_id: исходно «{lid}» (повтор)")
+        warnings.append(f"layers.layer_id: повтор «{lid}» -> «{new}»")
+    seen: set[str] = set()
+    for rec in getattr(bundle, "issues", []) or []:
+        iid = str(getattr(rec, "issue_id", "") or "").strip()
+        if iid and iid in seen:
+            setattr(rec, "issue_id", "")
+            warnings.append(f"issues.issue_id: повтор «{iid}» - id присвоит бэк")
+        seen.add(iid)
+
+
 def validate_bundle(bundle: PaperBundle, warnings: list[str], severe: list[str] | None = None) -> None:
     """Проверяет и чинит `bundle` на месте. Тяжёлые нарушения (вместе с `severe` от разбора) -> ExtractError."""
     problems: list[str] = list(severe or [])
+    _repair_unreferenced_ids(bundle, warnings)
     ids: dict[str, set[str]] = {}
     for table, id_col in ID_COLUMN.items():
         if table == "publications":
