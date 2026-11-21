@@ -90,8 +90,54 @@ def collect_tables(uow, corpora: list, partial: bool = False) -> Collected:
             for t, rows in export_paper_tables(uow, corpus.id, spec.name, paper.id).items():
                 col.tables[t].extend(rows)
     canon_results(col.tables.get("results") or [])
+    consistent_duplicates(col.tables.get("results") or [])
     safe_publication_ids(col)
     return col
+
+
+# поля, по которым повтор обязан совпадать с основной строкой (check_submission RAG: «duplicate_of differs in …»);
+# в solar части полей нет - сравниваются только присутствующие
+DUP_FIELDS = ("experiment_id", "config_id", "dataset_id", "task_id", "device_id", "measurement_id", "material_id",
+              "metric_name", "metric_variant", "metric_k", "metric_unit", "metric_value", "aggregation", "sample_size",
+              "n_devices", "result_origin", "cited_publication_id")
+
+
+def _same_value(a: str, b: str) -> bool:
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except ValueError:
+        return a == b
+
+
+def consistent_duplicates(rows: list[dict]) -> list[dict]:
+    """Повтор = то же значение в другом месте статьи: пустые у повтора поля берутся из основной строки; если поле
+    заполнено у обеих и различается - это разные результаты, связь duplicate_of снимается (причина - в note)."""
+    by = {(r.get("publication_id"), r.get("result_id")): r for r in rows}
+    for r in rows:
+        main = by.get((r.get("publication_id"), r.get("duplicate_of"))) if r.get("duplicate_of") else None
+        if main is None or main is r:
+            continue
+        conflict = []
+        for f in DUP_FIELDS:
+            if f not in r and f not in main:
+                continue
+            a, b = str(r.get(f) or "").strip(), str(main.get(f) or "").strip()
+            if a == b or (a and b and _same_value(a, b)):
+                continue
+            if not a:
+                r[f] = main.get(f) or ""
+            elif not b:
+                main[f] = a if f not in ("metric_value", "metric_unit") else main.get(f, "")
+                if f in ("metric_value", "metric_unit"):
+                    conflict.append(f)
+            else:
+                conflict.append(f)
+        if conflict:
+            note = str(r.get("note") or "").strip()
+            mark = f"не повтор {r['duplicate_of']}: различается {', '.join(conflict)}"
+            r["note"] = f"{note}; {mark}" if note else mark
+            r["duplicate_of"] = ""
+    return rows
 
 
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")  # как в check_submission.py

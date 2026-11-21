@@ -42,3 +42,16 @@ def test_unsafe_publication_ids_remapped_in_all_tables():
     safe_publication_ids(col)
     assert [p["publication_id"] for p in col.tables["publications"]] == ["D019", "D019_2"]
     assert col.tables["results"][0]["publication_id"] == "D019_2" and col.pdf_keys[1] == ("D019_2", "k2")
+
+
+def test_duplicates_take_missing_fields_from_main_or_lose_link_on_conflict():
+    from faktura.api.corpus.exports import consistent_duplicates
+
+    main = {"publication_id": "P1", "result_id": "R1", "metric_value": "71.2", "sample_size": "500", "config_id": "C1"}
+    dup = {"publication_id": "P1", "result_id": "R2", "duplicate_of": "R1", "metric_value": "71.20", "sample_size": "",
+           "config_id": "C1", "note": ""}
+    other = {"publication_id": "P1", "result_id": "R3", "duplicate_of": "R1", "metric_value": "71.2", "sample_size": "100",
+             "config_id": "C1", "note": "abstract"}
+    consistent_duplicates([main, dup, other])
+    assert dup["duplicate_of"] == "R1" and dup["sample_size"] == "500"
+    assert other["duplicate_of"] == "" and "не повтор R1: различается sample_size" in other["note"]
