@@ -28,7 +28,8 @@ def test_run_done_and_counts_match_gold(client, auth, rag_run, gold):
         r = client.get(f"{API}/papers/rag/{pid}", params={"run": rid}, headers=auth)
         assert r.status_code == 200, r.text
         body = r.json()
-        assert set(body) == {"publication", "counts", "metrics", "issues", "paper_status", "meta"}
+        assert set(body) == {"publication", "counts", "metrics", "issues", "paper_status", "meta",
+                             "reviews", "issue_states"}  # v2
         assert body["paper_status"] == "has_data"
         assert body["counts"] == {t: len(gold[t].get(pid, [])) for t in SPEC.tables}
         assert sum(m["n"] for m in body["metrics"]) == len(gold["results"][pid])
@@ -62,7 +63,7 @@ def test_results_filters_and_sort(client, auth, rag_run, gold):
     rid = rag_run["id"]
     total = sum(len(gold["results"][p]) for p in SMALL)
     first = client.get(f"{API}/results", params={"run": rid, "limit": 1000}, headers=auth).json()
-    assert first["total"] == total and set(first["data"][0]) == {"row", "paper_title", "meta"}
+    assert first["total"] == total and set(first["data"][0]) == {"row", "paper_title", "meta", "review"}
     assert set(first["data"][0]["row"]) == set(SPEC.tables["results"])
     assert first["data"][0]["paper_title"]
     row = next(x["row"] for x in first["data"] if x["row"]["config_id"] and x["row"]["dataset_id"])
@@ -98,7 +99,7 @@ def test_issues_summary_list(client, auth, rag_run, gold):
     rid = rag_run["id"]
     n_iss = sum(len(gold["issues"].get(p, [])) for p in SMALL)
     iss = client.get(f"{API}/issues", params={"run": rid}, headers=auth).json()
-    assert iss["total"] == n_iss and set(iss["data"][0]) == {"row", "paper_title"}
+    assert iss["total"] == n_iss and set(iss["data"][0]) == {"row", "paper_title", "state", "auto"}
     s = client.get(f"{API}/runs/{rid}/summary", headers=auth).json()
     total = sum(len(gold["results"][p]) for p in SMALL)
     assert s["results"] == total and s["scored_results"] == total and s["issues_total"] == n_iss
