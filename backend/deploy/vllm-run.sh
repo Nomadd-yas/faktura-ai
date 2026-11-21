@@ -5,7 +5,7 @@
 #   VLLM_QUANT=fp8_per_tensor bash backend/deploy/vllm-run.sh         # Q8, как на старом сервере hima-gpu
 #
 # Переменные: VLLM_NAME (glm-ocr), VLLM_IMAGE (по digest - проверенная версия), VLLM_QUANT ("" = FP16),
-# VLLM_MAX_LEN (16384), VLLM_SPEC_TOKENS (1, MTP; 0 = выключить), VLLM_GPU_UTIL (0.9),
+# VLLM_MAX_LEN (16384), VLLM_SPEC_TOKENS (1, MTP; 0 = выключить), VLLM_GPU_UTIL (0.8: на vGPU L40S-12Q свободно ~10 из 11.8 ГБ, 0.9 не стартует),
 # VLLM_BIND (172.17.0.1 - адрес docker0: ML-контейнер ходит через host.docker.internal:8123, из интернета порт
 # закрыт; 0.0.0.0 - открыть всем, только за файрволом или прокси).
 # ENTRYPOINT образа уже "vllm serve": первым аргументом идёт модель.
@@ -16,7 +16,7 @@ IMAGE="${VLLM_IMAGE:-vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b
 QUANT="${VLLM_QUANT-}"
 MAX_LEN="${VLLM_MAX_LEN:-16384}"
 SPEC="${VLLM_SPEC_TOKENS:-1}"
-UTIL="${VLLM_GPU_UTIL:-0.9}"
+UTIL="${VLLM_GPU_UTIL:-0.8}"
 BIND="${VLLM_BIND:-172.17.0.1}"
 args=(zai-org/GLM-OCR --host 0.0.0.0 --port 8000 --max-model-len "$MAX_LEN" --gpu-memory-utilization "$UTIL")
 if [[ "$SPEC" != "0" ]]; then
