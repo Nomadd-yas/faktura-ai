@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,6 +79,41 @@ def _fmt(x: float) -> str:
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip().lower()
+
+
+_WRAP = "\"'«»“”„‘’`"
+_TYPO = str.maketrans({"“": '"', "”": '"', "„": '"', "«": '"', "»": '"', "‘": "'", "’": "'", "–": "-", "—": "-",
+                       "\u00ad": None})
+
+
+def clean_quote(q: str | None) -> str | None:
+    """Цитата из маркера без обрамляющих кавычек и многоточий: модель пишет `|"текст"` или `|«текст…»`."""
+    if q is None:
+        return None
+    t = q.strip()
+    while t and (t[0] in _WRAP or t[-1] in _WRAP or t.endswith("…") or t.endswith("...")):
+        t = t.strip(_WRAP).removesuffix("…").removesuffix("...").strip()
+    return t
+
+
+def _canon_text(s: str) -> str:
+    t = unicodedata.normalize("NFKC", s or "").translate(_TYPO)
+    t = re.sub(r"(\w)-\s+(\w)", r"\1\2", t)  # перенос на строке: «distri- bution»
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+def quote_in(quote: str, text: str) -> bool:
+    """Цитата есть в тексте: без учёта пробелов, регистра, типографики и переносов; иначе - по буквам и цифрам
+    (разметка OCR, пунктуация). Конечная точка цитаты не обязательна."""
+    q = _canon_text(clean_quote(quote) or "").rstrip(".,;:!?")
+    if not q:
+        return False
+    t = _canon_text(text)
+    if q in t:
+        return True
+    alnum = re.compile(r"[\W_]+")
+    qa = alnum.sub("", q)
+    return len(qa) >= 8 and qa in alnum.sub("", t)
 
 
 def _nums_in(text: str) -> list[float]:
@@ -202,14 +238,14 @@ class Verifier:
             text = tb.page_text(pid, int(n)) if pid in tb.ctx.by_pid and n.strip().isdigit() else None
             if text is None:
                 return f"unknown page {ref}", None
-            if _norm(quote) not in _norm(text):
+            if not quote_in(quote, text):
                 return f"quote is not on page {ref}", None
             return None, {"pid": pid, "page": int(n), "text": text}
         if kind == "chunk":
             c = tb.chunks.get(ref)
             if not c:
                 return f"unknown chunk {ref}", None
-            if quote and _norm(quote) not in _norm(c["text"]):
+            if quote and not quote_in(quote, c["text"]):
                 return f"quote is not in chunk {ref}", None
             return None, c
         if kind == "issue":
@@ -256,6 +292,7 @@ class Verifier:
         """None - пункт верен; иначе причина отбрасывания."""
         marks = find_markers(item)
         for *_, kind, ref, quote in marks:
+            quote = clean_quote(quote)
             err, _ = self._ref(kind, ref, quote)
             if err:
                 return err
@@ -308,7 +345,7 @@ class Verifier:
         cites: list[dict] = []
 
         def repl(m: re.Match) -> str:
-            kind, ref, quote = m.group(1), m.group(2).strip(), m.group(3)
+            kind, ref, quote = m.group(1), m.group(2).strip(), clean_quote(m.group(3))
             err, obj = self._ref(kind, ref, quote)
             if err:
                 return ""

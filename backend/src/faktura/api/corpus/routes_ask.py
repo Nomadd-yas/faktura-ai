@@ -74,12 +74,13 @@ def ask_run(run_id: str, body: AskBody, request: Request, user: CurrentUser = De
             run = load_ctx(uow, get_corpus(uow, user, run_id), only)
         # БД освобождена: вызовы ML (до ~30 с каждый) идут без открытой транзакции
         res = answer_question(run, question, _client(request))
+    tool_log = res.pop("_tool_log", None) or []
     with services.db.uow() as uow:  # в историю чата: вопрос и ответ (как его показал фронт)
         q = store.add(uow, corpus_id, user.id, "user", "text", text=question, thread_id=tid, source="ask")
         a = store.add(uow, corpus_id, user.id, "assistant", "answer", status="running", reply_to=q["id"], thread_id=tid,
                       source="ask")
         meta = res.get("meta") or {}
-        store.finish(uow, a["id"], status="done", answer=res, clarify=bool(res.get("clarify")), meta=meta, tool_log=[],
+        store.finish(uow, a["id"], status="done", answer=res, clarify=bool(res.get("clarify")), meta=meta, tool_log=tool_log,
                      cost=float(meta.get("cost") or 0.0), cost_currency=meta.get("cost_currency") or store.CURRENCY)
     return JSONResponse({**res, "thread_id": tid, "message_id": a["id"], "question_id": q["id"]},
                         media_type=JSON_MEDIA_TYPE)

@@ -314,6 +314,7 @@ def ask_via_agent(actx, corpus_id: str, question: str, pid: str | None, only: se
     for k in ("clarify", "fallback", "partial", "unverified"):
         if a.get(k):
             out[k] = a[k]
+    out["_tool_log"] = r["tool_log"]  # для истории (run_messages.tool_log); /ask наружу его не отдаёт
     return out
 
 
