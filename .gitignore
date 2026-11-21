@@ -33,3 +33,6 @@ backend/deploy/case/
 
 # локальные секреты (токены внешних сервисов): не коммитить
 *.secret
+
+# reference archive of a third-party project (not published)
+papertail_last_ver.tar.gz
