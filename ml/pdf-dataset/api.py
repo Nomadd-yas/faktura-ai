@@ -342,13 +342,22 @@ def extract_pdf(request: Request,
 
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(file.filename).stem).strip("_") or "paper"
     pub_id = (publication_id or safe).strip()
-    out_dir = OUT_DIR / safe
     uploads = OUT_DIR / "uploads"
     uploads.mkdir(parents=True, exist_ok=True)
-    pdf_path = uploads / f"{safe}.pdf"
-
-    with pdf_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # [faktura-patch] рабочее имя = имя + область + хеш содержимого: P001 солнечного и P001 RAG-кейса - разные статьи;
+    # раньше файл писался в uploads/<имя>.pdf до блокировки конвейера, и параллельный запрос мог его подменить
+    import hashlib
+    import uuid
+    tmp = uploads / f".{safe}.{uuid.uuid4().hex}.part"
+    h = hashlib.sha256()
+    with tmp.open("wb") as f:
+        while chunk := file.file.read(1 << 20):
+            h.update(chunk)
+            f.write(chunk)
+    key = f"{safe}-{domain}-{h.hexdigest()[:10]}"
+    pdf_path = uploads / f"{key}.pdf"
+    os.replace(tmp, pdf_path)
+    out_dir = OUT_DIR / key
 
     try:
         with _PIPELINE_LOCK:
