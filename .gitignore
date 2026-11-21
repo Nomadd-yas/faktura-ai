@@ -30,3 +30,6 @@ Thumbs.db
 
 # deploy
 backend/deploy/case/
+
+# локальные секреты (токены внешних сервисов): не коммитить
+*.secret
