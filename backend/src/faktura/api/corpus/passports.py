@@ -37,7 +37,7 @@ def run_passport(services: Services, d: RunData | Sequence[RunData]) -> dict[str
         from ...passport.run_passport import _rag_dictionary_version  # noqa: PLC0415
 
         with services.db.uow() as uow:
-            own = [s for s in uow.synonyms.list(d.corpus.workspace_id) if s.collection == domain]
+            own = [s for s in uow.synonyms.list(datas[0].corpus.workspace_id) if s.collection == domain]
         base = (str(getattr(norm, "dictionary_version", "") or "") if domain == "solar"
                 else _rag_dictionary_version() or "")
         dictionary = (base + version_suffix(own)) or None
