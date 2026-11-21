@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     extract_retry_delays: str = "20,60"  # паузы между попытками: 2 паузы = 3 попытки
     extract_protocol: Literal["contract", "pdf_dataset"] = "contract"  # pdf_dataset - прототип ML-1 (POST /extract)
     extract_retry_on_timeout: bool = True
+    # ndjson - просить у ML-1 ответ потоком NDJSON (откат на JSON при 406 / ответе без NDJSON); json - всегда обычный JSON
+    extract_stream: Literal["ndjson", "json"] = "ndjson"
     ml_pause_poll_s: float = 30
     ml_pause_max_s: float = 300  # максимум паузы прогона при недоступной модели
     cache_dir: Path | None = None

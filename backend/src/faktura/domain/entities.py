@@ -140,6 +140,8 @@ class CorpusFile(BaseModel):
     created_at: datetime | None = None
     started_at: datetime | None = None  # начало разбора файла
     stage_started_at: datetime | None = None  # начало текущего этапа
+    ocr_confidence: float | None = None  # 0..1: надёжность текста файла (доля страниц с хорошим текстом / оценка OCR)
+    suggested_domain: str | None = None  # solar | rag: для статьи вне области - к какой области она, вероятно, относится
 
 
 class RunCounts(BaseModel):

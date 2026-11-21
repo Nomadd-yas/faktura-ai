@@ -125,6 +125,8 @@ corpus_files = sa.Table(
     sa.Column("created_at", UTCDateTime, nullable=False),
     sa.Column("started_at", UTCDateTime, nullable=True),  # начало разбора файла (первый запуск этапа)
     sa.Column("stage_started_at", UTCDateTime, nullable=True),  # начало текущего этапа
+    sa.Column("ocr_confidence", sa.Float, nullable=True),  # 0..1, надёжность текста файла (ML meta.ocr_confidence)
+    sa.Column("suggested_domain", sa.String(16), nullable=True),  # solar | rag: «статья, похоже, из другой области»
     sa.Index("ix_files_corpus", "corpus_id", "seq"),
     sa.Index("ix_files_sha", "sha256"),
 )
@@ -132,7 +134,8 @@ corpus_files = sa.Table(
 # колонки, добавленные позже первого развёртывания: Database.create_all добавляет их в существующие БД
 LATE_COLUMNS: dict[sa.Table, tuple[sa.Column, ...]] = {
     corpus_files: (corpus_files.c.stage, corpus_files.c.progress, corpus_files.c.is_scan,
-                   corpus_files.c.started_at, corpus_files.c.stage_started_at),
+                   corpus_files.c.started_at, corpus_files.c.stage_started_at,
+                   corpus_files.c.ocr_confidence, corpus_files.c.suggested_domain),
     corpora: (corpora.c.pinned,),
 }
 

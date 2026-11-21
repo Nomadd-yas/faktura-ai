@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from ..domain.errors import ExtractError, extract_error
+from .generic import _meta_fields
 
 log = logging.getLogger(__name__)
 
@@ -54,4 +55,5 @@ def pdf_dataset_to_contract(body: dict, publication_id: str) -> dict:
         msg = f"прототип ML-1: извлечение частичное ({body.get('extract_error') or 'ошибка'}); не получены таблицы: {failed}"
         log.warning("%s: %s", publication_id, msg)
         out["warnings"] = [f"Модель разобрала статью частично; не получены таблицы: {failed}"]  # parse_extract_response переносит их в ExtractOutcome.warnings
+    out.update(_meta_fields(meta))
     return out

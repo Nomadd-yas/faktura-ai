@@ -78,7 +78,8 @@ def make_extractor(settings: Settings, *, kind: str | None = None, url: str | No
         ext: ExtractAdapter = HttpExtractor(base, timeout_s=settings.extract_timeout_s, retry_delays=delays,
                                             concurrency=settings.extract_concurrency, sleep=_sleep,
                                             protocol=settings.extract_protocol,
-                                            retry_on_timeout=settings.extract_retry_on_timeout)
+                                            retry_on_timeout=settings.extract_retry_on_timeout,
+                                            stream=settings.extract_stream)
         if use_cache and settings.cache_dir is not None:
             return _versioned_cache_class()(ext, MlCache(Path(settings.cache_dir)))
         return ext

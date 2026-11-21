@@ -16,6 +16,7 @@ from typing import Any
 from ..domain.errors import extract_error
 from ..domain.extraction import GenericOutcome
 from ..domain.registry import DomainSpec, get_domain
+from .response import file_meta
 
 log = logging.getLogger(__name__)
 
@@ -45,11 +46,14 @@ def parse_generic_response(raw: Any, publication_id: str, spec: DomainSpec) -> G
     tables["publications"] = [{**tables["publications"][0], "publication_id": publication_id}]
     mv = raw.get("model_version")
     warns = raw.get("warnings")
+    ocr_conf, suggested = file_meta(raw)
+    extra = {k: v for k, v in (("ocr_confidence", ocr_conf), ("suggested_domain", suggested)) if v is not None}
     return GenericOutcome(
         tables=tables, model_version=str(mv) if isinstance(mv, (str, int, float)) and str(mv) else "unknown",
         warnings=[str(w) for w in warns] if isinstance(warns, list) else [],
+        ocr_confidence=ocr_conf, suggested_domain=suggested,
         raw={"model_version": raw.get("model_version"), "domain": spec.name, "tables": tables,
-             "warnings": warns if isinstance(warns, list) else []})
+             "warnings": warns if isinstance(warns, list) else [], **extra})
 
 
 def pdf_dataset_to_generic(body: Any, publication_id: str, domain: str) -> dict:
@@ -75,7 +79,14 @@ def pdf_dataset_to_generic(body: Any, publication_id: str, domain: str) -> dict:
         log.warning("%s: прототип ML-1: извлечение частичное (%s); не получены таблицы: %s", publication_id,
                     body.get("extract_error") or "ошибка", failed)
         out["warnings"] = [f"Модель разобрала статью частично; не получены таблицы: {failed}"]
+    out.update(_meta_fields(meta))
     return out
+
+
+def _meta_fields(meta: Any) -> dict[str, Any]:
+    """ocr_confidence / suggested_domain из meta ответа прототипа pdf-dataset - на верхний уровень сырого ответа."""
+    conf, sug = file_meta(meta)
+    return {k: v for k, v in (("ocr_confidence", conf), ("suggested_domain", sug)) if v is not None}
 
 
 class GenericGoldExtractor:

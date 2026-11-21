@@ -45,6 +45,8 @@ class ExtractOutcome(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
     from_cache: bool = False
+    ocr_confidence: float | None = None  # 0..1: надёжность текста файла (ML meta.ocr_confidence)
+    suggested_domain: str | None = None  # solar | rag: к какой области, вероятно, относится статья вне области
 
 
 class MlHealth(BaseModel):
@@ -60,3 +62,5 @@ class GenericOutcome(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
     from_cache: bool = False
+    ocr_confidence: float | None = None
+    suggested_domain: str | None = None

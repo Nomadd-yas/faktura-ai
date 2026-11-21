@@ -112,7 +112,10 @@ class RunData:
             "has_data": results > 0, "results": results, "issues": issues, "open_issue_count": open_issues,
             "reason": reason or None,
             "size": f.size_bytes, "sha256": f.sha256,
-            "suggested_domain": None,  # модель пока не говорит, из какой области статья «не по теме»
+            # §7а.3: из какой области статья «не по теме» (ML meta.suggested_domain); только для status=out
+            "suggested_domain": f.suggested_domain if status == "out" else None,
+            # §10: надёжность текста файла 0..1 (null - ML не сообщил); для status=ocr и вообще, когда есть
+            "ocr_confidence": f.ocr_confidence,
         }
 
     def counts(self, views: list[dict]) -> dict[str, int]:

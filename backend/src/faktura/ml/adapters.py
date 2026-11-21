@@ -28,6 +28,7 @@ from ..domain.ports import ExtractAdapter, FileStore
 from ..domain.registry import get_domain
 from ..domain.tables import INTEGER_FIELDS, TABLES
 from .generic import GenericGoldExtractor, parse_generic_response, pdf_dataset_to_generic
+from .ndjson import NDJSON_TYPE, StreamError, StreamInvalid, StreamTruncated, assemble_body, read_stream
 from .pdf_dataset import pdf_dataset_to_contract
 from .response import BACKEND_RESULT_FIELDS, ROW_TABLES, parse_extract_response
 
@@ -47,6 +48,27 @@ SUPPORTED_DOMAINS = ("solar", "rag")
 # ---------------------------------------------------------------------------------------------
 # мок на dev_gold
 # ---------------------------------------------------------------------------------------------
+
+def text_layer_share(pdf: bytes) -> float | None:
+    """Доля страниц PDF с текстовым слоем (>= 20 непробельных символов), 0..1; None - PDF не читается.
+    Детерминированный аналог ML-оценки `ocr_confidence` для мока."""
+    try:
+        import fitz
+
+        doc = fitz.open(stream=pdf, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        n = doc.page_count
+        if n <= 0:
+            return None
+        good = sum(1 for i in range(n) if len("".join(doc.load_page(i).get_text().split())) >= 20)
+        return round(good / n, 3)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        doc.close()
+
 
 def _json_value(table: str, col: str, text: str | None) -> Any:
     """Ячейка эталона -> значение JSON §7.0.1: числа - числами (если float передаёт их точно), списки - массивами."""
@@ -135,8 +157,33 @@ class MockGoldExtractor:
                 self._generic[domain] = GenericGoldExtractor(self.rag_gold_dir, domain)
             return self._generic[domain]
 
-    def build_raw(self, publication_id: str, domain: str = "solar") -> dict[str, Any]:
-        """Ответ §7.0.1 для статьи; его же отдаёт mock_server."""
+    def _pids(self, domain: str) -> set[str]:
+        try:
+            return set(self.publication_ids() if domain == "solar" else self.generic(domain).publication_ids())
+        except (ExtractError, OSError):
+            return set()
+
+    def build_raw(self, publication_id: str, domain: str = "solar", pdf_bytes: bytes | None = None) -> dict[str, Any]:
+        """Ответ §7.0.1 для статьи; его же отдаёт mock_server. Поверх - служебные поля, как у реального ML:
+        `ocr_confidence` (доля страниц PDF с текстовым слоем, если PDF передан) и для статьи другой области
+        (есть в эталоне другой области, нет в эталоне запрошенной) - in_scope=false и `suggested_domain`."""
+        raw = self._build_raw(publication_id, domain)
+        if pdf_bytes is not None:
+            conf = text_layer_share(pdf_bytes)
+            if conf is not None:
+                raw["ocr_confidence"] = conf
+        other = "rag" if domain == "solar" else "solar"
+        if publication_id not in self._pids(domain) and publication_id in self._pids(other):
+            pub = {"publication_id": publication_id, "in_scope": False if domain == "solar" else "false",
+                   "exclusion_reason": f"Статья относится к области {other}, а не {domain} (мок по эталону)"}
+            if domain == "solar":
+                raw["publication"] = pub
+            else:
+                raw["tables"]["publications"] = [pub]
+            raw["suggested_domain"] = other
+        return raw
+
+    def _build_raw(self, publication_id: str, domain: str) -> dict[str, Any]:
         if domain != "solar":
             return self.generic(domain).build_raw(publication_id)
         self._load()
@@ -163,9 +210,15 @@ class MockGoldExtractor:
         return raw
 
     def extract(self, req: ExtractRequest) -> ExtractOutcome | GenericOutcome:
-        if (req.domain or "solar") != "solar":
-            return self.generic(req.domain).extract(req)
-        return parse_extract_response(self.build_raw(req.publication_id), req.publication_id)
+        domain = req.domain or "solar"
+        try:
+            pdf_bytes = Path(req.pdf_path).read_bytes()
+        except OSError:
+            pdf_bytes = None
+        raw = self.build_raw(req.publication_id, domain, pdf_bytes)
+        if domain != "solar":
+            return parse_generic_response(raw, req.publication_id, get_domain(domain))
+        return parse_extract_response(raw, req.publication_id)
 
     def health(self) -> MlHealth:
         try:
@@ -222,10 +275,15 @@ class HttpExtractor:
 
     def __init__(self, base_url: str, timeout_s: float = 330, retry_delays: tuple[float, ...] = (20, 60),
                  concurrency: int = 2, sleep: Callable[[float], None] = time.sleep, transport: Any = None,
-                 health_timeout_s: float = 10.0, protocol: str = "contract", retry_on_timeout: bool = True) -> None:
+                 health_timeout_s: float = 10.0, protocol: str = "contract", retry_on_timeout: bool = True,
+                 stream: str = "ndjson") -> None:
         if protocol not in ("contract", "pdf_dataset"):
             raise AppError("validation_error", f"Неизвестный протокол ML-1: {protocol} (contract | pdf_dataset)")
+        if stream not in ("ndjson", "json"):
+            raise AppError("validation_error", f"Неизвестный режим ответа ML-1: {stream} (ndjson | json)")
         self.protocol = protocol
+        self.stream = stream  # ndjson: просим поток (NDJSON), откат на JSON при 406/не поддерживается; json: как раньше
+        self._ndjson_ok = True
         self.retry_on_timeout = bool(retry_on_timeout)
         if not base_url or not str(base_url).strip():
             raise AppError("validation_error", "Не задан адрес ML-1 (FAKTURA_EXTRACT_URL / --extract-url)")
@@ -277,17 +335,43 @@ class HttpExtractor:
             raise extract_error("ml_error", f"Не прочитан файл {pdf_path.name}: {e}") from e
         request_id = req.request_id or f"{req.publication_id}-{uuid.uuid4().hex[:12]}"
         form = self._form(req, request_id)
+        use_stream = self.stream == "ndjson" and self._ndjson_ok
+        headers: dict[str, str] | None = None
+        if use_stream:
+            form["stream"] = "ndjson"
+            headers = {"Accept": f"{NDJSON_TYPE}, application/json;q=0.5"}
         filename = f"{req.publication_id}.pdf"
         client = self._get_client()
         attempts = len(self.retry_delays) + 1
         last: ExtractError | None = None
         for attempt in range(attempts):
             retry_after: float | None = None
+            streamed: dict | None = None
             try:
                 with self._sem:
-                    resp = client.post(self._url("/extract" if self.protocol == "pdf_dataset" else "/ml/extract"),
-                                       data=form,
-                                       files={"file": (filename, content, "application/pdf")})
+                    with client.stream("POST", self._url("/extract" if self.protocol == "pdf_dataset" else "/ml/extract"),
+                                       data=form, headers=headers,
+                                       files={"file": (filename, content, "application/pdf")}) as resp:
+                        if resp.status_code == 200 and NDJSON_TYPE in resp.headers.get("content-type", "").lower():
+                            hd, tabs, _ = read_stream(resp.iter_lines())
+                            streamed = assemble_body(hd, tabs, self.protocol)
+                        else:
+                            resp.read()
+            except StreamTruncated as e:
+                last = extract_error("ml_unavailable", f"Поток ответа ML-1 оборван: {e}", retryable=True)
+                log.warning("ML-1 %s: поток оборван (попытка %d/%d)", req.publication_id, attempt + 1, attempts)
+            except StreamInvalid as e:
+                raise extract_error("ml_schema_mismatch", f"Ответ ML-1 (NDJSON) повреждён: {e}") from e
+            except StreamError as e:  # ошибка внутри потока: те же правила, что для HTTP-ошибок
+                details = {"status": 200, "stream": True, "body": {"code": e.code, "message": e.message,
+                                                                    "retryable": e.retryable}, "request_id": request_id}
+                if e.code in PDF_ERROR_CODES:
+                    raise extract_error(e.code, f"ML-1: {e.message}", retryable=False, details=details) from e
+                if e.retryable:
+                    last = extract_error("ml_unavailable", f"ML-1 недоступен: {e.message}", retryable=True,
+                                         details=details)
+                else:
+                    raise extract_error("ml_error", f"ML-1: {e.message}", retryable=False, details=details) from e
             except httpx.TimeoutException as e:
                 last = extract_error("ml_timeout", f"ML-1 не ответил за {self.timeout_s:g} с", retryable=True)
                 log.warning("ML-1 %s: таймаут (попытка %d/%d)", req.publication_id, attempt + 1, attempts)
@@ -299,11 +383,19 @@ class HttpExtractor:
                 log.warning("ML-1 %s: %s (попытка %d/%d)", req.publication_id, type(e).__name__, attempt + 1, attempts)
                 last.__cause__ = e
             else:
+                if resp.status_code == 406 and use_stream:
+                    # ML-1 не умеет NDJSON: до конца жизни адаптера просим обычный JSON
+                    log.info("ML-1 ответил 406 на Accept: %s - перехожу на JSON", NDJSON_TYPE)
+                    self._ndjson_ok = False
+                    return self.extract(req)
                 if resp.status_code == 200:
-                    try:
-                        data = resp.json()
-                    except Exception as e:  # noqa: BLE001
-                        raise extract_error("ml_schema_mismatch", "Ответ ML-1 не JSON") from e
+                    if streamed is not None:
+                        data = streamed
+                    else:
+                        try:
+                            data = resp.json()
+                        except Exception as e:  # noqa: BLE001
+                            raise extract_error("ml_schema_mismatch", "Ответ ML-1 не JSON") from e
                     domain = req.domain or "solar"
                     if domain != "solar":
                         if self.protocol == "pdf_dataset":
@@ -620,7 +712,7 @@ def build_extractor(settings: Settings, *, kind: str | None = None, url: str | N
             base, timeout_s=min(float(settings.extract_timeout_s), float(settings.file_timeout_s)),  # таймаут файла главнее
             retry_delays=tuple(retry_delays) if retry_delays is not None else settings.retry_delays,
             concurrency=settings.extract_concurrency, protocol=settings.extract_protocol,
-            retry_on_timeout=settings.extract_retry_on_timeout)
+            retry_on_timeout=settings.extract_retry_on_timeout, stream=settings.extract_stream)
     elif k == "raw":
         if raw_dir is None:
             raise AppError("validation_error", "Для import-raw нужен каталог ответов ML: --raw-dir / --in")
