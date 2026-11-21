@@ -5,6 +5,9 @@
   [[agg:a2]]              агрегат, выданный `group` в этом ответе;
   [[chunk:ID|цитата]]     фрагмент текста статьи (`search_text`/`read_page`); цитата необязательна, но если есть -
                           должна быть подстрокой текста фрагмента;
+  [[page:D001/3|цитата]]  страница статьи, прочитанная `read_page`: цитата (обязательна) - подстрока текста страницы
+                          (без учёта пробелов и регистра); числа из текста страницы допускаются, как у chunk;
+  [[calc:c1]]             результат `calc` в этом ответе: число в тексте должно совпасть со значением с точностью округления;
   [[issue:D005/I03]]      замечание;
   [[row:devices/D001/DEV1]]  значение из другой таблицы (число должно стоять в ячейке строки).
 Ответ режется на пункты (строки и предложения). Пункт с нарушением отбрасывается (`drop`) или помечается (`mark`).
@@ -19,7 +22,7 @@ from ..ask import solar
 from ..ask.builder import to_float
 from .tools import FACT_NUM_FIELDS, Toolbox
 
-MARKER = re.compile(r"\[\[\s*(fact|agg|chunk|issue|row)\s*:\s*([^\]|]+?)\s*(?:\|([^\]]*))?\]\]")
+MARKER = re.compile(r"\[\[\s*(fact|agg|chunk|page|calc|issue|row)\s*:\s*([^\]|]+?)\s*(?:\|([^\]]*))?\]\]")
 NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
 SENT = re.compile(r"(?<=[.!?;])\s+(?=[A-ZА-ЯЁ«\"(—-])")
 FOOT = re.compile(r"\[\d+\]")
@@ -41,6 +44,7 @@ class Verified:
     used_facts: list[str] = field(default_factory=list)
     used_issues: list[str] = field(default_factory=list)
     used_aggs: list[str] = field(default_factory=list)
+    used_calc_facts: list[str] = field(default_factory=list)
     unverified: list[str] = field(default_factory=list)
 
     @property
@@ -66,6 +70,10 @@ def _value_match(w: float, d: int, pct: bool, v: float, unit: str) -> bool:
     if _close(w, d, v):
         return True
     return unit in PCT_UNITS and pct and 0 <= abs(v) <= 1 and _close(w, d, v * 100)  # 0,74 доли = 74 %
+
+
+def _fmt(x: float) -> str:
+    return f"{x:.6g}"
 
 
 def _norm(s: str) -> str:
@@ -184,6 +192,19 @@ class Verifier:
         if kind == "agg":
             a = tb.aggs.get(ref)
             return (None, a) if a else (f"unknown agg {ref}", None)
+        if kind == "calc":
+            c = tb.calcs.get(ref)
+            return (None, c) if c else (f"unknown calc {ref}", None)
+        if kind == "page":
+            pid, _, n = ref.partition("/")
+            if not (quote or "").strip():
+                return f"page marker {ref} needs a verbatim quote", None
+            text = tb.page_text(pid, int(n)) if pid in tb.ctx.by_pid and n.strip().isdigit() else None
+            if text is None:
+                return f"unknown page {ref}", None
+            if _norm(quote) not in _norm(text):
+                return f"quote is not on page {ref}", None
+            return None, {"pid": pid, "page": int(n), "text": text}
         if kind == "chunk":
             c = tb.chunks.get(ref)
             if not c:
@@ -224,7 +245,9 @@ class Verifier:
             cands += [(float(obj["n"]), "count"), (float(len(obj["ids"])), "count"),
                       (float(len({i.split("/", 1)[0] for i in obj["ids"]})), "count")]
             return any(_value_match(w, d, pct, x, u) for x, u in cands)
-        if kind == "chunk":
+        if kind == "calc":
+            return _value_match(w, d, pct, obj["value"], "")
+        if kind in ("chunk", "page"):
             return any(abs(x - w) < 1e-9 for x in _nums_in((quote or "") + " " + obj["text"]))
         cells = " ".join(str(x) for x in obj[1].values())
         return any(abs(x - w) < 0.5 * 10 ** (-d) + 1e-9 for x in _nums_in(cells))
@@ -255,9 +278,8 @@ class Verifier:
             src.append(line)
             kept = []
             for sent in split_items(line):
-                substantive = bool(MARKER.search(sent) or number_spans(sent, self.qnums))
                 err = self.check_item(sent)
-                v.items_total += substantive
+                v.items_total += not sent.rstrip().endswith(":")  # считаются все предложения: пересказ без чисел не должен давать ложный откат
                 if err is None:
                     kept.append(sent)
                     continue
@@ -290,7 +312,7 @@ class Verifier:
             err, obj = self._ref(kind, ref, quote)
             if err:
                 return ""
-            key = (kind, ref, (quote or "").strip() if kind == "chunk" else "")
+            key = (kind, ref, (quote or "").strip() if kind in ("chunk", "page") else "")
             if key not in keys:
                 keys[key] = len(cites) + 1
                 cites.append({"n": keys[key], **self._cite(kind, ref, obj, quote, v)})
@@ -320,6 +342,17 @@ class Verifier:
             v.used_aggs.append(ref)
             pids = {i.split("/", 1)[0] for i in obj["ids"]}
             return {**base, "agg_id": ref, "text": agg_text(obj, len(pids)), "result_ids": obj["ids"][:50]}
+        if kind == "page":
+            return {**base, "pid": obj["pid"], "page": obj["page"], "fragment": (quote or "").strip()[:300]}
+        if kind == "calc":
+            v.used_calc_facts.extend(x["fact_id"] for x in obj["inputs"].values() if x.get("fact_id"))
+            ins = ", ".join(f"{k} = {_fmt(x['value'])}{(' ' + x['unit']) if x.get('unit') else ''}"
+                            for k, x in obj["inputs"].items())
+            rids = [x["fact_id"] for x in obj["inputs"].values() if x.get("fact_id")]
+            pid = rids[0].split("/", 1)[0] if rids else None
+            return {**base, "pid": pid, "calc_id": ref, "expr": obj["expr"], "value": round(obj["value"], 6),
+                    "inputs": obj["inputs"], "fact_ids": rids,
+                    "fragment": f"{obj['expr']} = {_fmt(obj['value'])}; {ins}"[:300]}
         if kind == "chunk":
             return {**base, "pid": obj["pid"], "chunk_id": ref, "page": _page(obj["page"]),
                     "fragment": (quote or obj["text"]).strip()[:300]}

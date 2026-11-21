@@ -21,14 +21,14 @@ class FakeAsk:
         self.calls.append(("plan", question, run))
         if self.fail:
             raise AskUnavailable("down")
-        return self.plan_body, {"model": "fake", "tokens_in": 900, "tokens_out": 60, "cost_usd": 0.0001}
+        return self.plan_body, {"model": "fake", "tokens_in": 900, "tokens_out": 60, "cost": 0.0001}
 
     def write(self, question, intent, facts, draft):
         self.calls.append(("write", question, intent))
         if self.fail:
             raise AskUnavailable("down")
         return (self.text if self.text is not None else draft), {"model": "fake", "tokens_in": 300, "tokens_out": 80,
-                                                                 "cost_usd": 0.00005}
+                                                                 "cost": 0.00005}
 
 
 def ask(client, auth, rid, question, **kw):
@@ -149,7 +149,7 @@ def test_llm_plan_and_writer_with_fake(client, auth, run_two, ctx):
     ctx.ask_client = fake
     body = ask(client, auth, run_two["id"], "какое самое большое напряжение?").json()
     assert body["meta"]["planner"] == "llm" and body["meta"]["writer"] == "llm"
-    assert body["meta"]["tokens_in"] == 1200 and body["meta"]["cost_usd"] == pytest.approx(0.00015)
+    assert body["meta"]["tokens_in"] == 1200 and body["meta"]["cost"] == pytest.approx(0.00015)
     assert body["cards"][0]["kind"] == "results" and "Voc" in body["cards"][0]["title"]
     kinds = [c[0] for c in fake.calls]
     assert kinds == ["plan", "write"]

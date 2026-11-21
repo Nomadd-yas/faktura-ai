@@ -32,7 +32,8 @@ def grounded(text: str, draft: str, facts: dict, question: str) -> bool:
 def _add_meta(meta: dict, part: dict | None) -> None:
     for k in ("tokens_in", "tokens_out"):
         meta[k] += int((part or {}).get(k) or 0)
-    meta["cost_usd"] = round(meta["cost_usd"] + float((part or {}).get("cost_usd") or 0), 6)
+    c = (part or {}).get("cost", (part or {}).get("cost_usd"))  # cost_usd - прежнее имя поля
+    meta["cost"] = round(meta["cost"] + float(c or 0), 6)
     if (part or {}).get("model"):
         meta["model"] = part["model"]
 
@@ -41,7 +42,8 @@ def answer_question(run: RunCtx, question: str, client: Any = None) -> dict:
     """CaseAnswer + `meta` (planner: llm|rules, writer: llm|template, degraded: ML настроен, но не ответил)."""
     t0 = time.monotonic()
     meta: dict[str, Any] = {"planner": "rules", "writer": "template", "degraded": False, "intent": "unknown",
-                            "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}
+                            "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+                            "cost_currency": "RUB"}
     if not run.has_data:
         return {"text": NODATA, "cards": [], "cites": [], "suggestions": [], "meta": meta}
     desc = run.describe()

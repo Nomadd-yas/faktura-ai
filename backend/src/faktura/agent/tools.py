@@ -17,6 +17,7 @@ from ..ask.builder import to_float
 from ..ask.context import PaperData, RunCtx
 from ..domain.registry import get_domain
 from . import MAX_ROWS
+from .calc import MAX_NAMES, NAME, CalcError, rules_for, safe_eval
 
 OPS = ("=", "!=", ">", ">=", "<", "<=", "in", "contains", "is_null")
 FNS = ("count", "mean", "median", "min", "max", "sum")
@@ -85,6 +86,8 @@ class Toolbox:
         self.chunks: dict[str, dict] = {}
         self.compared: list[dict] = []
         self.calls: list[dict] = []
+        self.calcs: dict[str, dict] = {}
+        self.fixes: list[dict] = []
         self._facts: dict[str, tuple[PaperData, dict]] | None = None
 
     # --- доступ к строкам ------------------------------------------------------------------------------------
@@ -451,6 +454,76 @@ class Toolbox:
         return {"found": True, "chunk_id": cid, "pid": pid, "page": pg, "pages": r.get("pages"),
                 "text": (r.get("text") or "")[:6000]}
 
+    def page_text(self, pid: str, page: int) -> str | None:
+        """Текст страницы (для проверки маркера page): из кэша чтений, иначе читается из индекса."""
+        hit = self.chunks.get(f"page:{pid}/{page}")
+        if hit is not None:
+            return hit["text"]
+        try:
+            r = self.read_page(pid, page)
+        except ToolError:
+            return None
+        return self.chunks.get(f"page:{pid}/{page}", {}).get("text") if r.get("found") else None
+
+    # --- правила, калькулятор, предложения правок -------------------------------------------------------------------
+
+    def rules(self, check: str | None = None, **_: Any) -> dict:
+        return rules_for(self.ctx.domain, check)
+
+    def calc(self, expr: str = "", inputs: dict | None = None, **_: Any) -> dict:
+        if not isinstance(inputs, dict) or not inputs or len(inputs) > MAX_NAMES:
+            raise ToolError(f"inputs: object {{name: fact_id | number}}, 1-{MAX_NAMES} names")
+        values: dict[str, float] = {}
+        shown: dict[str, dict] = {}
+        for name, src in inputs.items():
+            if not NAME.match(str(name)):
+                raise ToolError(f"bad input name {name!r}")
+            if isinstance(src, (int, float)) and not isinstance(src, bool):
+                values[name], shown[name] = float(src), {"value": float(src)}
+                continue
+            hit = self.facts.get(str(src))
+            if hit is None:
+                num = to_float(src) if isinstance(src, str) else None
+                if num is None:
+                    raise ToolError(f"input {name}: neither a known fact_id nor a number: {src!r}")
+                values[name], shown[name] = num, {"value": num}
+                continue
+            v = solar.value_of(hit[1])
+            if v is None:
+                raise ToolError(f"input {name}: fact {src} has no value")
+            values[name], shown[name] = v, {"fact_id": str(src), "value": v, "unit": solar.unit_of(hit[1])}
+        try:
+            value = safe_eval(expr, values)
+        except CalcError as e:
+            raise ToolError(str(e)) from None
+        cid = f"c{len(self.calcs) + 1}"
+        self.calcs[cid] = {"expr": expr.strip(), "value": value, "inputs": shown}
+        return {"calc_id": cid, "value": _r(value), "inputs": shown, "expr": expr.strip(),
+                "hint": "cite the result with [[calc:" + cid + "]] right after the number"}
+
+    def propose_fix(self, items: list | None = None, **_: Any) -> dict:
+        """Предлагаемые исправления значений (карточка `fix`). Ничего не применяет."""
+        if not isinstance(items, list) or not items or len(items) > 10:
+            raise ToolError("items: 1-10 of {fact_id, suggested, reason}")
+        out = []
+        for it in items:
+            it = it if isinstance(it, dict) else {}
+            fid = str(it.get("fact_id") or "")
+            hit = self.facts.get(fid)
+            if hit is None:
+                raise ToolError(f"unknown fact {fid!r}")
+            sug = it.get("suggested")
+            sug = float(sug) if isinstance(sug, (int, float)) and not isinstance(sug, bool) else to_float(sug)
+            if sug is None:
+                raise ToolError(f"{fid}: suggested must be a number")
+            p, r = hit
+            cur = solar.value_of(r)
+            out.append({"pid": p.pid, "rid": r.get("result_id"), "metric": r.get("metric_name", ""),
+                        "current": cur, "suggested": sug, "unit": str(it.get("unit") or solar.unit_of(r)),
+                        "reason": str(it.get("reason") or "")[:300]})
+        self.fixes = out
+        return {"ok": True, "proposed": len(out), "note": "shown to the user as a card; nothing is applied"}
+
     # --- вызов --------------------------------------------------------------------------------------------------
 
     def call(self, name: str, args: dict) -> tuple[dict, str]:
@@ -505,6 +578,12 @@ def describe(name: str, a: dict) -> str:
         return f"Читаю страницу {g('page')} статьи {g('pid')}"
     if name == "schema":
         return "Смотрю структуру таблиц"
+    if name == "rules":
+        return "Смотрю правила проверок"
+    if name == "calc":
+        return f"Считаю: {g('expr') or ''}"
+    if name == "propose_fix":
+        return "Готовлю предложение правок"
     return f"Вызов {name}"
 
 
@@ -549,8 +628,21 @@ TOOL_SPECS = [
     _fn("search_text", "Search the paper texts (English). Returns chunks with chunk_id, pid, page; "
         "cite with [[chunk:ID|short verbatim quote]].",
         {"query": {"type": "string"}, "pids": _STR_LIST, "k": {"type": "integer"}}, ["query"]),
-    _fn("read_page", "Full text of one page of a paper; cite with [[chunk:ID|short verbatim quote]].",
+    _fn("read_page", "Full text of one page of a paper (page 1 = abstract/intro); cite with [[page:<pid>/<n>|short verbatim quote]].",
         {"pid": {"type": "string"}, "page": {"type": "integer"}}, ["pid", "page"]),
+    _fn("rules", "Definitions of the checks (check_name, Russian title, description, thresholds, formula, typical fixes) "
+        "for this run's domain. Use it to explain WHY values do not agree (an issue's check_name is the rule id).",
+        {"check": {"type": "string", "description": "optional filter by check_name, e.g. jv_consistency"}}),
+    _fn("calc", "Safe calculator: arithmetic (+ - * / parentheses, numbers, input names) over named inputs. "
+        "inputs: {name: fact_id '<pid>/<result_id>' (effective value) | number}. Cite the result with [[calc:calc_id]].",
+        {"expr": {"type": "string", "description": "e.g. voc*jsc*ff/100/pin*100"},
+         "inputs": {"type": "object", "description": "name -> fact_id or number"}}, ["expr", "inputs"]),
+    _fn("propose_fix", "Propose corrected values for the user (shown as a card; NOTHING is applied). Each item: "
+        "fact_id, suggested (number in the row's unit), reason (short Russian). Call once, at the end, only when you are "
+        "sure which value is wrong and what it should be.",
+        {"items": {"type": "array", "items": {"type": "object", "properties": {
+            "fact_id": {"type": "string"}, "suggested": {"type": "number"}, "unit": {"type": "string"},
+            "reason": {"type": "string"}}, "required": ["fact_id", "suggested", "reason"]}}}, ["items"]),
     _fn("clarify", "Use INSTEAD of answering when the question is ambiguous (which metric, which paper): ask one short "
         "question in Russian with 2-4 options. Ends the turn.",
         {"question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}, "minItems": 2,

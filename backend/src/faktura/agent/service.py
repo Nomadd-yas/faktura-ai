@@ -70,6 +70,8 @@ def _spec_cites(run: RunCtx, base_cites: list[dict]) -> list[dict]:
 def _cards(run: RunCtx, tb: Toolbox, v: Verified) -> list[dict]:
     cards: list[dict] = []
     rids = [(f.split("/", 1)[0], f.split("/", 1)[1]) for f in v.used_facts]
+    for f in v.used_calc_facts:
+        rids.append((f.split("/", 1)[0], f.split("/", 1)[1]))
     for a in v.used_aggs:  # строки, из которых посчитан цитируемый агрегат
         for i in tb.aggs[a]["ids"]:
             if tb.aggs[a]["table"] == "results" and "/" in i:
@@ -83,7 +85,10 @@ def _cards(run: RunCtx, tb: Toolbox, v: Verified) -> list[dict]:
                       "items": [{"pid": i.split("/", 1)[0], "iid": i.split("/", 1)[1]} for i in v.used_issues[:50]]})
     for c in tb.compared[-1:]:
         if len(c["pids"]) >= 2 and c["metric"] and set(c["pids"]) & {p for p, _ in rids}:
-            cards.append({"kind": "compare", "domain": run.domain, "pids": c["pids"], "metric": c["metric"]})
+            cards.append({"kind": "compare", "domain": run.domain, "title": "Сравнение", "pids": c["pids"],
+                          "metric": c["metric"], "metrics": [c["metric"]]})
+    if tb.fixes:  # предложения правок: ничего не применяется, фронт применяет выбранные через v2 review (corrected_value)
+        cards.append({"kind": "fix", "domain": run.domain, "title": "Предлагаемые правки", "items": tb.fixes})
     return cards
 
 
@@ -97,17 +102,18 @@ def _is_cancelled(services, mid: str) -> Callable[[], bool]:
     return check
 
 
-def answer_in_thread(actx: Any, corpus_id: str, mid: str, question: str, stream: store.Stream) -> None:
+def answer_in_thread(actx: Any, corpus_id: str, mid: str, question: str, stream: store.Stream,
+                     pid: str | None = None) -> None:
     """Рабочий поток ответа: всё, что случилось, - в БД и в `stream`; исключения наружу не выходят."""
     emit = stream.emit
     try:
-        _answer(actx, corpus_id, mid, question, emit)
+        _answer(actx, corpus_id, mid, question, emit, pid)
     except Exception as e:  # noqa: BLE001
         log.exception("Агент разбора упал")
         try:
             with actx.get_services().db.uow() as uow:
                 store.finish(uow, mid, status="error", answer=None, clarify=False, meta={"error": type(e).__name__},
-                             tool_log=[], cost_usd=0.0)
+                             tool_log=[])
         except Exception:  # noqa: BLE001
             log.exception("Не удалось записать ошибку ответа")
         emit("error", {"code": "agent_error", "message": "Не удалось ответить на вопрос", "retryable": True})
@@ -127,23 +133,29 @@ def _ask_client(actx) -> Any:
     return actx.ask_client
 
 
-def _answer(actx, corpus_id: str, mid: str, question: str, emit: Callable[[str, dict], None]) -> None:
+
+def run_agent(actx, corpus_id: str, question: str, *, pid: str | None = None, only: set[str] | None = None,
+              mid: str | None = None, emit: Callable[[str, dict], None] = lambda *_: None,
+              is_cancelled: Callable[[], bool] = lambda: False) -> dict:
+    """Агент -> проверка -> (запасной базовый вариант). -> {status, answer, clarify, meta, tool_log}.
+    С `mid` берёт историю ветки из run_messages (чат); без него - один вопрос без истории и без записи в БД (/ask)."""
     services = actx.get_services()
     t0 = time.monotonic()
     emit("step", {"text": "Разбираю вопрос"})
     with services.db.uow() as uow:
         corpus = uow.corpora.get(corpus_id)
-        run = load_ctx(uow, corpus)
-        rows = store.list_all(uow, corpus_id)
+        run = load_ctx(uow, corpus, only)
+        rows = store.list_all(uow, corpus_id) if mid else []
         partial = _partial(uow, corpus)
     qa = store.thread_qa(rows, exclude=mid)
     asked = [q for q, _ in qa] + [question]
-    meta: dict[str, Any] = {"mode": "agent", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}
+    meta: dict[str, Any] = {"mode": "agent", "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "cost_currency": store.CURRENCY}
     tool_log: list[dict] = []
     clarify = False
     fallback = None
     answer: dict | None = None
     status = "done"
+    dropped = 0
     tb = Toolbox(run, services, corpus_id)
     llm = _llm(actx)
     if not run.has_data:
@@ -152,10 +164,10 @@ def _answer(actx, corpus_id: str, mid: str, question: str, emit: Callable[[str, 
         fallback = "no_llm"
     else:
         max_calls = int(getattr(actx.settings, "agent_max_tool_calls", MAX_TOOL_CALLS))
-        messages = [{"role": "system", "content": system_prompt(run, max_calls)}, *history_messages(qa),
+        messages = [{"role": "system", "content": system_prompt(run, max_calls, pid)}, *history_messages(qa),
                     {"role": "user", "content": question}]
-        out: Outcome = run_loop(llm, tb, messages, emit=emit, is_cancelled=_is_cancelled(services, mid),
-                                max_calls=max_calls, timeout_s=float(getattr(actx.settings, "agent_timeout_s", TOTAL_TIMEOUT_S)))
+        out: Outcome = run_loop(llm, tb, messages, emit=emit, is_cancelled=is_cancelled, max_calls=max_calls,
+                                timeout_s=float(getattr(actx.settings, "agent_timeout_s", TOTAL_TIMEOUT_S)))
         meta.update(out.meta)
         meta["llm_calls"], meta["tool_calls"] = out.llm_calls, len(tb.calls)
         tool_log = list(tb.calls)
@@ -169,6 +181,7 @@ def _answer(actx, corpus_id: str, mid: str, question: str, emit: Callable[[str, 
         else:
             emit("step", {"text": "Сверяю с источниками"})
             v = Verifier(tb, question, getattr(actx.settings, "rag_unverified", "drop")).run(out.text)
+            dropped = v.items_dropped
             tool_log.append({"verification": {"items": v.items_total, "dropped": v.items_dropped, "items_dropped": v.dropped,
                                               "raw_text": out.text[:4000]}})
             if v.too_many_dropped or not v.text.strip():
@@ -178,13 +191,17 @@ def _answer(actx, corpus_id: str, mid: str, question: str, emit: Callable[[str, 
                           "suggestions": fresh_suggestions(run, asked)}
                 if v.unverified:
                     answer["unverified"] = v.unverified
+    meta["planner"] = "agent"
     if status == "done" and answer is None:  # запасной путь: базовый вариант (/ask)
-        meta["mode"] = "base"
+        meta["mode"], meta["planner"] = "base", "base"
         meta["fallback"] = fallback
         emit("step", {"text": "Отвечаю по шаблонам"})
         base = answer_question(run, question, _ask_client(actx))
-        for k in ("tokens_in", "tokens_out", "cost_usd"):
-            meta[k] = round(meta[k] + (base.get("meta") or {}).get(k, 0), 6)
+        bm = base.get("meta") or {}
+        for k in ("tokens_in", "tokens_out"):
+            meta[k] = int(meta[k] + (bm.get(k) or 0))
+        meta["cost"] = round(meta["cost"] + float(bm.get("cost", bm.get("cost_usd")) or 0), 6)
+        meta["model"] = bm.get("model") or meta.get("model")
         text = base["text"]
         if fallback in NOTES:
             text += "\n\n" + NOTES[fallback]
@@ -196,13 +213,101 @@ def _answer(actx, corpus_id: str, mid: str, question: str, emit: Callable[[str, 
         answer["text"] += f"\n\nРазбор ещё идёт: ответ по {partial['done']} из {partial['total']} готовых статей."
         answer["partial"] = partial
     meta["seconds"] = round(time.monotonic() - t0, 3)
+    meta["dropped"] = dropped
+    if pid:
+        meta["pid"] = pid
+    if answer is not None:
+        answer["meta"] = {"model": meta.get("model"), "provider": meta.get("provider"), "planner": meta["planner"],
+                          "tool_calls": meta.get("tool_calls", 0), "tokens_in": meta["tokens_in"],
+                          "tokens_out": meta["tokens_out"], "cost": meta["cost"], "cost_currency": store.CURRENCY,
+                          "seconds": meta["seconds"], "dropped": dropped,
+                          **({"fallback": fallback} if fallback else {})}
+    return {"status": status, "answer": answer, "clarify": clarify, "meta": meta, "tool_log": tool_log}
+
+
+def _answer(actx, corpus_id: str, mid: str, question: str, emit: Callable[[str, dict], None],
+            pid: str | None = None) -> None:
+    services = actx.get_services()
+    r = run_agent(actx, corpus_id, question, pid=pid, mid=mid, emit=emit, is_cancelled=_is_cancelled(services, mid))
+    status, answer, clarify = r["status"], r["answer"], r["clarify"]
     with services.db.uow() as uow:
-        saved = store.finish(uow, mid, status=status, answer=answer, clarify=clarify, meta=meta, tool_log=tool_log,
-                             cost_usd=float(meta["cost_usd"]))
+        saved = store.finish(uow, mid, status=status, answer=answer, clarify=clarify, meta=r["meta"],
+                             tool_log=r["tool_log"], cost=float(r["meta"]["cost"]), cost_currency=store.CURRENCY)
     if not saved or status == "stopped":  # остановлен пользователем: ответ записал stop
         emit("done", {"message_id": mid, "status": "stopped", "answer": STOPPED})
         return
     emit_answer(emit, mid, answer, clarify)
+
+
+# --- /ask через агента: ответ в форме CaseAnswer фронта --------------------------------------------------------------
+
+def _cite_label(c: dict) -> str:
+    pid, page = c.get("pid") or "", c.get("page")
+    pg = f"стр. {page}" if page else ""
+    frag = (c.get("fragment") or "").strip()
+    if c.get("calc_id"):
+        return "Расчёт: " + frag
+    if c.get("agg_id"):
+        return c.get("text") or "Агрегат"
+    if c.get("table") or c.get("row_id"):
+        return " · ".join(x for x in (c.get("table"), c.get("row_id") or c.get("row"), pg) if x)
+    if c.get("issue_id") or c.get("iid"):
+        return " · ".join(x for x in (pid, f"замечание {c.get('issue_id') or c.get('iid')}", pg) if x)
+    if c.get("chunk_id") or (frag and not (c.get("result_id") or c.get("rid"))):
+        return " · ".join(x for x in (pid, pg, f"«{frag[:90]}»" if frag else "") if x)
+    return " · ".join(x for x in (pid, f"строка {c.get('result_id') or c.get('rid')}", pg) if x)
+
+
+def ask_cite(c: dict, run: RunCtx) -> dict:
+    """Сноска агента/базового ответа -> CaseCite фронта: {pid, rid?, iid?, table?, row?, page?, label, domain?} (+ n, fragment)."""
+    pid = c.get("pid") or ""
+    rid = c.get("rid") or c.get("result_id")
+    if not pid and c.get("result_ids"):  # агрегат: ведём на первую строку
+        pid, _, rid = str(c["result_ids"][0]).partition("/")
+    out: dict[str, Any] = {"n": c.get("n"), "pid": pid, "label": c.get("label") or _cite_label(c)}
+    if rid:
+        out["rid"] = rid
+    iid = c.get("iid") or c.get("issue_id")
+    if iid:
+        out["iid"] = iid
+    row = c.get("row") or c.get("row_id")
+    if c.get("table") and row:
+        out["table"], out["row"] = c["table"], row
+    if c.get("page") not in (None, ""):
+        out["page"] = str(c["page"])
+    if run.domain == "rag":
+        out["domain"] = "rag"
+    for k in ("fragment", "chunk_id", "calc_id", "expr"):
+        if c.get(k):
+            out[k] = c[k]
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def ask_card(card: dict) -> dict:
+    """Карточка агента -> карточка фронта (compare: metrics[], title)."""
+    if card.get("kind") == "compare":
+        return {"title": "Сравнение", **card, "metrics": card.get("metrics") or [card.get("metric")]}
+    return card
+
+
+def ask_via_agent(actx, corpus_id: str, question: str, pid: str | None, only: set[str] | None) -> dict | None:
+    """Ответ /ask агентом: CaseAnswer {text, cards, cites, suggestions, meta[, clarify]}; None - агент недоступен."""
+    if _llm(actx) is None:
+        return None
+    services = actx.get_services()
+    with services.db.uow() as uow:
+        run = load_ctx(uow, uow.corpora.get(corpus_id), only)
+    r = run_agent(actx, corpus_id, question, pid=pid, only=only)
+    a = r["answer"]
+    if a is None:
+        return None
+    out = {"text": a["text"], "cards": [ask_card(c) for c in a.get("cards") or []],
+           "cites": [ask_cite(c, run) for c in a.get("cites") or []], "suggestions": a.get("suggestions") or [],
+           "meta": a["meta"]}
+    for k in ("clarify", "fallback", "partial", "unverified"):
+        if a.get(k):
+            out[k] = a[k]
+    return out
 
 
 def emit_answer(emit: Callable[[str, dict], None], mid: str, answer: dict, clarify: bool = False) -> None:

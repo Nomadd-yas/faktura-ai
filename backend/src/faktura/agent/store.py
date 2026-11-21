@@ -14,6 +14,7 @@ from ..domain.ids import new_id
 from ..storage import schema as S
 
 T = S.run_messages
+CURRENCY = "RUB"  # RouterAI присылает usage.cost в рублях
 RATINGS = ("up", "down")
 RATING_REASONS = ("Неверная цифра", "Не тот источник", "Неполный ответ")
 
@@ -46,10 +47,11 @@ def status_of(uow, mid: str) -> str | None:
 
 
 def finish(uow, mid: str, *, status: str, answer: dict | None, clarify: bool, meta: dict, tool_log: list,
-           cost_usd: float) -> bool:
+           cost: float = 0.0, cost_currency: str = CURRENCY) -> bool:
     """Записывает итог ответа, если он ещё running (остановленный пользователем остаётся stopped). True - записано."""
     res = uow.conn.execute(sa.update(T).where(T.c.id == mid, T.c.status == "running").values(
-        status=status, answer=answer, clarify=clarify, meta=meta, tool_log=tool_log, cost_usd=cost_usd))
+        status=status, answer=answer, clarify=clarify, meta=meta, tool_log=tool_log, cost=cost,
+        cost_currency=cost_currency))
     return res.rowcount > 0
 
 

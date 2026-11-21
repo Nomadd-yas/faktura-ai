@@ -620,7 +620,10 @@ run_messages = sa.Table(
     sa.Column("rating_reason", sa.String(64), nullable=True),
     sa.Column("meta", JSONType, nullable=True),  # модель, токены, стоимость, planner/fallback
     sa.Column("tool_log", JSONType, nullable=True),  # вызовы инструментов и отброшенные пункты (для оценки качества)
-    sa.Column("cost_usd", sa.Float, nullable=True),
+    sa.Column("cost_usd", sa.Float, nullable=True),  # устарела (RouterAI считает в рублях) и не пишется; см. cost
+    sa.Column("cost", sa.Float, nullable=True),  # стоимость ответа в валюте cost_currency
+    sa.Column("cost_currency", sa.String(8), nullable=True),  # RUB
     sa.Column("created_at", UTCDateTime, nullable=False),
     sa.Index("ix_run_messages_corpus", "corpus_id", "seq"),
 )
+LATE_COLUMNS[run_messages] = (run_messages.c.cost, run_messages.c.cost_currency)

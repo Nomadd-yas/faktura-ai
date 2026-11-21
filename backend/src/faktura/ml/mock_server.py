@@ -94,7 +94,7 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             return _error(400, "bad_request", "Ожидается JSON {question (до 500 символов), run}")
         return JSONResponse(content={"plan": keyword_plan(question, run), "meta": {
-            "model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}})
+            "model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "currency": "RUB"}})
 
     @app.post("/ask/write")
     async def ask_write(request: Request) -> JSONResponse:
@@ -107,7 +107,7 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             return _error(400, "bad_request", "Ожидается JSON {question, intent, facts, draft}")
         return JSONResponse(content={"text": draft, "meta": {
-            "model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}})
+            "model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "currency": "RUB"}})
 
     @app.post("/llm/chat")
     async def llm_chat(request: Request) -> JSONResponse:
@@ -122,7 +122,7 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
                 raise ValueError
         except Exception:  # noqa: BLE001
             return _error(400, "bad_request", "Ожидается JSON {messages, tools?}")
-        meta = {"model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}
+        meta = {"model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "currency": "RUB"}
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
         if not tool_msgs and body.get("tools"):
             call = {"id": "call_1", "type": "function", "function": {

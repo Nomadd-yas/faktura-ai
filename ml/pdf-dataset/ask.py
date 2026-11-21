@@ -7,7 +7,8 @@
 # Правила проекта: провайдер ВСЕГДА закреплён (provider.order + allow_fallbacks=false — иначе запрос может уйти
 # к провайдеру в разы дороже), рассуждение выключено (reasoning.enabled=false), повторов нет.
 # Env: ROUTERAI_API_KEY (обяз.), ASK_MODEL | ROUTERAI_MODEL, ASK_PROVIDER | ROUTERAI_PROVIDER (по умолч. wafer),
-#      ASK_PRICE_IN / ASK_PRICE_OUT — цена за 1 млн токенов, $ (для оценки cost_usd, если провайдер не прислал usage.cost).
+#      ASK_PRICE_IN / ASK_PRICE_OUT — цена за 1 млн токенов, RUB (грубая оценка cost, если провайдер не прислал usage.cost).
+#      usage.cost у RouterAI - в РУБЛЯХ: meta.cost + meta.currency="RUB" (раньше ошибочно cost_usd).
 
 import argparse
 import json
@@ -141,7 +142,7 @@ def _meta(usage: dict, seconds: float, mdl: str, prov: str) -> dict:
     cost = usage.get("cost")
     if not isinstance(cost, (int, float)):
         cost = (tin * _price("ASK_PRICE_IN", 0.15) + tout * _price("ASK_PRICE_OUT", 0.60)) / 1e6
-    return {"model": mdl, "provider": prov, "tokens_in": tin, "tokens_out": tout, "cost_usd": round(float(cost), 6),
+    return {"model": mdl, "provider": prov, "tokens_in": tin, "tokens_out": tout, "cost": round(float(cost), 6), "currency": "RUB",
             "seconds": seconds}
 
 

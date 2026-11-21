@@ -34,6 +34,7 @@ PING_S = 15.0
 
 class MessageBody(BaseModel):
     text: str = ""
+    pid: str | None = None  # статья, которую открыл пользователь: «эта статья» = она
 
 
 class RatingBody(BaseModel):
@@ -57,7 +58,16 @@ def get_messages(run_id: str, user: CurrentUser = Depends(current_user), service
         return JSONResponse({"data": _messages(uow, get_corpus(uow, user, run_id))}, media_type=JSON_MEDIA_TYPE)
 
 
-def _start(request: Request, run_id: str, text: str, user: CurrentUser, services: Services) -> tuple[str, str, Any]:
+def check_pid(files, pid: str | None) -> str | None:
+    """pid должен принадлежать разбору, иначе 422 (field=pid); пустой pid = нет контекста статьи."""
+    pid = (pid or "").strip() or None
+    if pid is not None and pid not in set(_file_ids(files).values()):
+        raise AppError("validation_error", "Статья не из этого разбора", field="pid")
+    return pid
+
+
+def _start(request: Request, run_id: str, text: str, user: CurrentUser, services: Services,
+           pid: str | None = None) -> tuple[str, str, Any]:
     question = (text or "").strip()
     if not question:
         raise AppError("validation_error", "Введите вопрос", field="text")
@@ -67,6 +77,7 @@ def _start(request: Request, run_id: str, text: str, user: CurrentUser, services
     actx.chat_limiter.hit(f"ask:{user.id}", now=auth.utcnow())
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run_id)
+        pid = check_pid([f for f in uow.files.list(corpus.id) if f.status != CorpusFileStatus.skipped_duplicate], pid)
         busy = [m for m in store.list_all(uow, corpus.id) if m["role"] == "assistant" and m["status"] == "running"
                 and auth.utcnow() - m["created_at"] < timedelta(seconds=STALE_S)]
         if busy:
@@ -74,12 +85,12 @@ def _start(request: Request, run_id: str, text: str, user: CurrentUser, services
         for m in store.list_all(uow, corpus.id):  # брошенные «пишется» закрываем
             if m["role"] == "assistant" and m["status"] == "running":
                 store.finish(uow, m["id"], status="error", answer=None, clarify=False, meta={"error": "stale"},
-                             tool_log=[], cost_usd=0.0)
+                             tool_log=[])
         q = store.add(uow, corpus.id, user.id, "user", "text", text=question)
         a = store.add(uow, corpus.id, user.id, "assistant", "answer", status="running", reply_to=q["id"])
         corpus_id = corpus.id
     stream = actx.agent_streams.create(a["id"])
-    threading.Thread(target=service.answer_in_thread, args=(actx, corpus_id, a["id"], question, stream), daemon=True,
+    threading.Thread(target=service.answer_in_thread, args=(actx, corpus_id, a["id"], question, stream, pid), daemon=True,
                      name=f"agent-{a['id']}").start()
     return q["id"], a["id"], stream
 
@@ -107,9 +118,9 @@ async def _frames(request: Request, stream: store.Stream) -> AsyncIterator[str]:
 @router.post("/runs/{run_id}/messages", summary="Вопрос по разбору (SSE или 202)")
 def post_message(run_id: str, body: MessageBody, request: Request, user: CurrentUser = Depends(current_user),
                  services: Services = Depends(get_services)):
-    """`{text}` -> SSE (`Accept: text/event-stream`): step, text, card, cite, suggestions, done | error;
+    """`{text, pid?}` -> SSE (`Accept: text/event-stream`): step, text, card, cite, suggestions, done | error;
     иначе `202 {message_id, question_id, stream_url}`."""
-    qid, mid, stream = _start(request, run_id, body.text, user, services)
+    qid, mid, stream = _start(request, run_id, body.text, user, services, body.pid)
     if "text/event-stream" in request.headers.get("accept", ""):
         return StreamingResponse(_frames(request, stream), media_type="text/event-stream", headers=SSE_HEADERS)
     return JSONResponse({"message_id": mid, "question_id": qid,

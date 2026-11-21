@@ -12,11 +12,13 @@ from ...ask.client import build_ask_client
 from ...ask.context import load_ctx
 from ...ask.execute import suggestions
 from ...ask.service import answer_question
-from ...domain.entities import CurrentUser
+from ...agent import service as agent_service
+from ...domain.entities import CorpusFileStatus, CurrentUser
 from ...domain.errors import AppError
 from ...domain.services import Services
 from ..base import auth
 from ..base.deps import JSON_MEDIA_TYPE, current_user, get_context, get_services
+from .routes_messages import check_pid
 from .views import get_corpus
 
 log = logging.getLogger("faktura.api")
@@ -27,6 +29,7 @@ MAX_PIDS = 500
 class AskBody(BaseModel):
     question: str = ""
     pids: list[str] | None = None
+    pid: str | None = None  # статья, которую открыл пользователь (контекст «эта статья»); не из разбора -> 422
 
 
 def _client(request: Request):
@@ -49,6 +52,19 @@ def ask_run(run_id: str, body: AskBody, request: Request, user: CurrentUser = De
         raise AppError("validation_error", "Слишком много статей в pids", field="pids")
     get_context(request).chat_limiter.hit(f"ask:{user.id}", now=auth.utcnow())
     only = {str(p) for p in body.pids} if body.pids else None
+    with services.db.uow() as uow:
+        corpus = get_corpus(uow, user, run_id)
+        pid = check_pid([f for f in uow.files.list(corpus.id) if f.status != CorpusFileStatus.skipped_duplicate], body.pid)
+        corpus_id = corpus.id
+    actx = get_context(request)
+    # агент включён (как для /messages) -> ответ агентом в форме CaseAnswer; ветка сообщений не ведётся и не сохраняется
+    try:
+        res = agent_service.ask_via_agent(actx, corpus_id, question, pid, only)
+    except Exception:  # noqa: BLE001 - любой сбой агента: запасной базовый ответ
+        log.exception("Агент /ask упал, отвечаю базовым вариантом")
+        res = None
+    if res is not None:
+        return JSONResponse(res, media_type=JSON_MEDIA_TYPE)
     with services.db.uow() as uow:
         run = load_ctx(uow, get_corpus(uow, user, run_id), only)
     # БД освобождена: вызовы ML (до ~30 с каждый) идут без открытой транзакции

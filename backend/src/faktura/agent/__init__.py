@@ -10,4 +10,4 @@ MAX_ROWS = 200
 MAX_HISTORY_QA = 6
 HISTORY_CHARS = 600
 TOTAL_TIMEOUT_S = 40.0
-MAX_TOKENS = 1200
+MAX_TOKENS = 1800  # пересказы статей длиннее табличных ответов

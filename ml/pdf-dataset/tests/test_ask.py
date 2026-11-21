@@ -88,13 +88,13 @@ def test_provider_and_model_from_env_and_never_unpinned(monkeypatch):
 
 def test_cost_from_usage_cost_or_prices(monkeypatch):
     out = ask.plan("q", RUN, client=FakeClient(usage={"prompt_tokens": 2_000_000, "completion_tokens": 1_000_000}))
-    assert out["meta"]["cost_usd"] == pytest.approx(2 * 0.15 + 0.60)
+    assert out["meta"]["cost"] == pytest.approx(2 * 0.15 + 0.60)
     monkeypatch.setenv("ASK_PRICE_IN", "1")
     monkeypatch.setenv("ASK_PRICE_OUT", "2")
     out = ask.plan("q", RUN, client=FakeClient(usage={"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}))
-    assert out["meta"]["cost_usd"] == pytest.approx(3.0)
+    assert out["meta"]["cost"] == pytest.approx(3.0) and out["meta"]["currency"] == "RUB"
     out = ask.plan("q", RUN, client=FakeClient(usage={"prompt_tokens": 10, "completion_tokens": 10, "cost": 0.00042}))
-    assert out["meta"]["cost_usd"] == pytest.approx(0.00042)
+    assert out["meta"]["cost"] == pytest.approx(0.00042)
 
 
 def test_write_request_and_output():
@@ -207,7 +207,7 @@ def test_chat_pins_provider_reasoning_off_and_returns_tool_calls():
     assert kw["tools"] == TOOLS and kw["tool_choice"] == "auto" and kw["max_tokens"] == ask.CHAT_DEFAULT_TOKENS
     tc = out["message"]["tool_calls"][0]
     assert tc["function"] == {"name": "filter", "arguments": '{"table":"results"}'} and out["finish_reason"] == "tool_calls"
-    assert out["meta"]["cost_usd"] == 0.0002 and out["meta"]["tokens_in"] == 500
+    assert out["meta"]["cost"] == 0.0002 and out["meta"]["tokens_in"] == 500
 
 
 def test_chat_text_answer_and_reasoning_option(monkeypatch):

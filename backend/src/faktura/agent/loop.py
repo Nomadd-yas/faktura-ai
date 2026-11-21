@@ -31,7 +31,8 @@ def _add_meta(meta: dict, part: dict | None) -> None:
     part = part or {}
     for k in ("tokens_in", "tokens_out"):
         meta[k] = int(meta.get(k) or 0) + int(part.get(k) or 0)
-    meta["cost_usd"] = round(float(meta.get("cost_usd") or 0) + float(part.get("cost_usd") or 0), 6)
+    c = part.get("cost", part.get("cost_usd"))  # cost_usd - прежнее имя поля (было ошибкой: валюта RUB)
+    meta["cost"] = round(float(meta.get("cost") or 0) + float(c or 0), 6)
     for k in ("model", "provider"):
         if part.get(k):
             meta[k] = part[k]
@@ -51,7 +52,7 @@ def run_loop(llm: Any, tb: Toolbox, messages: list[dict], *, emit: Callable[[str
              is_cancelled: Callable[[], bool], max_calls: int, timeout_s: float,
              clock: Callable[[], float] = time.monotonic) -> Outcome:
     t0 = clock()
-    meta: dict[str, Any] = {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}
+    meta: dict[str, Any] = {"tokens_in": 0, "tokens_out": 0, "cost": 0.0}
     out = Outcome("failed", meta=meta)
     calls = 0
     while True:
