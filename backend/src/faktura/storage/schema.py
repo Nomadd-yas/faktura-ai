@@ -572,3 +572,26 @@ turns = sa.Table(
     sa.Column("answer", JSONType, nullable=True),
     sa.Column("created_at", UTCDateTime, nullable=False),
 )
+
+# --- сообщения чата внутри разбора (CORE_API §4j): вопросы и ответы агента --------------------------------
+
+run_messages = sa.Table(
+    "run_messages", metadata,
+    _seq(), _id(),
+    sa.Column("corpus_id", sa.String(64), sa.ForeignKey("corpora.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("user_id", sa.String(64), nullable=True),
+    sa.Column("role", sa.String(16), nullable=False),  # user | assistant
+    sa.Column("kind", sa.String(16), nullable=False),  # text | answer
+    sa.Column("text", sa.Text, nullable=True),
+    sa.Column("answer", JSONType, nullable=True),  # {text, cards, cites, suggestions[, clarify, fallback, partial]}
+    sa.Column("status", sa.String(16), nullable=False),  # running | done | stopped | error
+    sa.Column("clarify", sa.Boolean, nullable=False, default=False),
+    sa.Column("reply_to", sa.String(64), nullable=True),  # у ответа - id вопроса
+    sa.Column("rating", sa.String(8), nullable=True),
+    sa.Column("rating_reason", sa.String(64), nullable=True),
+    sa.Column("meta", JSONType, nullable=True),  # модель, токены, стоимость, planner/fallback
+    sa.Column("tool_log", JSONType, nullable=True),  # вызовы инструментов и отброшенные пункты (для оценки качества)
+    sa.Column("cost_usd", sa.Float, nullable=True),
+    sa.Column("created_at", UTCDateTime, nullable=False),
+    sa.Index("ix_run_messages_corpus", "corpus_id", "seq"),
+)

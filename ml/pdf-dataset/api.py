@@ -145,6 +145,14 @@ async def ask_write(request: Request):
     return await _ask_call(request, lambda b: ask.write(b.get("question"), b.get("intent"), b.get("facts"), b.get("draft")))
 
 
+# [faktura-patch] прокси LLM для агента чата разбора: OpenAI-сообщения и tools -> сообщение ассистента (+ meta)
+@app.post("/llm/chat")
+async def llm_chat(request: Request):
+    return await _ask_call(request, lambda b: ask.chat(b.get("messages"), b.get("tools"), b.get("max_tokens"),
+                                                       b.get("temperature", 0.0), b.get("reasoning", False),
+                                                       b.get("tool_choice")))
+
+
 async def _ask_call(request: Request, fn):
     from starlette.concurrency import run_in_threadpool
     try:

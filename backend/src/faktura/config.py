@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 import platformdirs
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     ask_url: str | None = None
     ask_timeout_s: float = 30
     ask_mode: Literal["auto", "off"] = "auto"  # off - всегда правиловый планировщик и шаблонный текст
+    # агентный чат разбора (CORE_API §4j): off - всегда базовый вариант (/ask); drop|mark - что делать с непроверенным (§12.4)
+    agent_mode: Literal["auto", "off"] = "auto"
+    agent_timeout_s: float = 40
+    agent_max_tool_calls: int = 12
+    rag_unverified: Literal["drop", "mark"] = Field("drop", validation_alias=AliasChoices("RAG_UNVERIFIED", "FAKTURA_RAG_UNVERIFIED"))
     cache_dir: Path | None = None
     mock_issues: Literal["all", "ml_only"] = "all"
     mock_gold_dir: Path | None = None

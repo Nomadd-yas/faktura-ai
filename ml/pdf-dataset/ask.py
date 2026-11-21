@@ -206,3 +206,89 @@ def write(question, intent, facts, draft, client=None) -> dict:
     if not isinstance(text, str) or not text.strip():
         raise AskError("llm_bad_output", "Пустой текст ответа", retryable=True)
     return {"text": text.strip(), "meta": meta}
+
+
+# --- /llm/chat: прокси LLM для агента чата разбора (цикл агента живёт в бэкенде, ключ RouterAI - только здесь) ---
+# Бэк присылает сообщения и описание инструментов в формате OpenAI, получает сообщение ассистента (content или
+# tool_calls) и meta. Правила те же: провайдер ВСЕГДА закреплён (без него отказ), рассуждение выключено по умолчанию.
+CHAT_MAX_CHARS = 150000
+CHAT_MAX_TOOLS = 24
+CHAT_MAX_TOKENS = 2000
+CHAT_DEFAULT_TOKENS = 1200
+CHAT_ROLES = ("system", "user", "assistant", "tool")
+
+
+def agent_model() -> str:
+    return os.environ.get("ASK_AGENT_MODEL") or model()
+
+
+def _pinned_extra(reasoning) -> dict:
+    """extra_body: провайдер закреплён (provider() бросает not_configured, если пусто); reasoning выключено, если не просили."""
+    providers = [p.strip().lower() for p in provider().split(",") if p.strip()]
+    if not providers:
+        raise AskError("not_configured", "Провайдер не закреплён: задайте ASK_PROVIDER", status=503)
+    extra = {"provider": {"order": providers, "allow_fallbacks": False}}
+    if reasoning is True:
+        extra["reasoning"] = {"enabled": True}
+    elif isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning > 0:
+        extra["reasoning"] = {"max_tokens": int(reasoning)}
+    else:
+        extra["reasoning"] = {"enabled": False}
+    return extra
+
+
+def _check_chat(messages, tools, max_tokens):
+    if not isinstance(messages, list) or not messages or not all(isinstance(m, dict) and m.get("role") in CHAT_ROLES
+                                                                  for m in messages):
+        raise AskError("bad_request", "Нужен непустой список messages с ролями system|user|assistant|tool", status=400)
+    if tools is not None and (not isinstance(tools, list) or len(tools) > CHAT_MAX_TOOLS
+                              or not all(isinstance(t, dict) and t.get("type") == "function" for t in tools)):
+        raise AskError("bad_request", f"tools: список function-инструментов (до {CHAT_MAX_TOOLS})", status=400)
+    if len(json.dumps(messages, ensure_ascii=False)) > CHAT_MAX_CHARS:
+        raise AskError("bad_request", "messages слишком большие", status=413)
+    if max_tokens is None:
+        return CHAT_DEFAULT_TOKENS
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or not 16 <= max_tokens <= CHAT_MAX_TOKENS:
+        raise AskError("bad_request", f"max_tokens: целое от 16 до {CHAT_MAX_TOKENS}", status=400)
+    return max_tokens
+
+
+def _tool_calls(msg) -> list:
+    out = []
+    for tc in getattr(msg, "tool_calls", None) or []:
+        fn = getattr(tc, "function", None)
+        out.append({"id": getattr(tc, "id", None) or f"call_{len(out)}", "type": "function",
+                    "function": {"name": getattr(fn, "name", "") or "", "arguments": getattr(fn, "arguments", "") or "{}"}})
+    return out
+
+
+def chat(messages, tools=None, max_tokens=None, temperature=0.0, reasoning=False, tool_choice=None, client=None) -> dict:
+    """{message: {role, content, tool_calls?}, finish_reason, meta}: один ход модели. Провайдер закреплён, повторов нет."""
+    import time
+    max_tokens = _check_chat(messages, tools, max_tokens)
+    extra = _pinned_extra(reasoning)  # до make_client: без закрепления модель не вызывается
+    client = client or make_client()
+    mdl, prov = agent_model(), provider()
+    kw = {"model": mdl, "messages": messages, "temperature": float(temperature or 0.0), "max_tokens": max_tokens,
+          "extra_body": extra}
+    if tools:
+        kw["tools"] = tools
+        kw["tool_choice"] = tool_choice if tool_choice in ("auto", "none", "required") else "auto"
+    t0 = time.monotonic()
+    try:
+        resp = client.chat.completions.create(**kw)
+    except Exception as e:  # noqa: BLE001 - сеть, таймаут, 4xx/5xx провайдера
+        raise AskError("ml_error", f"{type(e).__name__}: {str(e)[:200]}", retryable=True)
+    seconds = round(time.monotonic() - t0, 3)
+    if not getattr(resp, "choices", None):
+        raise AskError("llm_bad_output", "Пустой ответ модели", retryable=True)
+    ch = resp.choices[0]
+    msg = ch.message
+    calls = _tool_calls(msg)
+    out = {"role": "assistant", "content": getattr(msg, "content", None) or ""}
+    if calls:
+        out["tool_calls"] = calls
+    usage = getattr(resp, "usage", None)
+    usage = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage or {})
+    return {"message": out, "finish_reason": getattr(ch, "finish_reason", None) or "stop",
+            "meta": _meta(usage, seconds, mdl, prov)}

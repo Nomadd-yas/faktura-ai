@@ -109,6 +109,37 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(content={"text": draft, "meta": {
             "model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}})
 
+    @app.post("/llm/chat")
+    async def llm_chat(request: Request) -> JSONResponse:
+        """Мок прокси LLM для агента: детерминированный. Первый ход - вызов filter по results (3 строки);
+        после результата инструмента - ответ с первым значением и маркером [[fact:...]] (или «данных нет»)."""
+        import json as _json
+
+        try:
+            body = await request.json()
+            messages = body["messages"]
+            if not isinstance(messages, list) or not messages:
+                raise ValueError
+        except Exception:  # noqa: BLE001
+            return _error(400, "bad_request", "Ожидается JSON {messages, tools?}")
+        meta = {"model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        if not tool_msgs and body.get("tools"):
+            call = {"id": "call_1", "type": "function", "function": {
+                "name": "filter", "arguments": _json.dumps({"table": "results", "limit": 3})}}
+            return JSONResponse(content={"message": {"role": "assistant", "content": "", "tool_calls": [call]},
+                                         "finish_reason": "tool_calls", "meta": meta})
+        text = "В разборе этого нет."
+        try:
+            rows = _json.loads(tool_msgs[-1]["content"]).get("rows") or []
+        except Exception:  # noqa: BLE001
+            rows = []
+        if rows:
+            r = rows[0]
+            text = f"Первое значение {r.get('metric_name', '')}: {r.get('value')} [[fact:{r.get('fact_id')}]]."
+        return JSONResponse(content={"message": {"role": "assistant", "content": text}, "finish_reason": "stop",
+                                     "meta": meta})
+
     return app
 
 

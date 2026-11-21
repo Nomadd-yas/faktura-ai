@@ -182,3 +182,64 @@ def test_http_errors(http, monkeypatch):
     monkeypatch.delenv("ROUTERAI_API_KEY", raising=False)
     r = tc.post("/ask/plan", json={"question": "q", "run": RUN})
     assert r.status_code == 503 and r.json()["code"] == "not_configured"
+
+
+# --- /llm/chat ---------------------------------------------------------------------------------------------------
+
+TOOLS = [{"type": "function", "function": {"name": "filter", "description": "d", "parameters": {"type": "object"}}}]
+
+
+class ToolClient(FakeClient):
+    def _create(self, **kw):
+        self.calls.append(kw)
+        tc = SimpleNamespace(id="c1", function=SimpleNamespace(name="filter", arguments='{"table":"results"}'))
+        msg = SimpleNamespace(content=None, tool_calls=[tc])
+        usage = SimpleNamespace(model_dump=lambda: {"prompt_tokens": 500, "completion_tokens": 20, "cost": 0.0002})
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="tool_calls")], usage=usage)
+
+
+def test_chat_pins_provider_reasoning_off_and_returns_tool_calls():
+    c = ToolClient()
+    out = ask.chat([{"role": "system", "content": "s"}, {"role": "user", "content": "q"}], TOOLS, client=c)
+    (kw,) = c.calls
+    assert kw["extra_body"]["provider"] == {"order": ["wafer"], "allow_fallbacks": False}
+    assert kw["extra_body"]["reasoning"] == {"enabled": False}
+    assert kw["tools"] == TOOLS and kw["tool_choice"] == "auto" and kw["max_tokens"] == ask.CHAT_DEFAULT_TOKENS
+    tc = out["message"]["tool_calls"][0]
+    assert tc["function"] == {"name": "filter", "arguments": '{"table":"results"}'} and out["finish_reason"] == "tool_calls"
+    assert out["meta"]["cost_usd"] == 0.0002 and out["meta"]["tokens_in"] == 500
+
+
+def test_chat_text_answer_and_reasoning_option(monkeypatch):
+    c = FakeClient(content="Ответ")
+    out = ask.chat([{"role": "user", "content": "q"}], None, reasoning=256, client=c)
+    assert out["message"] == {"role": "assistant", "content": "Ответ"}
+    assert c.calls[0]["extra_body"]["reasoning"] == {"max_tokens": 256} and "tools" not in c.calls[0]
+    monkeypatch.setenv("ASK_AGENT_MODEL", "vendor/agent")
+    c2 = FakeClient(content="x")
+    ask.chat([{"role": "user", "content": "q"}], client=c2)
+    assert c2.calls[0]["model"] == "vendor/agent"
+
+
+def test_chat_refuses_without_pinned_provider_and_bad_input(monkeypatch):
+    monkeypatch.setenv("ASK_PROVIDER", " , ")
+    c = FakeClient()
+    with pytest.raises(ask.AskError) as e:
+        ask.chat([{"role": "user", "content": "q"}], client=c)
+    assert e.value.code == "not_configured" and not c.calls
+    monkeypatch.delenv("ASK_PROVIDER")
+    for bad in ([], [{"role": "x", "content": "q"}], "q"):
+        with pytest.raises(ask.AskError) as e:
+            ask.chat(bad, client=c)
+        assert e.value.status == 400
+    with pytest.raises(ask.AskError):
+        ask.chat([{"role": "user", "content": "q"}], max_tokens=99999, client=c)
+    with pytest.raises(ask.AskError) as e:
+        ask.chat([{"role": "user", "content": "x" * (ask.CHAT_MAX_CHARS + 1)}], client=c)
+    assert e.value.status == 413 and not c.calls
+
+
+def test_chat_provider_error_is_retryable_ml_error():
+    with pytest.raises(ask.AskError) as e:
+        ask.chat([{"role": "user", "content": "q"}], client=FakeClient(exc=TimeoutError("t")))
+    assert e.value.code == "ml_error" and e.value.retryable
