@@ -706,7 +706,7 @@ def gap_fill(client, args, text, state, mentions, pub_id, max_tokens, raw_path, 
     have = {r.get("result_id") for r in state.get("results", [])}
     out, n = [], len(have) + 1
     for r in rows:
-        r.setdefault("publication_id", pub_id)
+        r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
         if not r.get("result_id") or r["result_id"] in have:
             while f"R{n:03d}" in have:
                 n += 1
@@ -1308,7 +1308,7 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
                                               max_tokens, step, raw_path, report))
             rows = result.get(step, []) if isinstance(result, dict) else []
             for r in rows:
-                r.setdefault("publication_id", pub_id)
+                r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
             return step, rows, None
         except LLMError as e:
             return step, None, e
@@ -1350,7 +1350,7 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
                                            max(max_tokens, RAG_RESULTS_MAX_TOKENS), label, raw_path, report))
             rows = res.get("results", []) if isinstance(res, dict) else []
             for r in rows:
-                r.setdefault("publication_id", pub_id)
+                r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
                 if not prose:  # детерминированно: страница и номер таблицы известны
                     if r.get("source_page") is None:
                         r["source_page"] = ch["page"]
@@ -1458,7 +1458,7 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
                                               issues_max_tokens, "issues", raw_path, report, retry=True))
             issues = result.get("issues", []) if isinstance(result, dict) else []
             for r in issues:
-                r.setdefault("publication_id", pub_id)
+                r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
             state["issues"] = issues
         except LLMError as e:
             print(f"[!] issues не получены: {e}\n    Основной датасет сохраню без issues.", flush=True)
@@ -1546,7 +1546,7 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
                                               step, raw_path, report))
             rows = result.get(step, []) if isinstance(result, dict) else []
             for r in rows:
-                r.setdefault("publication_id", pub_id)
+                r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
             return step, rows, None
         except LLMError as e:
             return step, None, e
@@ -1629,7 +1629,7 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
                                               retry=True))  # [faktura-patch] лёгкий проход
             issues = result.get("issues", []) if isinstance(result, dict) else []
             for r in issues:
-                r.setdefault("publication_id", pub_id)
+                r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
             state["issues"] = issues
         except LLMError as e:
             print(f"[!] issues не получены: {e}\n    Основной датасет сохраню без issues.", flush=True)
