@@ -77,7 +77,7 @@ _KEYWORDS = {
 
 
 def _norm(s: str) -> str:
-    s = (s.replace("ﬁ", "fi").replace("ﬂ", "fl").replace("ﬀ", "ff").replace("−", "-").replace("–", "-"))
+    s = (s.replace("ﬃ", "ffi").replace("ﬄ", "ffl").replace("ﬁ", "fi").replace("ﬂ", "fl").replace("ﬀ", "ff").replace("−", "-").replace("–", "-"))
     return _re.sub(r"[^a-z0-9.%]+", "", s.lower())
 
 
@@ -359,7 +359,8 @@ def _page_texts(pdf):
             t = ""
         elif i == cut_page:
             t = t[:cut_pos]
-        t = t.replace("−", "-").replace(" ", " ").replace(" ", " ")
+        t = (t.replace("−", "-").replace(" ", " ").replace(" ", " ")
+             .replace("ﬃ", "ffi").replace("ﬄ", "ffl").replace("ﬁ", "fi").replace("ﬂ", "fl").replace("ﬀ", "ff"))  # [faktura-patch] лигатуры
         t = _re.sub(r"-\n(?=[a-z])", "", t)
         out.append(_re.sub(r"[ \t]*\n[ \t]*", " ", t))
     return out
