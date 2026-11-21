@@ -285,7 +285,9 @@ STEP_PROMPTS = {
 различающийся состав поглотителя: контроль, легированный и т.д.):
 - material_name_raw — как материал назван в статье («0.001 M SrCl2–doped CsPbI2Br»);
 - formula_normalized — для перовскита вид A-B-X с раскрытыми MA/FA/Cs (например FA0.95Cs0.05PbI3),
-  для прочих — формула как в статье, если дана;
+  для прочих — формула как в статье, если дана. ТОЛЬКО если состав прямо написан в статье формулой
+  (в тексте/таблице/подписи). НЕ вычисляй состав из соотношения прекурсоров, концентраций растворов или
+  долей в смеси и не восстанавливай по догадке — тогда formula_normalized = null (описание — в material_name_raw);
 - material_class ∈ perovskite, CIGS, CdTe, kesterite, Sb2Se3, thin-film Si, other;
 - dimensionality ∈ 3D, 2D, 2D-3D — ТОЛЬКО если размерность названа/очевидна из текста
   (2D/3D гетероструктура, 2D-перовскит); иначе null;
@@ -326,7 +328,10 @@ STEP_PROMPTS = {
 - layer_thickness — только если указана, В НМ (мкм × 1000); число, либо текст-диапазон «63-68»;
   thickness_unit = nm, если толщина указана;
 - deposition_method — метод нанесения с ключевыми параметрами, если описаны
-  («spin-coating, 4000 rpm, 30 s», «thermal evaporation», «chemical bath (TiCl4 in water, 70 °C)»);
+  («spin-coating, 4000 rpm, 30 s», «thermal evaporation», «chemical bath (TiCl4 in water, 70 °C)»,
+  «RF magnetron sputtering, RT»). Ключевые параметры — скорость и время вращения, температура (или RT),
+  число циклов. НЕ включай название установки/производителя, мощность, давление, поток газа, чистоту мишени,
+  расстояние до подложки, аббревиатуру метода в скобках («(PED)», «(CBD)») — это в note;
 - annealing_temperature — текст с единицей в °C («500 °C»); annealing_time — текст с единицей
   («10 min»); только если отжиг/обработка слоя описаны;
 - atmosphere — атмосфера процесса («N2 glovebox», «air»), если указана.""",
@@ -470,6 +475,10 @@ def solar_normalize(state: dict, text: str) -> dict:
     J-V spectrum/intensity from the paper's single stated condition; no synonym brackets in materials/methods."""
     st = Counter()
     text = text or ""
+    for m in state.get("materials") or []:  # antimony chalcogenides with Se (Sb2(S,Se)3, Sb2S3/Sb2(S,Se)3) -> Sb2Se3
+        f = f"{m.get('formula_normalized') or ''} {m.get('material_name_raw') or ''}"
+        if m.get("material_class") == "other" and re.search(r"Sb2\s*\(?S?,?\s*Se", f):
+            m["material_class"] = "Sb2Se3"; st["material_class"] += 1
     mats = {m.get("material_id"): (m.get("material_class") or "") for m in state.get("materials") or []}
     layers_by_dev = defaultdict(list)
     for l in state.get("layers") or []:
