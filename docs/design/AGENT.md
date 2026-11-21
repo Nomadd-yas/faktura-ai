@@ -34,6 +34,7 @@ POST /runs/{id}/messages -> рабочий поток -> цикл агента (
 | `rules` | `check?` | определения проверок области из паспорта (`passport/data/*.json`) + формулы, пороги и типичные причины: `{check_name, title, description, level, formula?, thresholds?, typical_fix?}` |
 | `calc` | `expr, inputs{имя: fact_id \| число}` | безопасная арифметика (`calc.safe_eval`: ast, только числа, имена из `inputs`, `+ - * /`, унарный минус, скобки) -> `{calc_id, value, inputs{имя:{fact_id, value, unit}}, expr}`; маркер `[[calc:calc_id]]` |
 | `propose_fix` | `items[{fact_id, suggested, unit?, reason}]` | карточка `fix` с предложенными исправлениями; ничего не применяет, текущее значение берётся из строки |
+| `external_sources` | `kind(related, cites, this, search), pid?, query?, n<=8` | работы OpenAlex вне разбора (`sources/openalex.py`: httpx, таймаут 8 с, кэш 1 ч, ключ/mailto из настроек); номера `S1..Sn` в пределах ответа; маркер `[[src:Sn]]`: числа - только год и `cited_by_count` работы; `answer.sources`, SSE `sources`; не предлагается при `FAKTURA_OPENALEX_ENABLED=false`; CORE_API §4l |
 | `search_text` | `query` (английский), `pids, k ≤ 10` | `faktura.textindex.search_text(uow, corpus_id, query, pids=<область>, k)`; хиты чужих статей отбрасываются |
 | `read_page` | `pid, page` | `faktura.textindex.read_page(...)`; цитируется маркером `[[page:<pid>/<page>\|цитата]]` (старый `[[chunk:page:<pid>/<page>\|…]]` тоже проходит) |
 | `clarify` | `question, options[2..4]` | не инструмент данных: завершает ход вопросом-уточнением |
@@ -72,7 +73,7 @@ POST /runs/{id}/messages -> рабочий поток -> цикл агента (
    следующего числа, ≤ 40 символов; подряд идущие маркеры тоже), иначе ближайшим перед ним.
 2. Маркер указывает на существующий объект: `fact` — строка `results` области (отклонённых нет), `agg` — выданный в этом
    ответе, `chunk` — выданный `search_text`/`read_page` (цитата `|…` — подстрока текста, без учёта пробелов и регистра),
-   `issue`, `row` — существуют в области; `page` — страница существует (читалась `read_page` или читается из индекса), цитата обязательна и является подстрокой её текста; `calc` — выдан `calc` в этом ответе.
+   `issue`, `row` — существуют в области; `page` — страница существует (читалась `read_page` или читается из индекса), цитата обязательна и является подстрокой её текста; `calc` — выдан `calc` в этом ответе; `src` — работа выдана `external_sources` в этом ответе.
 3. Число совпадает с действующим значением с точностью округления записанной точности (0,5 единицы последнего знака):
    для `fact` — `value`, `normalized_value`, `metric_value`, `spread_value`, `baseline_value`, `n_devices`,
    `sample_size`, `metric_k`, `time_point` (`raw_value` не принимается: у исправленной вручную строки он хранит старое

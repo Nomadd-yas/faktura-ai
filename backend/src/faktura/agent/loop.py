@@ -10,7 +10,7 @@ from typing import Any
 
 from ..ask.client import AskUnavailable
 from . import MAX_TOKENS
-from .tools import TOOL_SPECS, Toolbox
+from .tools import Toolbox
 
 log = logging.getLogger("faktura.agent")
 MIN_CALL_S = 3.0  # меньше этого остатка времени новый вызов модели не начинаем
@@ -65,7 +65,7 @@ def run_loop(llm: Any, tb: Toolbox, messages: list[dict], *, emit: Callable[[str
             return out
         final = calls >= max_calls  # лимит инструментов исчерпан: просим ответ без инструментов
         try:
-            r = llm.chat(messages, None if final else TOOL_SPECS, max_tokens=MAX_TOKENS, timeout_s=min(remaining, 30.0))
+            r = llm.chat(messages, None if final else tb.specs, max_tokens=MAX_TOKENS, timeout_s=min(remaining, 30.0))
         except AskUnavailable as e:
             log.warning("Модель агента недоступна: %s", e)
             out.reason = "llm_unavailable"

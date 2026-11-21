@@ -39,6 +39,8 @@ class AppContext:
     ask_client: Any = "auto"
     # клиент ML агента чата разбора (POST /llm/chat): "auto" - из настроек при первом вопросе, None - без агента (база)
     llm_client: Any = "auto"
+    # клиент OpenAlex (внешние источники агента): "auto" - из настроек, None - отключён
+    sources_client: Any = "auto"
     agent_streams: Any = field(default_factory=lambda: __import__("faktura.agent.store", fromlist=["Streams"]).Streams())
     stub_turns: "OrderedDict[str, dict[str, Any]]" = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)

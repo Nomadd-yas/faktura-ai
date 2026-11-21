@@ -1,6 +1,7 @@
 """Вопросы внутри разбора: агент (CORE_API §4j, §15.9) и история чатов (§4k). Только владелец разбора.
 
 GET/POST /runs/{id}/messages (?thread= / thread_id), GET /runs/{id}/messages/{mid}/stream, POST .../stop,
+GET .../messages/{mid}/sources, GET /runs/{id}/sources (внешние работы OpenAlex, §4l),
 PUT .../rating, GET /runs/{id}/suggestions; чаты: GET/POST /runs/{id}/threads, GET/PATCH/DELETE /runs/{id}/threads/{tid}.
 Без thread_id вопрос идёт в текущий чат (последний), "new" - в новый.
 """
@@ -218,6 +219,44 @@ def _assistant(uow, corpus, message_id: str) -> dict:
     if m is None or m["role"] != "assistant":
         raise AppError("not_found", "Сообщение не найдено")
     return m
+
+
+def _question_of(rows: list[dict], m: dict) -> str:
+    q = next((x for x in rows if x["id"] == m.get("reply_to")), None)
+    return (q or {}).get("text") or ""
+
+
+@router.get("/runs/{run_id}/messages/{message_id}/sources", summary="Внешние источники ответа (OpenAlex)")
+def message_sources(run_id: str, message_id: str, user: CurrentUser = Depends(current_user),
+                    services: Services = Depends(get_services)):
+    """Для страницы «Источники»: `{message_id, question, sources[], generated_at}`; чужой разбор / нет ответа -> 404."""
+    with services.db.uow() as uow:
+        corpus = get_corpus(uow, user, run_id)
+        m = _assistant(uow, corpus, message_id)
+        rows = store.list_all(uow, corpus.id, m.get("thread_id")) if m.get("thread_id") else []
+    return JSONResponse({"message_id": message_id, "question": _question_of(rows, m),
+                         "sources": (m.get("answer") or {}).get("sources") or [], "generated_at": iso(m["created_at"])},
+                        media_type=JSON_MEDIA_TYPE)
+
+
+@router.get("/runs/{run_id}/sources", summary="Внешние источники всего чата (?thread=), без повторов")
+def run_sources(run_id: str, thread: str | None = None, user: CurrentUser = Depends(current_user),
+                services: Services = Depends(get_services)):
+    """`{thread_id, sources[], generated_at}`; у работы `cited_in: [{message_id, question}]`, дубли (openalex_id) слиты."""
+    with services.db.uow() as uow:
+        corpus = get_corpus(uow, user, run_id)
+        t = _existing_thread(uow, corpus, user, thread)
+        rows = store.list_all(uow, corpus.id, t["id"]) if t else []
+    merged: dict[str, dict] = {}
+    for m in rows:
+        if m["role"] != "assistant" or m["status"] != "done":
+            continue
+        for s in (m.get("answer") or {}).get("sources") or []:
+            w = merged.setdefault(s.get("openalex_id") or s.get("url") or s.get("title"),
+                                  {**{k: v for k, v in s.items() if k != "id"}, "cited_in": []})
+            w["cited_in"].append({"message_id": m["id"], "question": _question_of(rows, m)})
+    return JSONResponse({"thread_id": t["id"] if t else None, "sources": list(merged.values()),
+                         "generated_at": iso(auth.utcnow())}, media_type=JSON_MEDIA_TYPE)
 
 
 @router.post("/runs/{run_id}/messages/{message_id}/stop", summary="Остановить ответ")
