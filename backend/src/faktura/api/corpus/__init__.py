@@ -11,9 +11,10 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from .routes_manage import router as manage_router
+from .routes_ask import router as ask_router
 from .routes_export import router as export_router
 from .routes_runs import router as runs_router
 
-ROUTERS: list[APIRouter] = [runs_router, manage_router, export_router]  # ядро v1: /runs (CORE_API §2, §4)
+ROUTERS: list[APIRouter] = [runs_router, manage_router, export_router, ask_router]  # /runs (CORE_API §2, §4)
 
 __all__ = ["ROUTERS"]

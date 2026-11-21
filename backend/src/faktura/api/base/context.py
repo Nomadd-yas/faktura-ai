@@ -35,6 +35,8 @@ class AppContext:
         UPLOADS_PER_HOUR, 3600, message="Слишком много загрузок: не больше 60 в час"))
     chat_limiter: RateLimiter = field(default_factory=lambda: RateLimiter(
         CHAT_QUESTIONS_PER_MIN, 60, message="Слишком много вопросов: не больше 30 в минуту"))
+    # клиент ML для «Вопросов по разбору»: "auto" - собрать из настроек при первом вопросе, None - без ML (правила)
+    ask_client: Any = "auto"
     stub_turns: "OrderedDict[str, dict[str, Any]]" = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
