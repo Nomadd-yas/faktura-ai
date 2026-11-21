@@ -25,11 +25,13 @@ from sqlalchemy.pool import StaticPool
 from ..config import Settings
 from ..domain.errors import AppError
 from ..domain.security import hash_password, validate_password
+from ..domain.tables import ID_COLUMN, TABLES
 from . import schema as S
 from ._types import DEFAULT_WORKSPACE_ID, DEFAULT_WORKSPACE_NAME
 from .repos import (ActionsRepo, AnchorsRepo, CorporaRepo, ExportsRepo, FactsRepo, FilesRepo, GoldRepo,
                     IdempotencyRepo, IssuesRepo, LoginAttemptsRepo, PapersRepo, ProfilesRepo, RunsRepo, SessionsRepo,
-                    StatsRepo, SubTablesRepo, SynonymsRepo, UsersRepo, WorkspacesRepo)
+                    StatsRepo, SynonymsRepo, UsersRepo, WorkspacesRepo)
+from .sub_rows import SubRowsRepo, _num as _sub_num, _page as _sub_page
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +76,7 @@ class UnitOfWork:
     exports: ExportsRepo
     login_attempts: LoginAttemptsRepo
     synonyms: SynonymsRepo
-    sub: SubTablesRepo
+    sub: SubRowsRepo
 
     def __init__(self, db: "Database") -> None:
         self.db = db
@@ -99,7 +101,7 @@ class UnitOfWork:
         self.exports = ExportsRepo(self)
         self.login_attempts = LoginAttemptsRepo(self)
         self.synonyms = SynonymsRepo(self)
-        self.sub = SubTablesRepo(self)
+        self.sub = SubRowsRepo(self)
 
     # --- жизненный цикл -------------------------------------------------------------------------
 
@@ -240,8 +242,43 @@ class Database:
         for ix in S.sub_issues.indexes:  # индексы, добавленные после первого развёртывания (create_all их не трогает)
             if ix.name == "ix_sub_issues_corpus_check":
                 ix.create(self.engine, checkfirst=True)
+        self._migrate_sub_rows()
         with self.uow() as u:
             u.profiles.ensure_builtin()
+
+    def _migrate_sub_rows(self) -> None:
+        """Однократный перенос старых sub_* в sub_rows (domain=solar), если sub_rows пуста. Идемпотентно."""
+        with self.engine.begin() as c:
+            if c.execute(sa.select(S.sub_rows.c.id).limit(1)).first() is not None:
+                return
+            if not any(c.execute(sa.select(t.c.seq).limit(1)).first() is not None for t in S.SUB.values()):
+                return
+            total = 0
+            for name, t in S.SUB.items():
+                cols = TABLES[name]
+                key = ID_COLUMN[name]
+                q = sa.select(t).order_by(t.c.paper_id, t.c.position, t.c.seq)
+                batch: list[dict] = []
+                for r in c.execute(q).mappings().all():
+                    data = {k: r[k] if r[k] is not None else "" for k in cols}
+                    batch.append({
+                        "paper_id": r["paper_id"], "corpus_id": r["corpus_id"] or "", "domain": "solar",
+                        "publication_id": data.get("publication_id", ""), "table_name": name,
+                        "position": r["position"], "row_id": data.get(key),
+                        "metric_name": data.get("metric_name") if name == "results" else None,
+                        "check_name": data.get("check_name") if name == "issues" else None,
+                        "num_value": _sub_num(data.get("metric_value", "")) if name == "results" else None,
+                        "source_page": _sub_page(data.get("source_page", "")) if name in ("results", "issues")
+                        else None,
+                        "quote_found": None, "data": data})
+                    if len(batch) >= 1000:
+                        c.execute(S.sub_rows.insert(), batch)
+                        total += len(batch)
+                        batch = []
+                if batch:
+                    c.execute(S.sub_rows.insert(), batch)
+                    total += len(batch)
+        log.info("Перенесено строк sub_* -> sub_rows: %d", total)
 
     def _add_missing_columns(self) -> None:
         """Колонки, добавленные после первого развёртывания: create_all не меняет существующие таблицы.

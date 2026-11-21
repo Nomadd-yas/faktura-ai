@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 
@@ -321,6 +322,32 @@ def _sub_table(name: str) -> sa.Table:
 SUB: dict[str, sa.Table] = {n: _sub_table(n) for n in SUB_TABLES}
 sub_publications, sub_materials, sub_devices, sub_layers, sub_measurements, sub_results, sub_issues = (
     SUB[n] for n in SUB_TABLES)
+
+# --- sub_rows: строки таблиц сдачи всех областей (docs/design/DOMAINS.md §2) ---------------------------
+# data = {колонка шаблона: строка как в CSV}; остальные колонки - денормализация для фильтров и сортировки.
+# Старые sub_* выше остаются только для разового переноса в sub_rows (Database.create_all).
+
+sub_rows = sa.Table(
+    "sub_rows", metadata,
+    sa.Column("id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), primary_key=True, autoincrement=True),
+    _paper_fk(),
+    sa.Column("corpus_id", sa.String(64), nullable=False, default="", server_default=""),
+    sa.Column("domain", sa.String(16), nullable=False, default="solar", server_default="solar"),
+    sa.Column("publication_id", sa.String(128), nullable=False, default="", server_default=""),
+    sa.Column("table_name", sa.String(32), nullable=False),
+    sa.Column("position", sa.Integer, nullable=False, default=0),
+    sa.Column("row_id", sa.String(128), nullable=True),
+    sa.Column("metric_name", sa.String(128), nullable=True),
+    sa.Column("check_name", sa.String(128), nullable=True),
+    sa.Column("num_value", sa.Float, nullable=True),
+    sa.Column("source_page", sa.Integer, nullable=True),
+    sa.Column("quote_found", sa.Boolean, nullable=True),
+    sa.Column("data", sa.JSON().with_variant(postgresql.JSONB(), "postgresql"), nullable=False),
+    sa.Index("ix_sub_rows_paper", "paper_id", "table_name", "position"),
+    sa.Index("ix_sub_rows_corpus_pub", "corpus_id", "table_name", "publication_id"),
+    sa.Index("ix_sub_rows_corpus_metric", "corpus_id", "table_name", "metric_name"),
+    sa.Index("ix_sub_rows_corpus_check", "corpus_id", "table_name", "check_name"),
+)
 
 # --- кеш агрегатов корпуса (REQ-101) -----------------------------------------------------------
 

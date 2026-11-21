@@ -30,6 +30,7 @@ ERROR_CATALOG: dict[str, tuple[int, str]] = {
     "zip_too_large": (413, "Архив слишком велик"),
     "encrypted_pdf": (422, "PDF защищён паролем"),
     "extractor_unavailable": (503, "Сервис разбора временно недоступен"),
+    "domain_not_supported": (422, "Область не поддерживается"),
     "issue_auto_fixed": (409, "Замечание уже исправлено автоматически"),
     # внутренние коды извлечения: наружу в API уходят как extractor_unavailable, тексты - публичные
     "ml_unavailable": (503, "Сервис разбора временно недоступен"),

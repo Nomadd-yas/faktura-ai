@@ -413,7 +413,8 @@ class PaperProcessor:
 
         saved = uow.papers.load_bundle(paper.id, apply_review=True)
         tables, _ = paper_submission_tables(saved, profile, manual_facts=uow.facts.manual_for_paper(paper.id))
-        uow.sub.replace(paper.id, paper.corpus_id, tables)
+        quotes = {r.result_id: r.meta.quote_found for r in saved.results}
+        uow.sub.replace(paper.id, paper.corpus_id, "solar", tables, quote_found=quotes)
 
     @staticmethod
     def _restore_review(uow, paper_id: str, old_facts: list[Fact], *, keep_review: bool) -> None:

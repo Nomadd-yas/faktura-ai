@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_CASE_DIR = (BACKEND_DIR.parent / "data" / "caseB_kejs5").resolve()
+DEFAULT_RAG_CASE_DIR = (BACKEND_DIR.parent / "data" / "caseA_drive").resolve()
 
 
 class Settings(BaseSettings):
@@ -69,6 +70,10 @@ class Settings(BaseSettings):
     resume_runs_on_start: bool = True
     export_sync_limit: int = 50000
     check_script: Path | None = None
+    # область rag: корень кейса, эталон для мока, скрипт проверки (выводятся из rag_case_dir)
+    rag_case_dir: Path | None = None
+    rag_mock_gold_dir: Path | None = None
+    rag_check_script: Path | None = None
     check_timeout_s: int = 900
     # SSE
     sse_ping_s: int = 25
@@ -89,11 +94,31 @@ class Settings(BaseSettings):
                 cand = self.case_dir / "tools" / "check_submission.py"
                 if cand.is_file():
                     self.check_script = cand
+        if self.rag_case_dir is None and DEFAULT_RAG_CASE_DIR.is_dir():
+            self.rag_case_dir = DEFAULT_RAG_CASE_DIR
+        if self.rag_case_dir is not None:
+            if self.rag_mock_gold_dir is None:
+                self.rag_mock_gold_dir = self.rag_case_dir / "dev_gold"
+            if self.rag_check_script is None:
+                cand = self.rag_case_dir / "tools" / "check_submission.py"
+                if cand.is_file():
+                    self.rag_check_script = cand
         return self
 
     @property
     def retry_delays(self) -> tuple[float, ...]:
         return tuple(float(x) for x in self.extract_retry_delays.split(",") if x.strip())
+
+
+def domain_paths(settings: Settings, name: str) -> tuple[Path | None, Path | None, Path | None]:
+    """(case_dir, mock_gold_dir, check_script) области."""
+    if name == "solar":
+        return settings.case_dir, settings.mock_gold_dir, settings.check_script
+    if name == "rag":
+        return settings.rag_case_dir, settings.rag_mock_gold_dir, settings.rag_check_script
+    from .domain.errors import AppError
+
+    raise AppError("domain_not_supported", f"Область не поддерживается: {name}")
 
 
 @lru_cache

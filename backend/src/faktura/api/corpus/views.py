@@ -1,7 +1,7 @@
 """Представления ядра API v1 (CORE_API.md §2-4): Run/RunFile, сводка, доступ к разбору.
 
 Run из контракта = корпус kind="extract" с одним прогоном (`Run.id` = `run_` + хвост id корпуса).
-Строки 7 таблиц - те, что лежат в `sub_*` (колонки CSV шаблона), отдаются как есть.
+Строки 7 таблиц - те, что лежат в `sub_rows` (колонки CSV шаблона), отдаются как есть.
 """
 from __future__ import annotations
 
@@ -9,12 +9,9 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-import sqlalchemy as sa
-
 from ...domain.entities import CorpusFile, CorpusFileStatus, CurrentUser, PaperStatus, Run, RunStatus
 from ...domain.errors import AppError
-from ...domain.tables import EVAL_METRICS
-from ...storage import schema as S
+from ...domain.registry import get_domain
 from ..base.serializers import iso
 
 DOMAIN = "solar"
@@ -82,18 +79,9 @@ class RunData:
         self.papers = {p.id: p for p in uow.papers.list(corpus_id=corpus.id)}
         runs = uow.runs.list(corpus.id, limit=1)
         self.run: Run | None = runs[0] if runs else None
-        c = uow.sub.c
-        r, i, p = S.sub_results, S.sub_issues, S.sub_publications
-        self.results_n: dict[str, int] = {
-            k: n for k, n in c.execute(sa.select(r.c.paper_id, sa.func.count()).where(r.c.corpus_id == corpus.id)
-                                       .group_by(r.c.paper_id))}
-        self.issues_n: dict[str, int] = {
-            k: n for k, n in c.execute(sa.select(i.c.paper_id, sa.func.count()).where(i.c.corpus_id == corpus.id)
-                                       .group_by(i.c.paper_id))}
-        self.pub: dict[str, tuple[str, str]] = {
-            row.paper_id: (row.in_scope or "", row.exclusion_reason or "")
-            for row in c.execute(sa.select(p.c.paper_id, p.c.in_scope, p.c.exclusion_reason)
-                                 .where(p.c.corpus_id == corpus.id))}
+        self.results_n: dict[str, int] = uow.sub.counts_by_paper(corpus.id, "results")
+        self.issues_n: dict[str, int] = uow.sub.counts_by_paper(corpus.id, "issues")
+        self.pub: dict[str, tuple[str, str]] = uow.sub.publication_scopes(corpus.id)
         self.file_ids = _file_ids(self.files)
 
     def file_view(self, f: CorpusFile) -> dict[str, Any]:
@@ -208,28 +196,23 @@ def run_summary(uow, corpus) -> dict[str, Any]:
     views = [d.file_view(f) for f in d.files]
     by_status = d.counts(views)
     in_scope_pids = {f.paper_id for f, v in zip(d.files, views) if v["status"] in ("done", "nodata") and f.paper_id}
-    c = uow.sub.c
-    r, i = S.sub_results, S.sub_issues
     per_metric: dict[str, int] = {}
     papers_with: dict[str, set[str]] = defaultdict(set)
-    for paper_id, metric, n in c.execute(
-            sa.select(r.c.paper_id, r.c.metric_name, sa.func.count()).where(r.c.corpus_id == corpus.id)
-            .group_by(r.c.paper_id, r.c.metric_name)):
+    for paper_id, metric, n in uow.sub.metric_counts(corpus.id):
         per_metric[metric] = per_metric.get(metric, 0) + n
         if paper_id in in_scope_pids:
             papers_with[metric].add(paper_id)
-    issues_by = [{"check_name": k, "total": n} for k, n in c.execute(
-        sa.select(i.c.check_name, sa.func.count().label("n")).where(i.c.corpus_id == corpus.id)
-        .group_by(i.c.check_name).order_by(sa.desc("n"), i.c.check_name))]
+    issues_by = [{"check_name": k, "total": n} for k, n in uow.sub.issue_counts_by_check(corpus.id)]
     total = len(in_scope_pids)
+    scored = get_domain(DOMAIN).scored_metrics or ()
     return {
         "files": by_status["files"], "papers_in_scope": by_status["done"] + by_status["nodata"],
         "papers_out": by_status["out"], "files_without_results": by_status["nodata"],
         "files_error": by_status["error"],
         "results": sum(v["results"] for v in views),
-        "scored_results": sum(per_metric.get(m, 0) for m in EVAL_METRICS),
+        "scored_results": sum(per_metric.get(m, 0) for m in scored),
         "issues_total": sum(v["issues"] for v in views),
         "coverage": [{"metric": m, "n": len(papers_with.get(m, ())), "total": total,
-                      "results": per_metric.get(m, 0)} for m in EVAL_METRICS],
+                      "results": per_metric.get(m, 0)} for m in scored],
         "issues_by_check": issues_by,
     }

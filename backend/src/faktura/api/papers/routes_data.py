@@ -11,8 +11,7 @@ from fastapi.responses import Response, StreamingResponse
 from ...domain.entities import CorpusFileStatus, CurrentUser
 from ...domain.errors import AppError
 from ...domain.services import Services
-from ...domain.tables import EVAL_METRICS, TABLES
-from ...storage import decode_cursor, encode_cursor
+from ...domain.registry import get_domain
 from ..base.deps import current_user, get_services
 from ..corpus.views import RunData, file_status, get_corpus, run_id_of, user_corpora
 
@@ -20,8 +19,9 @@ log = logging.getLogger("faktura.api")
 router = APIRouter(tags=["data"])
 
 _SORTS = ("publication_id", "metric", "value", "page")
-_NATIVE_SORT = {"publication_id": "publication", "metric": "metric"}
-_BIG = 10_000_000
+_NATIVE_SORT = {"publication_id": "publication", "metric": "metric", "value": "value", "page": "page"}
+_SOLAR = get_domain("solar")
+TABLES = _SOLAR.tables
 
 
 # --- поиск статьи ------------------------------------------------------------------------------
@@ -42,12 +42,13 @@ def _extras(uow, paper) -> dict[str, Any]:
     """Подсказки интерфейсу по статье: подписи приборов, название, quote_found, замечания, повторы."""
     tables = uow.sub.paper_tables(paper.id)
     pub = tables["publications"][0] if tables["publications"] else {}
-    quotes: dict[str, bool | None] = {}
-    try:
-        bundle = uow.papers.load_bundle(paper.id, apply_review=False)
-        quotes = {r.result_id: r.meta.quote_found for r in bundle.results}
-    except Exception:  # noqa: BLE001 - подсказка необязательна
-        log.debug("quote_found недоступен для %s", paper.id, exc_info=True)
+    quotes: dict[str, bool | None] = uow.sub.paper_quotes(paper.id)
+    if tables["results"] and all(v is None for v in quotes.values()):
+        try:  # старые данные (до sub_rows.quote_found): считаем по записям статьи
+            bundle = uow.papers.load_bundle(paper.id, apply_review=False)
+            quotes = {r.result_id: r.meta.quote_found for r in bundle.results}
+        except Exception:  # noqa: BLE001 - подсказка необязательна
+            log.debug("quote_found недоступен для %s", paper.id, exc_info=True)
     issue_ids: dict[str, list[str]] = {}
     for i in tables["issues"]:
         for rid in [x for x in (i.get("record_ids") or "").split(";") if x]:
@@ -174,22 +175,6 @@ def _need_run(run: str | None) -> str:
     return run
 
 
-def _offset(cursor: str | None, sig: str) -> int:
-    if not cursor:
-        return 0
-    cur = decode_cursor(cursor)
-    if len(cur) != 3 or cur[0] != "py" or cur[1] != sig or not isinstance(cur[2], int) or cur[2] < 0:
-        raise AppError("validation_error", "Некорректный курсор", field="cursor")
-    return cur[2]
-
-
-def _num_key(row: dict, col: str) -> float | None:
-    try:
-        return float(row.get(col) or "")
-    except ValueError:
-        return None
-
-
 @router.get("/results", summary="Строки results разбора")
 def list_results(run: str | None = None, pid: list[str] = Query(default=[]), metric: list[str] = Query(default=[]),
                  scored: bool = False, device_id: str | None = None, measurement_id: str | None = None,
@@ -202,21 +187,14 @@ def list_results(run: str | None = None, pid: list[str] = Query(default=[]), met
         raise AppError("validation_error", f"sort: одно из {', '.join(_SORTS)}", field="sort")
     metrics: list[str] | None = list(metric) or None
     if scored:
-        metrics = [m for m in (metrics or EVAL_METRICS) if m in EVAL_METRICS] or ["\x00"]
+        scored_set = _SOLAR.scored_metrics or ()
+        metrics = [m for m in (metrics or scored_set) if m in scored_set] or ["\x00"]
     flt = dict(pids=pid or None, metrics=metrics, device_id=device_id, measurement_id=measurement_id,
                material_id=material_id, exclude_duplicates=duplicates == "exclude")
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run)
-        if sort in (None, "publication_id", "metric") and dir == "asc":
-            rows, total, nxt = uow.sub.list_results(corpus.id, **flt, sort=_NATIVE_SORT.get(sort or "", "seq"),
-                                                    limit=limit, cursor=cursor)
-        else:
-            sig = f"{sort}:{dir}"
-            offset = _offset(cursor, sig)
-            allrows, total, _ = uow.sub.list_results(corpus.id, **flt, sort="seq", limit=_BIG)
-            rows = _py_sort(allrows, sort, dir)
-            nxt = encode_cursor(["py", sig, offset + limit]) if offset + limit < len(rows) else None
-            rows = rows[offset:offset + limit]
+        native = _NATIVE_SORT.get(sort or "", "seq" if dir == "asc" else "publication")
+        rows, total, nxt = uow.sub.list_results(corpus.id, **flt, sort=native, dir=dir, limit=limit, cursor=cursor)
         by_pid = {p.publication_id: p for p in uow.papers.list(corpus_id=corpus.id)}
         cache: dict[str, dict] = {}
         data = []
@@ -229,18 +207,6 @@ def list_results(run: str | None = None, pid: list[str] = Query(default=[]), met
             data.append({"row": r, "device_label": x["labels"].get(r["device_id"], ""), "paper_title": x["title"],
                          "meta": _result_meta(x, r["result_id"], False)})
     return {"data": data, "total": total, "next_cursor": nxt}
-
-
-def _py_sort(rows: list[dict], sort: str | None, direction: str) -> list[dict]:
-    rev = direction == "desc"
-    if sort in ("value", "page"):
-        col = "metric_value" if sort == "value" else "source_page"
-        good = [r for r in rows if _num_key(r, col) is not None]
-        blank = [r for r in rows if _num_key(r, col) is None]
-        good.sort(key=lambda r: _num_key(r, col), reverse=rev)
-        return good + blank
-    col = "publication_id" if sort in (None, "publication_id") else "metric_name"
-    return sorted(rows, key=lambda r: r[col], reverse=rev)
 
 
 @router.get("/issues", summary="Строки issues разбора")

@@ -43,8 +43,8 @@ def test_reprocess_replaces_rows(make_env, pdf_dir, profile):
     _run(env, pid, profile)
     _run(env, pid, profile, mode="renormalize")
     with env.uow() as uow:
-        n = uow.conn.execute(S.sub_results.select().where(S.sub_results.c.paper_id == pid)).fetchall()
-        pubs = uow.conn.execute(S.sub_publications.select().where(S.sub_publications.c.paper_id == pid)).fetchall()
+        n = uow.conn.execute(S.sub_rows.select().where(S.sub_rows.c.paper_id == pid, S.sub_rows.c.table_name == "results")).fetchall()
+        pubs = uow.conn.execute(S.sub_rows.select().where(S.sub_rows.c.paper_id == pid, S.sub_rows.c.table_name == "publications")).fetchall()
     assert len(n) == 47 and len(pubs) == 1
 
 

@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from ...domain.entities import CorpusFileStatus, CurrentUser, RunStatus
 from ...domain.errors import AppError
 from ...domain.services import Services
-from ...domain.tables import TABLES
+from ...domain.registry import get_domain
 from ...pdfio.inputs import CollectResult, ZipLimits, collect_inputs
 from ...storage import decode_cursor, encode_cursor
 from ..base.deps import JSON_MEDIA_TYPE, current_user, get_services, upload_rate_limit
@@ -26,6 +26,7 @@ from .views import (DOMAIN, CORPUS_KIND, RunData, corpus_id_of, default_title, g
                     run_view, user_corpora)
 
 log = logging.getLogger("faktura.api")
+TABLES = get_domain("solar").tables
 router = APIRouter(tags=["runs"])
 
 _REJECT_CODES = {"duplicate_name": "duplicate", "pdf_broken": "broken_pdf", "pdf_encrypted": "encrypted_pdf",

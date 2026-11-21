@@ -57,7 +57,7 @@ def filled(db, corpus, new_paper):
         issues = [{"publication_id": pid, "issue_id": f"I{i}", "check_name": "range" if i % 2 else "contradiction",
                    "record_ids": f"R{i:03d}", "description": f"d{i}"} for i in range(1, 5)]
         with db.uow() as u:
-            u.sub.replace(p.id, corpus.id, {"publications": [{"publication_id": pid, "title": "T"}],
+            u.sub.replace(p.id, corpus.id, "solar", {"publications": [{"publication_id": pid, "title": "T"}],
                                             "results": rows, "issues": issues})
     return papers
 
@@ -75,7 +75,7 @@ def test_paper_tables_all_seven_keys_ordered(db, filled):
 def test_replace_overwrites_and_none_becomes_empty(db, corpus, filled):
     p = filled["D001"]
     with db.uow() as u:
-        u.sub.replace(p.id, corpus.id, {"results": [{"publication_id": "D001", "result_id": "R1", "note": None}]})
+        u.sub.replace(p.id, corpus.id, "solar", {"results": [{"publication_id": "D001", "result_id": "R1", "note": None}]})
         t = u.sub.paper_tables(p.id)
         other = u.sub.paper_tables(filled["D002"].id)
     assert len(t["results"]) == 1 and t["results"][0]["note"] == "" and t["issues"] == []
