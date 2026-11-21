@@ -62,6 +62,111 @@ def model_version() -> str:
     return f"pdf-dataset/{_CODE_HASH}/" + os.environ.get("ROUTERAI_MODEL", DEFAULT_MODEL)
 
 
+# ---------- [faktura-patch] подтяжка цитат к текстовому слою PDF ----------
+# Модель цитирует OCR-markdown (LaTeX, переносы, перефразы) — проверка сдачи ищет цитату в тексте PDF.
+# Нормализация — как в tools/check_submission.py: только [a-z0-9.%] в нижнем регистре.
+import re as _re
+
+_KEYWORDS = {
+    "PCE": ("pce", "efficienc", "η"), "stabilized_PCE": ("pce", "efficienc", "stabiliz"),
+    "Voc": ("voc", "v oc", "open-circuit", "open circuit"), "Jsc": ("jsc", "j sc", "short-circuit", "short circuit"),
+    "Jsc_EQE": ("eqe", "integrat"), "FF": ("ff", "fill factor"), "Rs": ("series", "rs"),
+    "Rsh": ("shunt", "rsh"), "HI": ("hysteresis", "hi"), "T80": ("t80", "80%"),
+    "retained_PCE": ("retain", "maintain", "initial"),
+}
+
+
+def _norm(s: str) -> str:
+    s = (s.replace("ﬁ", "fi").replace("ﬂ", "fl").replace("ﬀ", "ff").replace("−", "-").replace("–", "-"))
+    return _re.sub(r"[^a-z0-9.%]+", "", s.lower())
+
+
+def _value_regex(v):
+    try:
+        f = float(str(v).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    txt = repr(f) if f != int(f) else str(int(f))
+    if "e" in txt:
+        return None
+    ip, _, dp = txt.partition(".")
+    dp = dp.rstrip("0")
+    body = _re.escape(ip) + (r"[.,]" + _re.escape(dp) + "0*" if dp else r"(?:[.,]0+)?")
+    return _re.compile(r"(?<![\d.,])" + body + r"(?![\d])")
+
+
+def _sentence(text: str, start: int, end: int, limit: int = 160) -> str:
+    left = max(text.rfind(". ", 0, start), text.rfind("\n\n", 0, start))
+    left = 0 if left < 0 else left + 2
+    right = text.find(". ", end)
+    right = len(text) if right < 0 else right + 1
+    if right - left > limit:  # окно вокруг значения по границам слов
+        half = limit // 2
+        left = max(left, start - half)
+        right = min(right, end + half)
+        while left > 0 and not text[left - 1].isspace():
+            left += 1
+        while right < len(text) and not text[right].isspace():
+            right -= 1
+    return " ".join(text[left:right].split()).strip(" ,;")
+
+
+def snap_fragments(dataset_path, pdf) -> dict:
+    import pymupdf
+    doc = pymupdf.open(str(pdf))
+    raw = [pg.get_text() for pg in doc]
+    normed = [_norm(t) for t in raw]
+    data = json.loads(Path(dataset_path).read_text(encoding="utf-8"))
+    st = {"ok": 0, "page_fixed": 0, "snapped": 0, "unresolved": 0, "table_ref": 0}
+
+    def find_value(row, pages):
+        rx = _value_regex(row.get("raw_value"))
+        if rx is None:
+            return None
+        kws = _KEYWORDS.get(row.get("metric_name") or "", ())
+        best = None
+        for n in pages:
+            for m in rx.finditer(raw[n]):
+                snip = _sentence(raw[n], m.start(), m.end())
+                if not snip or _norm(snip) not in normed[n]:
+                    continue
+                score = 2 if any(k in snip.lower() for k in kws) else 1
+                if best is None or score > best[0]:
+                    best = (score, n, snip)
+        return best
+
+    for table in ("results", "issues"):
+        for row in data.get(table) or []:
+            frag = (row.get("source_fragment") or "").strip()
+            try:
+                n = int(row.get("source_page")) - 1
+            except (TypeError, ValueError):
+                n = None
+            if frag and _re.match(r"^(Table|TABLE|Supplementary)", frag):
+                st["table_ref"] += 1
+                continue
+            nf = _norm(frag) if frag else ""
+            if nf and n is not None and 0 <= n < len(normed) and nf in normed[n]:
+                st["ok"] += 1
+                continue
+            if nf:
+                other = [k for k, t in enumerate(normed) if nf in t]
+                if len(other) == 1:
+                    row["source_page"] = other[0] + 1
+                    st["page_fixed"] += 1
+                    continue
+            if table == "results":
+                here = [n] if n is not None and 0 <= n < len(raw) else []
+                hit = find_value(row, here) or find_value(row, [k for k in range(len(raw)) if k not in here])
+                if hit and (hit[0] == 2 or here and hit[1] == here[0]):
+                    row["source_page"], row["source_fragment"] = hit[1] + 1, hit[2]
+                    st["snapped"] += 1
+                    continue
+            st["unresolved"] += 1
+    Path(dataset_path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return st
+
+
 def config_path() -> Path:
     return Path(os.environ.get("GLMOCR_CONFIG", BASE / "glmocr.config.yaml"))
 
@@ -262,6 +367,14 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
         failed_tables = ["<all>"]
         print(f"[!] извлечение прервано: {e}", flush=True)
 
+    snap_stats = None
+    if dataset_out.exists():
+        try:
+            snap_stats = snap_fragments(dataset_out, pdf)
+            print(f"      цитаты: {snap_stats}", flush=True)
+        except Exception as e:  # цитаты — улучшение, не роняем прогон
+            print(f"[!] подтяжка цитат не удалась: {e}", flush=True)
+
     # ---------- метаданные прогона поверх extract-meta ----------
     pages = None
     try:
@@ -288,6 +401,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
         "glmocr_config": str(config),
         "glmocr_config_text": config.read_text(encoding="utf-8", errors="replace"),
         "strip_tail": strip_info,
+        "quote_snap": snap_stats,
         "failed_tables": meta.get("failed_tables", failed_tables),
         "extract_error": extract_failed,
         "outputs": {
