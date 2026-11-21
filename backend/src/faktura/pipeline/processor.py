@@ -96,6 +96,12 @@ def refresh_semantic_duplicate(uow: Any, paper_id: str, publication: Publication
 # вспомогательное
 # ---------------------------------------------------------------------------------------------
 
+def file_ml_meta(out: Any, in_scope: bool) -> dict[str, Any]:
+    """Поля файла из ответа ML: ocr_confidence всегда, suggested_domain - только для статьи вне области."""
+    return {"ocr_confidence": getattr(out, "ocr_confidence", None),
+            "suggested_domain": None if in_scope else getattr(out, "suggested_domain", None)}
+
+
 def _out_of_scope(v: Any) -> bool:
     return v is False or (isinstance(v, str) and v.strip().lower() == "false")
 
@@ -319,6 +325,7 @@ class PaperProcessor:
         warnings: list[str] = []
         doc: ParsedDocument | None = None
         from_cache = False
+        ml_meta: dict[str, Any] | None = None
         if mode == "full":
             try:
                 with PDF_LOCK:
@@ -333,6 +340,7 @@ class PaperProcessor:
             warnings.extend(out.warnings)
             from_cache = out.from_cache
             mv = out.model_version
+            ml_meta = file_ml_meta(out, not _out_of_scope(out.bundle.publication.in_scope))
             bundle = out.bundle
             bundle.publication.publication_id = paper.publication_id
         else:  # renormalize: сохранённые сырые значения, без ML
@@ -377,6 +385,9 @@ class PaperProcessor:
         self._save(paper, bundle, facts, anchors, issues, stats, mv, versions, keep_review=keep_review, profile=profile,
                    needs_ocr=bool(doc.needs_ocr) if doc is not None else None,
                    page_count=doc.page_count if doc is not None else None)
+        if ml_meta is not None and file is not None:
+            with s.db.uow() as uow:
+                uow.files.update(file.id, **ml_meta)
         self._publish(paper.workspace_id, "paper.done",
                       {"paper_id": paper.id, "chat_id": None, "title": bundle.publication.title,
                        "facts": stats.facts_count, "issues": stats.open_issues})

@@ -61,7 +61,7 @@ class SubRowsRepo(_Repo):
         self.c.execute(t.delete().where(t.c.paper_id == paper_id))
         quote_found = quote_found or {}
         issue_quote_found = issue_quote_found or {}
-        batch: list[dict[str, Any]] = []
+        batch: list[dict[str, Any]] = []  # пачка не больше CHUNK строк: список всех ~28k строк (D014) не строится
         for name, cols in spec.tables.items():
             key = spec.keys.get(name)
             for i, r in enumerate(tables.get(name) or ()):
@@ -78,8 +78,11 @@ class SubRowsRepo(_Repo):
                     if name in ("results", "issues") and key else None,
                     "data": data,
                 })
-        for i in range(0, len(batch), CHUNK):
-            self.c.execute(t.insert(), batch[i:i + CHUNK])
+                if len(batch) >= CHUNK:
+                    self.c.execute(t.insert(), batch)
+                    batch = []
+        if batch:
+            self.c.execute(t.insert(), batch)
 
     def paper_tables(self, paper_id: str, domain: str = "solar") -> dict[str, list[dict[str, str]]]:
         """Все таблицы статьи области (ключ - имя таблицы шаблона), строки в порядке position."""

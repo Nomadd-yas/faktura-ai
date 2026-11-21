@@ -37,6 +37,21 @@ ROW_TABLES: tuple[str, ...] = ("materials", "devices", "layers", "measurements",
 BACKEND_RESULT_FIELDS: frozenset[str] = frozenset({"metric_value", "metric_unit", "normalized_value", "normalized_unit"})
 META_KEYS = ("_bbox", "_page", "_confidence")
 UNKNOWN_MODEL_VERSION = "unknown"
+DOMAIN_NAMES = ("solar", "rag")
+
+
+def file_meta(data: Any) -> tuple[float | None, str | None]:
+    """(ocr_confidence, suggested_domain) из верхнего уровня ответа ML. ocr_confidence - число 0..1 (иначе None),
+    suggested_domain - solar | rag (иначе None): неверные значения тихо игнорируются, на разбор статьи не влияют."""
+    if not isinstance(data, dict):
+        return None, None
+    c = data.get("ocr_confidence")
+    conf = None
+    if isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) and 0 <= c <= 1:
+        conf = round(float(c), 4)
+    d = data.get("suggested_domain")
+    sug = d.strip().lower() if isinstance(d, str) and d.strip().lower() in DOMAIN_NAMES else None
+    return conf, sug
 
 
 class _Bad(Exception):
@@ -336,4 +351,6 @@ def parse_extract_response(data: dict, publication_id: str) -> ExtractOutcome:
     if isinstance(ml_warnings, list):
         warnings.extend(f"Модель: {w}" for w in ml_warnings if isinstance(w, str) and w.strip())
 
-    return ExtractOutcome(bundle=bundle, model_version=model_version, warnings=warnings, raw=copy.deepcopy(data))
+    ocr_conf, suggested = file_meta(data)
+    return ExtractOutcome(bundle=bundle, model_version=model_version, warnings=warnings, raw=copy.deepcopy(data),
+                          ocr_confidence=ocr_conf, suggested_domain=suggested)

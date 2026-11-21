@@ -9,6 +9,7 @@
 #   uvicorn api:app --host 0.0.0.0 --port 8080
 # (в образе: docker run ... pdf-dataset serve)
 
+import json
 import os
 import re
 import shutil
@@ -16,8 +17,8 @@ import sys
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 
 BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
@@ -132,11 +133,55 @@ def health():
     return JSONResponse(status_code=200, content=body)
 
 
+NDJSON_TYPE = "application/x-ndjson"
+NDJSON_ROWS = max(1, int(os.environ.get("ML_NDJSON_ROWS", "1000")))  # строк таблицы в одной строке потока
+
+
+def wants_ndjson(accept: str | None, stream: str | None) -> bool:
+    """[faktura-patch] §10: поток NDJSON — по заголовку `Accept: application/x-ndjson` или полю формы stream=ndjson.
+    Поле формы сильнее заголовка (stream=json принудительно возвращает обычный JSON). По умолчанию — JSON."""
+    s = (stream or "").strip().lower()
+    if s in ("ndjson", "json"):
+        return s == "ndjson"
+    return NDJSON_TYPE in (accept or "").lower()
+
+
+def _line(obj) -> bytes:
+    return (json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def ndjson_events(body: dict, rows_per_line: int = NDJSON_ROWS):
+    """[faktura-patch] Тело обычного ответа /extract -> строки NDJSON (bytes):
+      {"type":"header","protocol":"ndjson/1","ok","model_version","publication_id","extract_error","failed_tables",
+       "has_dataset","out_dir","meta"}
+      {"type":"table","table":"results","rows":[... до rows_per_line строк ...]}   (сколько нужно, по порядку)
+      {"type":"end","counts":{"таблица": строк},"ok":true}
+    Сбой после первой строки -> {"type":"error","code","message","retryable","detail"} и поток закрывается без end."""
+    try:
+        ds = body.get("dataset")
+        yield _line({"type": "header", "protocol": "ndjson/1", "ok": body.get("ok"),
+                     "model_version": body.get("model_version"), "publication_id": body.get("publication_id"),
+                     "extract_error": body.get("extract_error"), "failed_tables": body.get("failed_tables"),
+                     "has_dataset": isinstance(ds, dict), "out_dir": body.get("out_dir"), "meta": body.get("meta")})
+        counts = {}
+        for table, rows in (ds.items() if isinstance(ds, dict) else ()):
+            rows = rows if isinstance(rows, list) else []
+            counts[table] = len(rows)
+            for i in range(0, len(rows), rows_per_line):
+                yield _line({"type": "table", "table": table, "rows": rows[i:i + rows_per_line]})
+        yield _line({"type": "end", "counts": counts, "ok": body.get("ok")})
+    except Exception as e:  # noqa: BLE001 - заголовок ответа уже отправлен: ошибка идёт в потоке
+        msg = f"{type(e).__name__}: {e}"
+        yield _line({"type": "error", "code": "ml_error", "message": msg, "retryable": False, "detail": msg})
+
+
 @app.post("/extract")
-def extract_pdf(file: UploadFile = File(...),
+def extract_pdf(request: Request,
+                      file: UploadFile = File(...),
                       publication_id: str | None = Form(None),
                       no_strip: bool = Form(False),
-                      domain: str = Form("solar")):  # [faktura-patch] solar | rag
+                      domain: str = Form("solar"),  # [faktura-patch] solar | rag
+                      stream: str | None = Form(None)):  # [faktura-patch] ndjson | json (иначе по Accept)
     """Загружает PDF, прогоняет конвейер, возвращает датасет и метаданные.
 
     Результат также сохраняется в файлы: /out/<id>/<id>.dataset.json и .meta.json.
@@ -170,6 +215,13 @@ def extract_pdf(file: UploadFile = File(...),
     if "err" in out:
         return _error(500, "ml_error", out["err"])
     result = out["result"]
+
+    if wants_ndjson(request.headers.get("accept"), stream):  # [faktura-patch] §10
+        body = {"ok": result["ok"], "model_version": result.get("model_version") or model_version(),
+                "publication_id": result["publication_id"], "extract_error": result["extract_error"],
+                "failed_tables": result["failed_tables"], "dataset": result["dataset"], "meta": result["meta"],
+                "out_dir": result["out_dir"]}
+        return StreamingResponse(ndjson_events(body), media_type=NDJSON_TYPE)
 
     return {
         "ok": result["ok"],

@@ -29,6 +29,7 @@ from ..domain.extraction import ExtractRequest, GenericOutcome
 from ..domain.registry import DomainSpec, get_domain
 from ..ml.validate import invalid_error
 from ._pdf import local_pdf
+from .processor import file_ml_meta
 
 log = logging.getLogger(__name__)
 
@@ -283,6 +284,8 @@ class GenericProcessor:
             raise ExtractError("ml_schema_mismatch", "Сервис разбора вернул ответ другой области")
         stage("Нормализация", 60)
         tables, warns = validate_tables(spec, out.tables, paper.publication_id)
+        ml_meta = file_ml_meta(out, tables["publications"][0].get("in_scope") != "false")
+        out.tables, out.raw = {}, {}  # строки дальше живут только в `tables` (D014: ~28k строк результатов)
         t2 = time.monotonic()
         warnings = [*out.warnings, *warns]
         pub = tables["publications"][0]
@@ -310,6 +313,7 @@ class GenericProcessor:
             if file.page_count:
                 fields["page_count"] = file.page_count
             uow.papers.update(paper.id, **fields)
+            uow.files.update(file.id, **ml_meta)
         log.info("rag %s: извлечение %.2f с, проверка %.2f с, цитаты %.2f с, сохранение %.2f с (results=%d, issues=%d)",
                  paper.publication_id, t1 - t0, t2 - t1, t3 - t2, time.monotonic() - t3, n_res, n_iss)
         p._publish(paper.workspace_id, "paper.done", {"paper_id": paper.id, "chat_id": None, "title": pub.get("title"),

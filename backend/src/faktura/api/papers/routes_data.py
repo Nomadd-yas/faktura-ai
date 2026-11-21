@@ -124,7 +124,9 @@ def _rag_paper(uow, corpus, paper, f, d: RunData, pid: str, run: str | None, use
         **(_v2_info(uow, corpus, pub.get("publication_id") or paper.publication_id) if fstatus != "out"
            else {"reviews": {}, "issue_states": {}}),
         "meta": {"file_status": fstatus, "run_ids": run_ids, "pdf_pages": paper.page_count,
-                 "is_scan": bool(f.is_scan) if f is not None else False},
+                 "is_scan": bool(f.is_scan) if f is not None else False,
+                 "ocr_confidence": f.ocr_confidence if f is not None else None,
+                 "suggested_domain": f.suggested_domain if f is not None and fstatus == "out" else None},
     }
 
 

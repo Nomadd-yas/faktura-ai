@@ -115,6 +115,27 @@ PUB = obj({
     "exclusion_reason": S(),
 })
 
+# [faktura-patch] suggested_domain (§7а.3): только в схеме ответа шага publications и ТОЛЬКО для подсказки «статья
+# вне области, но похожа на другую область». В строку publications (шаблон фиксирован) не попадает: _take_suggested
+# убирает поле и кладёт его в meta.suggested_domain.
+SUGGESTED_DOMAINS = ("rag", "solar")
+PUB_STEP = obj({**PUB["properties"], "suggested_domain": S(list(SUGGESTED_DOMAINS))})
+
+
+def _take_suggested(rows, own_domain: str):
+    """Убирает suggested_domain из строк publications; возвращает «rag»/«solar» только при in_scope=false и если
+    это другая область, иначе None."""
+    val = None
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        v = r.pop("suggested_domain", None)
+        if (r.get("in_scope") is False and isinstance(v, str) and v.strip().lower() in SUGGESTED_DOMAINS
+                and v.strip().lower() != own_domain):
+            val = v.strip().lower()
+    return val
+
+
 MATERIAL = obj({
     "publication_id": STR(),
     "material_id": STR(),
@@ -232,7 +253,7 @@ TABLES = {
 
 def table_schema(name: str) -> dict:
     return {"type": "object",
-            "properties": {name: {"type": "array", "items": TABLES[name]}},
+            "properties": {name: {"type": "array", "items": PUB_STEP if name == "publications" else TABLES[name]}},
             "required": [name],
             "additionalProperties": False}
 
@@ -279,7 +300,11 @@ STEP_PROMPTS = {
   изготовленных образцов и измеренных характеристик нет. По разделу 3.1 расчётные работы без
   изготовленных образцов к предметной области не относятся.» или «Только расчёт: ab initio
   неадиабатическая молекулярная динамика и TDDFT для α-CsPbI3; изготовленных приборов и измеренных
-  характеристик нет.» Назови, что именно сделано в работе, и почему это не подходит.""",
+  характеристик нет.» Назови, что именно сделано в работе, и почему это не подходит.
+- suggested_domain — только при in_scope=false (иначе null): "rag", если статья посвящена системам
+  retrieval-augmented generation для LLM (поиск по внешней коллекции документов + генерация с найденным
+  контекстом); "solar" — если это всё же тонкоплёночные солнечные элементы, но статья отклонена по другим
+  причинам; null — если статья не относится ни к одной из этих областей или вы не уверены.""",
 
     "materials": """Заполни materials — материалы-поглотители из статьи (по одному на каждый
 различающийся состав поглотителя: контроль, легированный и т.д.):
@@ -1021,7 +1046,7 @@ RAG_KEYS = {"publications": "publication_id", "configurations": "config_id", "da
 
 def rag_table_schema(name: str) -> dict:
     return {"type": "object",
-            "properties": {name: {"type": "array", "items": RAG_TABLES[name]}},
+            "properties": {name: {"type": "array", "items": PUB_STEP if name == "publications" else RAG_TABLES[name]}},
             "required": [name],
             "additionalProperties": False}
 
@@ -1138,7 +1163,11 @@ RAG_STEP_PROMPTS = {
   экспериментами — in_scope=true. in_scope=false — только если: обзор без собственных чисел; статья не про
   поиск по внешней коллекции для генерации (чистая LLM без retrieval, только дообучение); слово RAG лишь упомянуто.
 - exclusion_reason — только при in_scope=false (иначе null): одно–два предложения по-английски — что сделано в
-  работе и почему это не подходит.""",
+  работе и почему это не подходит.
+- suggested_domain — только при in_scope=false (иначе null): "solar", если статья посвящена тонкоплёночным
+  солнечным элементам (perovskite, CIGS, CdTe, kesterite, Sb2Se3, thin-film Si); "rag" — если это всё же
+  RAG-статья, отклонённая по другим причинам; null — если статья не относится ни к одной из этих областей или
+  вы не уверены.""",
 
     "configurations": """Заполни configurations — все конфигурации RAG-систем и сравниваемые baseline-варианты, для которых
 в статье есть числовые результаты (в таблицах, тексте, ablation):
@@ -1576,6 +1605,7 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
     from concurrent.futures import ThreadPoolExecutor
     state: dict = {t: [] for t in RAG_TABLES}
     failed: list[str] = []
+    suggested: dict = {"v": None}  # [faktura-patch] §7а.3: suggested_domain -> meta
 
     def step_user(table: str) -> str:
         return (f"publication_id = {pub_id}\n\n"
@@ -1593,6 +1623,8 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
             rows = result.get(step, []) if isinstance(result, dict) else []
             for r in rows:
                 r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
+            if step == "publications":
+                suggested["v"] = _take_suggested(rows, "rag")
             return step, rows, None
         except LLMError as e:
             return step, None, e
@@ -1863,7 +1895,7 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
                 "provider": [p.strip() for p in provider.split(",") if p.strip()] or "auto",
                 "steps": report, "failed_tables": failed, "counts": counts,
                 "domain": "rag", "figures_skipped": rag_meta["figures_skipped"], "rag": rag_meta,
-                "extraction_state": extraction_state}
+                "extraction_state": extraction_state, "suggested_domain": suggested["v"]}
         meta_out.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print("\nСтрок по таблицам:", json.dumps(counts, ensure_ascii=False), flush=True)
     if failed:
@@ -1918,6 +1950,7 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
     # общий префикс: системная часть + текст статьи (фиксированный, дружит с prompt-cache)
     state: dict = {t: [] for t in TABLES}
     failed: list[str] = []
+    suggested: dict = {"v": None}  # [faktura-patch] §7а.3: suggested_domain -> meta
 
     def step_user(table: str) -> str:
         return (f"publication_id = {pub_id}\n\n"
@@ -1936,6 +1969,8 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             rows = result.get(step, []) if isinstance(result, dict) else []
             for r in rows:
                 r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)
+            if step == "publications":
+                suggested["v"] = _take_suggested(rows, "solar")
             return step, rows, None
         except LLMError as e:
             return step, None, e
@@ -2050,6 +2085,7 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             "failed_tables": failed,
             "counts": {k: len(v) for k, v in dataset.items()},
             "solar_normalize": norm_stats,
+            "suggested_domain": suggested["v"],
         }
         meta_out.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 

@@ -13,10 +13,11 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import Settings, get_settings
 from .adapters import SUPPORTED_DOMAINS, MockGoldExtractor
+from .ndjson import NDJSON_TYPE, events_from_raw
 
 MAX_FILE_MB = 50
 
@@ -44,8 +45,8 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
                                 content={"status": "down", "model_version": None, "router": "down"})
         return JSONResponse(content={"status": "ok", "model_version": h.model_version, "router": "ok"})
 
-    @app.post("/ml/extract")
-    async def extract(request: Request) -> JSONResponse:
+    @app.post("/ml/extract", response_model=None)
+    async def extract(request: Request) -> JSONResponse | StreamingResponse:
         ctype = request.headers.get("content-type", "")
         if not ctype.startswith("multipart/form-data"):
             return _error(400, "bad_request", "Ожидается multipart/form-data")
@@ -70,9 +71,14 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
         if not pid:
             return _error(400, "bad_request", "Нет publication_id")
         try:
-            raw = extractor().build_raw(pid, domain)
+            raw = extractor().build_raw(pid, domain, content)
         except Exception as e:  # noqa: BLE001 - нет эталона и т. п.
             return _error(503, "unavailable", f"Мок недоступен: {e}", retryable=True)
+        # NDJSON: заголовок Accept или поле формы stream=ndjson (stream=json - принудительно обычный JSON);
+        # по умолчанию - обычный JSON, как раньше
+        stream = str(form.get("stream") or "").strip().lower()
+        if stream == "ndjson" or (stream != "json" and NDJSON_TYPE in request.headers.get("accept", "").lower()):
+            return StreamingResponse(events_from_raw(raw), media_type=NDJSON_TYPE)
         return JSONResponse(content=raw)
 
     return app

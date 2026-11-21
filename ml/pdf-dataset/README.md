@@ -69,6 +69,19 @@ docker run --rm -p 8080:8080 \
   В ответ добавлено `model_version` = `pdf-dataset/<model>`.
   Файлы остаются и в `/out/<stem>/`. Повторная загрузка того же имени файла перезаписывает результат.
 
+**Поток NDJSON** ([faktura-patch], спека §10; подробно — `docs/design/ML_NDJSON.md`). Для больших статей (RAG, ~28 тыс. строк
+`results`): `Accept: application/x-ndjson` или поле формы `stream=ndjson` (`stream=json` — принудительно обычный JSON; по
+умолчанию, без них, ответ прежний). Ответ `application/x-ndjson`, по объекту на строку: `{"type":"header", ok, model_version,
+publication_id, extract_error, failed_tables, has_dataset, out_dir, meta}`, затем `{"type":"table","table":"results","rows":[…≤1000…]}`
+(размер пачки — env `ML_NDJSON_ROWS`), в конце `{"type":"end","counts":{…}}`. Ошибки до начала ответа — обычный HTTP-статус и
+тело `{code,message,retryable,detail}`; сбой после заголовка — строка `{"type":"error","code","message","retryable","detail"}`
+и поток закрывается без `end`.
+
+В `meta` ([faktura-patch]): `ocr_confidence` (0..1: среднее по страницам оценки надёжности текста — текстовый слой ok/poor/none =
+1.0/0.5/0.2, страница glmocr — его `confidence` блоков, иначе эвристика `0.9·(1−min(1, 5·доля мусорных символов))`, пустая
+страница 0.5) с пояснением в `meta.ocr_confidence_basis`; `suggested_domain` (`rag`|`solar`|`null` — модель заполняет на шаге
+publications только при `in_scope=false`; в строку `publications` не попадает, шаблон фиксирован).
+
 Ошибки ([faktura-patch]) — JSON `{"code", "message", "retryable", "detail"}` (`detail` = `message`):
 
 | HTTP | code | когда |
