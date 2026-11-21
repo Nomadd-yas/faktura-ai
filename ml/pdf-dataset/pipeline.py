@@ -386,11 +386,26 @@ def _has_value(text, v):
     return False
 
 
-def verify_values(results, pdf, pages=None):
-    """Числовое значение должно встречаться в тексте PDF. Нет нигде -> строка отбрасывается (обычно OCR с
-    картинки графика или выдумка); есть только на другой странице -> исправить source_page.
-    Возвращает (оставленные строки, статистика)."""
+def _md_pages(md):
+    """markdown glmocr с метками <!-- page N --> -> {N: текст}."""
+    out, cur = {}, 1
+    for part in _re.split(r"(<!-- page \d+ -->)", md or ""):
+        m = _re.match(r"<!-- page (\d+) -->", part)
+        if m:
+            cur = int(m.group(1))
+        else:
+            out[cur] = out.get(cur, "") + part
+    return out
+
+
+def verify_values(results, pdf, pages=None, md=None):
+    """Числовое значение должно встречаться в тексте PDF ИЛИ в OCR-markdown (таблица может быть картинкой —
+    тогда чисел нет в текстовом слое, но OCR их прочитал). Нет нигде -> строка отбрасывается (выдумка);
+    есть только на другой странице -> исправить source_page. Возвращает (оставленные строки, статистика)."""
     pages = pages or _page_texts(pdf)
+    mdp = _md_pages(md) if md else {}
+    if mdp:  # [faktura-patch] страница = текстовый слой + OCR той же страницы
+        pages = [t + "\n" + mdp.get(i + 1, "") for i, t in enumerate(pages)]
     keep, st = [], {"page": 0, "page_fixed": 0, "dropped": 0, "nonnum": 0}
     for r in results:
         v = _num(r.get("raw_value")) if r.get("raw_value") is not None else _num(r.get("metric_value"))
