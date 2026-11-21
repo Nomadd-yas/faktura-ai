@@ -96,8 +96,12 @@ def test_render_png(adapter, make_pdf):
 
 
 def test_render_webp_default(adapter, make_pdf):
+    from faktura.pdfio import webp_available
     b = adapter.render_page(make_pdf(["hello"]), 1)
-    assert b[:4] == b"RIFF" and b[8:12] == b"WEBP"
+    if webp_available():
+        assert b[:4] == b"RIFF" and b[8:12] == b"WEBP"
+    else:  # Pillow (extra `img`) не установлен: по контракту отдаётся PNG
+        assert b[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_render_scale_changes_size(adapter, make_pdf):
