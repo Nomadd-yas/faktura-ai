@@ -24,6 +24,7 @@ BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
+import ask  # [faktura-patch] вопросы по разбору
 from pipeline import (PipelineError, config_path, model_version, ocr_reachable,
                       run_pipeline)
 
@@ -131,6 +132,33 @@ def health():
     body = {"status": "ok" if key and ocr else "down", "model_version": model_version(),
             "ocr": "ok" if ocr else "down", "router_key": key}
     return JSONResponse(status_code=200, content=body)
+
+
+# [faktura-patch] «Вопросы по разбору»: два небольших вызова LLM (см. ask.py), не занимают очередь разбора статей
+@app.post("/ask/plan")
+async def ask_plan(request: Request):
+    return await _ask_call(request, lambda b: ask.plan(b.get("question"), b.get("run")))
+
+
+@app.post("/ask/write")
+async def ask_write(request: Request):
+    return await _ask_call(request, lambda b: ask.write(b.get("question"), b.get("intent"), b.get("facts"), b.get("draft")))
+
+
+async def _ask_call(request: Request, fn):
+    from starlette.concurrency import run_in_threadpool
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError
+    except Exception:  # noqa: BLE001
+        return _error(400, "bad_request", "Ожидается JSON-объект")
+    try:
+        return JSONResponse(content=await run_in_threadpool(fn, body))
+    except ask.AskError as e:
+        return _error(e.status, e.code, e.message, retryable=e.retryable)
+    except Exception as e:  # noqa: BLE001
+        return _error(500, "ml_error", f"{type(e).__name__}: {e}")
 
 
 NDJSON_TYPE = "application/x-ndjson"

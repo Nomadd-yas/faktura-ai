@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     extract_stream: Literal["ndjson", "json"] = "ndjson"
     ml_pause_poll_s: float = 30
     ml_pause_max_s: float = 300  # максимум паузы прогона при недоступной модели
+    # вопросы по разбору (ML: POST /ask/plan, /ask/write); пусто - адрес извлечения (extractor=http), иначе правила
+    ask_url: str | None = None
+    ask_timeout_s: float = 30
+    ask_mode: Literal["auto", "off"] = "auto"  # off - всегда правиловый планировщик и шаблонный текст
     cache_dir: Path | None = None
     mock_issues: Literal["all", "ml_only"] = "all"
     mock_gold_dir: Path | None = None

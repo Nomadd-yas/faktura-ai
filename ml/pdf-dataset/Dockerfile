@@ -24,7 +24,7 @@ RUN if [ "$PRELOAD_LAYOUT_MODEL" = "1" ]; then \
       python -c "from huggingface_hub import snapshot_download; snapshot_download('PaddlePaddle/PP-DocLayoutV3_safetensors')"; \
     fi
 
-COPY pipeline.py extract_dataset.py strip_tail.py figures.py glmocr.config.yaml api.py entrypoint.sh ./
+COPY pipeline.py extract_dataset.py strip_tail.py figures.py ask.py glmocr.config.yaml api.py entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
 # /out — результаты: <stem>.dataset.json, <stem>.meta.json, <stem>.md, work/, uploads/

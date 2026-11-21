@@ -81,6 +81,34 @@ def create_mock_app(settings: Settings | None = None) -> FastAPI:
             return StreamingResponse(events_from_raw(raw), media_type=NDJSON_TYPE)
         return JSONResponse(content=raw)
 
+    @app.post("/ask/plan")
+    async def ask_plan(request: Request) -> JSONResponse:
+        """Мок планировщика вопросов: правиловый, детерминированный (тот же контракт, что у ML: {question, run})."""
+        from ..ask.rules import keyword_plan
+
+        try:
+            body = await request.json()
+            question, run = str(body["question"]), body["run"]
+            if not isinstance(run, dict) or not question.strip() or len(question) > 500:
+                raise ValueError
+        except Exception:  # noqa: BLE001
+            return _error(400, "bad_request", "Ожидается JSON {question (до 500 символов), run}")
+        return JSONResponse(content={"plan": keyword_plan(question, run), "meta": {
+            "model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}})
+
+    @app.post("/ask/write")
+    async def ask_write(request: Request) -> JSONResponse:
+        """Мок автора текста: возвращает шаблонный текст из запроса (draft) без изменений."""
+        try:
+            body = await request.json()
+            draft = body["draft"]
+            if not isinstance(draft, str) or not isinstance(body.get("facts"), dict):
+                raise ValueError
+        except Exception:  # noqa: BLE001
+            return _error(400, "bad_request", "Ожидается JSON {question, intent, facts, draft}")
+        return JSONResponse(content={"text": draft, "meta": {
+            "model": "mock", "provider": "mock", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}})
+
     return app
 
 
