@@ -278,6 +278,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
     Возвращает dict: ok, publication_id, extract_error, failed_tables,
     out_dir, paths {markdown,dataset,meta}, plus метаданные в meta.
     """
+    _t_start = time.time()  # [faktura-patch] общее время разбора -> meta.total_seconds
     pdf = Path(pdf)
     if not pdf.exists():
         raise FileNotFoundError(f"Файл не найден: {pdf}")
@@ -404,6 +405,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
         "glmocr_config_text": config.read_text(encoding="utf-8", errors="replace"),
         "strip_tail": strip_info,
         "quote_snap": snap_stats,
+        "total_seconds": round(time.time() - _t_start, 2),
         "failed_tables": meta.get("failed_tables", failed_tables),
         "extract_error": extract_failed,
         "outputs": {

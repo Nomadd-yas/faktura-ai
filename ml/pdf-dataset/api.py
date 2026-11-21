@@ -32,7 +32,8 @@ app = FastAPI(title="pdf-dataset", version="1.0",
 OUT_DIR = Path(os.environ.get("OUT_DIR", "/out"))
 # [faktura-patch] обычный def (FastAPI гонит его в пуле потоков) — /health отвечает во время разбора;
 # сам конвейер — строго по одному запросу (glmocr тяжёлый).
-_PIPELINE_LOCK = threading.Lock()
+# [faktura-patch] одновременно не больше ML_CONCURRENCY статей (каждая — в своём процессе)
+_PIPELINE_LOCK = threading.BoundedSemaphore(max(1, int(os.environ.get("ML_CONCURRENCY", "1"))))
 
 
 def _child_run(pdf_path, out_dir, pub_id, no_strip):

@@ -415,6 +415,8 @@ check_name — ровно одно из:
 }
 
 STEP_ORDER = ["publications", "materials", "devices", "layers", "measurements", "results"]
+# [faktura-patch] шаги внутри группы не зависят друг от друга и идут параллельно
+STEP_GROUPS = [["publications"], ["materials"], ["devices"], ["layers", "measurements"], ["results"]]
 
 
 def pub_id_from_filename(path: Path) -> str:
@@ -672,11 +674,7 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
                 f"Уже извлечено (JSON):\n{json.dumps(state, ensure_ascii=False, separators=(',', ':'))}\n\n"
                 f"Задание ({table}):\n{STEP_PROMPTS[table]}")
 
-    for step in STEP_ORDER:
-        if step != "publications" and state["publications"] and state["publications"][0].get("in_scope") is False:
-            print(f"[i] статья вне области (in_scope=false) — пропускаю {step} и дальше", flush=True)
-            break
-
+    def run_step(step):
         messages = [{"role": "system", "content": COMMON_RULES},
                     {"role": "user", "content": step_user(step)}]
         raw_path = src.with_name(f"{src.name}.{step}.raw_response.txt")
@@ -687,10 +685,27 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             rows = result.get(step, []) if isinstance(result, dict) else []
             for r in rows:
                 r.setdefault("publication_id", pub_id)
-            state[step] = rows
+            return step, rows, None
         except LLMError as e:
-            print(f"[!] {e}\n    Таблица {step} будет пустой; продолжаю.", flush=True)
-            failed.append(step)
+            return step, None, e
+
+    # [faktura-patch] независимые шаги — параллельно: layers и measurements опираются только на devices
+    from concurrent.futures import ThreadPoolExecutor
+    for group in STEP_GROUPS:
+        if group[0] != "publications" and state["publications"] and state["publications"][0].get("in_scope") is False:
+            print(f"[i] статья вне области (in_scope=false) — пропускаю {group[0]} и дальше", flush=True)
+            break
+        if len(group) == 1:
+            outs = [run_step(group[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=len(group)) as ex:
+                outs = list(ex.map(run_step, group))
+        for step, rows, err in outs:
+            if err is not None:
+                print(f"[!] {err}; таблица {step} будет пустой, продолжаю.", flush=True)
+                failed.append(step)
+            else:
+                state[step] = rows
 
     if not no_issues and (not state["publications"] or state["publications"][0].get("in_scope") is not False):
         issues_user = (f"publication_id = {pub_id}\n\n"
