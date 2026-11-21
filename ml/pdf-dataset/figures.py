@@ -1430,8 +1430,10 @@ For EVERY series_id return one entry:
   or a horizontal line of a NAMED baseline/configuration). false for decoration or non-results: confidence bands,
   grid, y=x diagonals, ideal/threshold markers, histograms of raw data counts that are not a metric, annotations,
   legend swatches. Give skip_reason when false.
-- metric_name: the measured quantity exactly as the paper names it (axis label / caption / legend), WITHOUT '@k'
-  (put k to metric_k via other_axis_meaning). metric_variant: how it is defined if stated (e.g. 'macro', 'LLM judge'),
+- metric_name: the metric ITSELF as the paper names it (axis label / caption / legend), WITHOUT dataset/benchmark,
+  model or system names (they belong to dataset_id / config_id: axis 'QuaLITY Accuracy (%)' -> 'Accuracy'),
+  WITHOUT units or '(%)', WITHOUT '@k' (put k to metric_k via other_axis_meaning). Keep standard abbreviations (EM,
+  F1, NDCG, MRR, ROUGE-L). Derived quantities: '<metric> relative improvement' / '<metric> delta' as the paper says. metric_variant: how it is defined if stated (e.g. 'macro', 'LLM judge'),
   else null. metric_direction: higher_is_better / lower_is_better / target / null. metric_group: free text such as
   'answer quality', 'retrieval quality', 'efficiency'. metric_unit: '%' when the axis is in percent, 'fraction' for
   0-1 scores, otherwise the printed unit (ms, tokens...) or null.
@@ -1573,6 +1575,14 @@ def generate_rows(rec, mapping, ids, pub_id, *, max_rows=12000, start=1):
             if not name:
                 skipped += 1
                 continue
+            # [faktura-patch] cut-off printed on the axis label / caption ("NDCG@5") but dropped from the name -> metric_k
+            name_k = None
+            if "@" not in name:
+                for src in ((maxis or {}).get("label_text"), rec.get("caption")):
+                    mk = re.search(r"([A-Za-z][\w\-]*)\s*@\s*(\d+)", src or "")
+                    if mk and _norm_name(mk.group(1)) and _norm_name(mk.group(1)) in _norm_name(name):
+                        name_k = int(mk.group(2))
+                        break
             pts = [(x, y) if axis == "y" else (y, x) for x, y in s["points"]]  # (other, metric)
             pts = [(o, v) for o, v in pts if isinstance(v, (int, float))]
             if not pts:
@@ -1594,7 +1604,7 @@ def generate_rows(rec, mapping, ids, pub_id, *, max_rows=12000, start=1):
                     break
                 cfg, ds = m.get("config_id"), m.get("dataset_id")
                 variant = m.get("metric_variant")
-                k, xnote = None, ""
+                k, xnote = name_k, ""
                 if constant:
                     xnote = " Constant reference line over the whole x range."
                 elif isinstance(o, str):

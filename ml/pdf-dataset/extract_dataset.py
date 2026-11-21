@@ -1275,6 +1275,51 @@ def rag_renumber(rows, id_prefix="R"):
     return mapping
 
 
+_UNIT_PAREN_RX = re.compile(r"\s*[\(\[]\s*(%|percent(age)?|ms|s|sec|seconds|min|MiB|MB|GB|KB|tokens?|x|×)\s*[\)\]]\s*$", re.I)
+
+
+def _ds_names(ds: dict) -> list[str]:
+    """dataset name + alias in parentheses + name without the parenthesised part (len >= 3)."""
+    n = (ds.get("dataset_name") or "").strip()
+    out = {n}
+    for m in re.finditer(r"\(([^()]{3,40})\)", n):
+        out.add(m.group(1).strip())
+    out.add(re.sub(r"\s*\([^()]*\)", "", n).strip())
+    return sorted((x for x in out if len(x) >= 3), key=len, reverse=True)
+
+
+def rag_normalize_metric_names(rows: list, datasets: list) -> int:
+    """[faktura-patch] metric_name = the metric itself. Generic, from this paper's own datasets table:
+    "QuaLITY Accuracy" / "Accuracy on QuaLITY" -> "Accuracy" (+ dataset_id when it was empty);
+    trailing unit in brackets "Accuracy (%)" -> "Accuracy"; "NDCG@5" without metric_k -> metric_k=5."""
+    names = [(ds.get("dataset_id"), n) for ds in datasets for n in _ds_names(ds)]
+    names.sort(key=lambda t: len(t[1]), reverse=True)
+    changed = 0
+    for r in rows:
+        name = (r.get("metric_name") or "").strip()
+        if not name:
+            continue
+        new = _UNIT_PAREN_RX.sub("", name).strip() or name
+        for dsid, dn in names:
+            e = re.escape(dn)
+            m = (re.match(rf"(?i)^{e}[\s:\-–—/]+(.+)$", new)
+                 or re.match(rf"(?i)^(.+?)\s+(?:on|for|in|@)\s+{e}$", new)
+                 or re.match(rf"(?i)^(.+?)[\s\-–—/]+{e}$", new)
+                 or re.match(rf"(?i)^(.+?)\s*\(\s*{e}\s*\)$", new))
+            if m and re.search(r"[A-Za-z]", m.group(1)) and len(m.group(1).strip()) >= 2:
+                new = m.group(1).strip()
+                if r.get("dataset_id") is None and dsid:
+                    r["dataset_id"] = dsid
+                break
+        mk = re.search(r"@\s*(\d+)\b", new)
+        if mk and r.get("metric_k") is None:
+            r["metric_k"] = int(mk.group(1))
+        if new != name:
+            r["metric_name"] = new
+            changed += 1
+    return changed
+
+
 def rag_link_duplicates(rows) -> int:
     """Одно и то же значение (эксперимент, конфигурация, набор, задача, метрика, вариант, k, значение), найденное в РАЗНЫХ
     местах (страница/таблица), — повтор: у более позднего duplicate_of -> основная запись (предпочтительно из таблицы).
@@ -1545,6 +1590,7 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
                         r[col] = None
                         nfix += 1
             rag_meta["ref_nullified"] = nfix
+            rag_meta["metric_names_normalized"] = rag_normalize_metric_names(rows, state["datasets"])
             rag_meta["duplicates_linked"] = rag_link_duplicates(rows)
             state["results"] = rows
 

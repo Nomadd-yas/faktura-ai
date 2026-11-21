@@ -339,3 +339,25 @@ def test_band_rows_generated():
     assert [r["aggregation"] for r in rows] == ["mean", "lower_95CI", "upper_95CI"] * 2
     assert [r["metric_value"] for r in rows[:3]] == [50.0, 48.0, 52.0]
     assert len({r["result_id"] for r in rows}) == 6
+
+
+def test_metric_names_normalized_generic():
+    import extract_dataset as E
+    ds = [{"dataset_id": "DS1", "dataset_name": "QuALITY"}, {"dataset_id": "DS2", "dataset_name": "2WikiMultiHopQA (2Wiki)"}]
+    rows = [{"metric_name": n, "dataset_id": None, "metric_k": None}
+            for n in ("QuaLITY Accuracy (%)", "F1 on 2Wiki", "NDCG@5", "QuALITY", "F1-Score")]
+    E.rag_normalize_metric_names(rows, ds)
+    assert [r["metric_name"] for r in rows] == ["Accuracy", "F1", "NDCG@5", "QuALITY", "F1-Score"]
+    assert [r["dataset_id"] for r in rows] == ["DS1", "DS2", None, None, None]
+    assert rows[2]["metric_k"] == 5
+
+
+def test_figure_rows_take_k_from_axis_label():
+    import figures as F
+    rec = {"label": "Figure 2", "page": 1, "caption": "Figure 2: results.", "state": "vector_ok", "confidence": 0.9,
+           "method": None, "use_panels": [{"title": None, "x_axis": {"step": 1, "scale": "linear", "label_text": "t"},
+                                           "y_axis": {"step": 0.1, "scale": "linear", "label_text": "NDCG@5"},
+                                           "series": [{"points": [(1.0, 0.5), (2.0, 0.6)], "legend_label": "A"}]}]}
+    m = {"p0s0": {"is_result": True, "metric_axis": "y", "metric_name": "NDCG", "other_axis_meaning": "hyperparameter"}}
+    rows, _ = F.generate_rows(rec, m, {"configs": set(), "datasets": set(), "tasks": set(), "experiments": set()}, "X")
+    assert {r["metric_k"] for r in rows} == {5}
