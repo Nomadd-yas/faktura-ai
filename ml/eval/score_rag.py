@@ -71,7 +71,12 @@ def norm(s):
     return re.sub(r"[\W_]+", "", (s or "").lower())
 
 
+LENIENT = False  # --lenient: сопоставление по значению + странице, без названия метрики
+
+
 def name_key(r):
+    if LENIENT:
+        return ""
     n = norm(r.get("metric_name"))
     k = num(r.get("metric_k"))
     if k is not None and n:
@@ -146,7 +151,7 @@ def match_results(gold, sub, rel):
                     continue
                 g = gold[i]
                 ps = page_score(g, s)
-                if pass_no == 1 and ps == 0:
+                if (pass_no == 1 or LENIENT) and ps == 0:
                     continue
                 # tie-breakers: same links / fragment / id (ids of two submissions usually differ - soft preference only)
                 sc = (ps,) + tuple(int(bool(s.get(c)) and s.get(c) == g.get(c))
@@ -180,7 +185,11 @@ def main():
     ap.add_argument("--json", help="write full report as JSON")
     ap.add_argument("--no-dups", action="store_true", help="exclude rows with duplicate_of from both sides")
     ap.add_argument("--rel", type=float, default=0.005, help="relative value tolerance [0.005]")
+    ap.add_argument("--lenient", action="store_true",
+                    help="match by value + same page (names not compared) - shows extraction quality apart from naming")
     a = ap.parse_args()
+    global LENIENT
+    LENIENT = a.lenient
     if len(a.dirs) == 1:
         gold_dir, sub_dir = DEFAULT_GOLD, a.dirs[0]
     else:

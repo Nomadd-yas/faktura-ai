@@ -345,12 +345,13 @@ def _num(s):
 _REF_HEAD = _re.compile(r"(?:^|\n)\s*(?:\d+\.?\s*)?(?:References|REFERENCES|Bibliography|Literature Cited|Notes and references)\s*\n")
 
 
-def _page_texts(pdf):
-    """Текст страниц PDF; всё после заголовка списка литературы (в последних 60% документа) отбрасывается."""
+def _page_texts(pdf, cut_refs=True):
+    """Текст страниц PDF; всё после заголовка списка литературы (в последних 60% документа) отбрасывается.
+    [faktura-patch] cut_refs=False — без обрезки (RAG: таблицы результатов в приложениях после References)."""
     import pymupdf
     raw = [p.get_text() for p in pymupdf.open(str(pdf))]
     cut_page, cut_pos = None, None
-    for i in range(int(len(raw) * 0.4), len(raw)):
+    for i in range(int(len(raw) * 0.4), len(raw) if cut_refs else 0):
         m = _REF_HEAD.search(raw[i])
         if m:
             cut_page, cut_pos = i, m.start()

@@ -943,11 +943,12 @@ RAG_STEP_PROMPTS = {
 - in_scope (true/false). Предметная область: система находит сведения во внешней коллекции документов и
   использует найденный контекст при формировании ответа; статья описывает конфигурацию такой системы и результаты
   её оценки. Решение — по СОДЕРЖАНИЮ, а не по слову RAG в названии. in_scope=true, если в статье есть
-  RAG-система (поиск по коллекции + генерация ответа с использованием найденного контекста, в том числе графовые,
-  агентные, мультимодальные варианты, бенчмарки для оценки RAG) и приведены результаты её оценки (метрики).
-  in_scope=false, если: обзор/позиционная статья без собственной оценки; нет поиска по внешней коллекции или
-  найденный контекст не используется при генерации ответа (чистая LLM, только дообучение модели, только
-  оценка поиска без генерации ответа); статья не про RAG, хотя слово встречается.
+  RAG-система ИЛИ её компонент, разработанный для RAG (поиск/retrieval, чанкинг, индексация, эмбеддинги,
+  reranking, сжатие контекста, генерация с найденным контекстом; графовые, агентные, мультимодальные варианты,
+  бенчмарки для оценки RAG), и приведены СОБСТВЕННЫЕ количественные результаты (метрики). [faktura-patch]
+  Оценка только поиска/чанкинга внутри RAG-конвейера — тоже in_scope=true; позиционная статья с собственными
+  экспериментами — in_scope=true. in_scope=false — только если: обзор без собственных чисел; статья не про
+  поиск по внешней коллекции для генерации (чистая LLM без retrieval, только дообучение); слово RAG лишь упомянуто.
 - exclusion_reason — только при in_scope=false (иначе null): одно–два предложения по-русски — что сделано в
   работе и почему это не подходит.""",
 
@@ -1003,6 +1004,14 @@ RAG_RESULT_FIELDS = """Правила полей results (одна строка 
 - metric_group — группа показателей по смыслу источника, свободный текст («answer quality», «retrieval quality»,
   «efficiency», «robustness»); metric_name — название метрики как в статье (EM, F1, Accuracy, Recall@5, NDCG@10,
   latency...). Если у метрики есть @k, metric_name — без «@k», а k — в metric_k (число); отдельная строка на каждый k.
+  [faktura-patch] Общепринятые сокращения оставляй (EM, F1, MRR, NDCG, BLEU, ROUGE-L). Сокращения, придуманные для
+  конкретной таблицы и расшифрованные в подписи/тексте/легенде, РАСКРЫВАЙ полностью: «Sent-Int σ» -> «Sentiment-Intensity
+  sigma», «Biz Impact σ» -> «Business Impact sigma», «Entity Match» (если в тексте «entity match rate») -> «Entity Match Rate».
+  Производные значения (прирост, разность, относительное изменение, Δ) — ОТДЕЛЬНОЙ строкой с metric_name «<метрика>
+  relative change» / «<метрика> relative improvement» / «<метрика> delta» (как названо в статье) и normalized_unit
+  «relative_percent» (относительные %) или «percentage_points» (разность в п.п.). Указанные в статье уровни значимости —
+  отдельной строкой metric_name «p-value bound», значение — граница («<0.001» -> 0.001), metric_variant — тест и что
+  сравнивается («Wilcoxon signed-rank; Entity Match Rate; Enriched vs Raw»).
   metric_variant — определение/вариант (token-level F1, macro, micro, judge-based, «LLM-as-judge GPT-4o»), только если
   указан. metric_direction — higher_is_better / lower_is_better / target (стрелка ↑/↓ в заголовке, явное указание
   или очевидная природа метрики: ошибка, задержка — lower; неясно -> null).
@@ -1381,7 +1390,7 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
             return rows
         try:
             from pipeline import _page_texts, verify_values
-            keep, vst = verify_values(rows, pdf_path, _page_texts(pdf_path), md=text, leading_zero=True)
+            keep, vst = verify_values(rows, pdf_path, _page_texts(pdf_path, cut_refs=False), md=text, leading_zero=True)
             st["verify"] = vst
             rows = keep
         except Exception as e:  # noqa: BLE001 — улучшение качества не роняет прогон
