@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# GLM-OCR в vLLM для ML-сервиса (OCR). Параметры - как на рабочем сервере на 21.11.2026:
-# Q8 (fp8_per_tensor), контекст 16k, спекулятивное декодирование MTP 1 токен.
-# Образ - по digest (тот же, что работал); веса модели качаются в ~/.cache/huggingface при первом запуске.
+# GLM-OCR в vLLM для ML-сервиса (OCR).
 #
-#   bash backend/deploy/vllm-run.sh            # на сервере
+#   bash backend/deploy/vllm-run.sh                                   # FP16 (полная модель), порт только для docker
+#   VLLM_QUANT=fp8_per_tensor bash backend/deploy/vllm-run.sh         # Q8, как на старом сервере hima-gpu
 #
-# ML-контейнер ходит к vLLM через host.docker.internal:8123, поэтому порт публикуется на хосте.
-# Если OCR не должен быть доступен из интернета, закройте 8123 снаружи файрволом
-# (например: ufw deny 8123/tcp, затем ufw allow from 172.16.0.0/12 to any port 8123 - сеть docker).
+# Переменные: VLLM_NAME (glm-ocr), VLLM_IMAGE (по digest - проверенная версия), VLLM_QUANT ("" = FP16),
+# VLLM_MAX_LEN (16384), VLLM_SPEC_TOKENS (1, MTP; 0 = выключить), VLLM_GPU_UTIL (0.9),
+# VLLM_BIND (172.17.0.1 - адрес docker0: ML-контейнер ходит через host.docker.internal:8123, из интернета порт
+# закрыт; 0.0.0.0 - открыть всем, только за файрволом или прокси).
+# Веса модели качаются в ~/.cache/huggingface при первом запуске.
 set -euo pipefail
 NAME="${VLLM_NAME:-glm-ocr}"
 IMAGE="${VLLM_IMAGE:-vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1}"
+QUANT="${VLLM_QUANT-}"
+MAX_LEN="${VLLM_MAX_LEN:-16384}"
+SPEC="${VLLM_SPEC_TOKENS:-1}"
+UTIL="${VLLM_GPU_UTIL:-0.9}"
+BIND="${VLLM_BIND:-172.17.0.1}"
+args=(serve zai-org/GLM-OCR --host 0.0.0.0 --port 8000 --max-model-len "$MAX_LEN" --gpu-memory-utilization "$UTIL")
+if [[ "$SPEC" != "0" ]]; then
+  args+=(--speculative-config.method mtp --speculative-config.num_speculative_tokens "$SPEC")
+fi
+if [[ -n "$QUANT" ]]; then
+  args+=(--quantization "$QUANT")
+fi
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" --gpus all --restart unless-stopped \
-  -p 8123:8000 \
+  -p "$BIND:8123:8000" \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
   -e VLLM_USE_FLASHINFER_SAMPLER=0 \
-  "$IMAGE" \
-  serve zai-org/GLM-OCR --host 0.0.0.0 --port 8000 \
-  --max-model-len 16384 \
-  --speculative-config.method mtp --speculative-config.num_speculative_tokens 1 \
-  --quantization fp8_per_tensor
-echo "vLLM запущен: $NAME. Проверка: curl -s localhost:8123/v1/models"
+  "$IMAGE" "${args[@]}"
+echo "vLLM: $NAME (quant=${QUANT:-fp16}, max_len=$MAX_LEN, mtp=$SPEC). Проверка: curl -s $BIND:8123/v1/models"

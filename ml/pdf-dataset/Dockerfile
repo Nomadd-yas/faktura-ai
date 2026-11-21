@@ -10,10 +10,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
+COPY --from=ghcr.io/astral-sh/uv:0.9.16 /uv /usr/local/bin/uv
 COPY requirements.txt .
-# [faktura-patch] torch — CPU-сборка (layout на CPU, GPU занята vLLM): без CUDA-библиотек образ легче на гигабайты
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r requirements.txt
+# [faktura-patch] torch — CPU-сборка (layout на CPU, GPU занята vLLM): без CUDA-библиотек образ легче на гигабайты.
+# Пакеты ставит uv (параллельная загрузка; с PyPI на серверах один поток очень медленный).
+RUN uv pip install --system --no-cache torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    && uv pip install --system --no-cache -r requirements.txt
 
 # Layout-модель PP-DocLayoutV3 запекаем в образ (~1–2 ГБ при сборке).
 # Если у сборщика нет доступа к huggingface.co:
