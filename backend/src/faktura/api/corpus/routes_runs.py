@@ -142,11 +142,7 @@ def create_run(request: Request, file: list[UploadFile] | None = File(default=No
         except BaseException:
             _drop(services, corpus.id)
             raise
-        rejected = [*pre_rejected,
-                    *[_reject_row(r.rel_path or r.name, _intake_code(r), r.message) for r in intake.rejected],
-                    *[_reject_row(f.source or f.name, "duplicate",
-                                  f"{f.source or f.name}: такой же файл (SHA-256) уже есть в этом разборе")
-                      for f in intake.skipped_duplicates]]
+        rejected = _rejected_rows(pre_rejected, intake)
         if not intake.added:
             _drop(services, corpus.id)
             raise AppError("no_files", "Среди загруженного нет подходящих PDF", details={"rejected": rejected})
@@ -156,6 +152,71 @@ def create_run(request: Request, file: list[UploadFile] | None = File(default=No
         rs = RunService(services)
         run = rs.start(corpus.id, "full", user_id=user.id)
         rs.submit(run.id)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    with services.db.uow() as uow:
+        body = run_view(uow, uow.corpora.get(corpus.id), cap=_cap(services))
+    body["rejected"] = rejected
+    return JSONResponse(body, status_code=202, media_type=JSON_MEDIA_TYPE,
+                        headers={"Location": f"/api/v1/runs/{run_id_of(corpus.id)}"})
+
+
+def _rejected_rows(pre_rejected: list[dict], intake) -> list[dict]:
+    """Общий формат `rejected` для POST /runs и POST /runs/{id}/files."""
+    return [*pre_rejected,
+            *[_reject_row(r.rel_path or r.name, _intake_code(r), r.message) for r in intake.rejected],
+            *[_reject_row(f.source or f.name, "duplicate",
+                          f"{f.source or f.name}: такой же файл (SHA-256) уже есть в этом разборе")
+              for f in intake.skipped_duplicates]]
+
+
+@router.post("/runs/{run_id}/files", status_code=202, summary="Догрузить файлы в существующий разбор")
+def add_run_files(run_id: str, request: Request, file: list[UploadFile] | None = File(default=None),
+                  archive: UploadFile | None = File(default=None), user: CurrentUser = Depends(upload_rate_limit),
+                  services: Services = Depends(get_services)):
+    """Те же поля, лимиты и `rejected`, что у POST /runs. Новые файлы встают в очередь: к идущему разбору они
+    дописываются (разбор не перезапускается), завершённый запускается заново только для новых файлов."""
+    from ...domain.entities import RunKind
+    from ...pipeline import CorpusService, RunService
+
+    with services.db.uow() as uow:
+        corpus = get_corpus(uow, user, run_id)
+        active = uow.runs.active_for_corpus(corpus.id)
+        if active is not None and active.status == RunStatus.cancelling:
+            raise AppError("run_in_progress", "Разбор останавливается — подождите завершения")
+    files = [f for f in (file or []) if f is not None and (f.filename or "")]
+    if archive is not None and not (archive.filename or ""):
+        archive = None
+    if not files and archive is None:
+        raise AppError("no_files")
+    work = Path(tempfile.mkdtemp(prefix="faktura_up_"))
+    try:
+        collected, pre_rejected, _ = _collect(services, work, files, archive)
+        for r in collected.rejected:
+            if r.code == "unsupported_file":
+                r.message = _NOT_PDF_MSG
+        intake = CorpusService(services).add_inputs(corpus.id, collected, mode="api", dedupe=True,
+                                                    reuse_existing=False, allow_same_names=True)
+        rejected = _rejected_rows(pre_rejected, intake)
+        if not intake.added:
+            raise AppError("no_files", "Среди загруженного нет подходящих PDF", details={"rejected": rejected})
+        ids = [f.id for f in intake.added]
+        rs = RunService(services)
+        run_pk = None
+        with services.db.uow() as uow:
+            active = uow.runs.active_for_corpus(corpus.id)
+            if active is not None and active.status in (RunStatus.queued, RunStatus.running):
+                cur = list(active.file_ids or [])
+                for i in ids:
+                    if i not in cur:
+                        cur.append(i)
+                        uow.files.update_status(i, CorpusFileStatus.queued)
+                from ...pipeline.runs import _counts  # noqa: PLC0415 - счётчики прогона по его файлам
+                uow.runs.update(active.id, file_ids=cur, counts=_counts(uow.files.list(corpus.id, ids=cur)))
+                run_pk = active.id
+        if run_pk is None:  # разбор завершён: новый прогон только по новым файлам
+            run_pk = rs.start(corpus.id, RunKind.selected, file_ids=ids, user_id=user.id).id
+        rs.submit(run_pk)  # повторный submit уже идущего прогона безопасен
     finally:
         shutil.rmtree(work, ignore_errors=True)
     with services.db.uow() as uow:

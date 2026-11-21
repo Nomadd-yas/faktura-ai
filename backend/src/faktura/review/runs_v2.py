@@ -299,3 +299,83 @@ def review_out(r: dict | None, rid: str) -> dict:
     return {"result_id": rid, "status": r["status"], "corrected_value": r.get("corrected_value"),
             "at": r["at"].isoformat() if isinstance(r.get("at"), datetime) else r.get("at"),
             "who": r.get("who_name") or r.get("who")}
+
+
+# ------------------------------------------------------------------ счётчики и «лучшее значение»
+def open_counts(conn, sub, corpus_id: str, domain: str, base: dict[str, int],
+                pub_of: dict[str, str]) -> dict[str, int]:
+    """paper_id -> число открытых замечаний с учётом состояний v2 и дополнительных замечаний пересчёта.
+
+    base - число исходных замечаний по статьям (sub_rows); pub_of - paper_id -> publication_id.
+    Состояния и дополнительные замечания разбора читаются двумя запросами; id замечаний из sub_rows - одним, и только
+    для статей, где есть что учитывать (без правок результат равен base)."""
+    nonopen: dict[str, set[str]] = {}
+    for (_, pub, iid), st in states_of(conn, corpus_id, domain).items():
+        if st["state"] != "open":
+            nonopen.setdefault(pub, set()).add(iid)
+    extra = {pub: {d.get("issue_id") or "" for d in rows} for (_, pub), rows in extra_of(conn, corpus_id, domain).items()}
+    out = dict(base)
+    touched = {p for p, pub in pub_of.items() if pub in nonopen or pub in extra}
+    if not touched:
+        return out
+    ids = sub.issue_ids_by_paper(corpus_id, sorted(touched))
+    for p in touched:
+        pub = pub_of[p]
+        all_ids = ids.get(p, set()) | extra.get(pub, set())
+        out[p] = len(all_ids) - len(nonopen.get(pub, set()) & all_ids)
+    return out
+
+
+LOWER_IS_BETTER = ("Rs", "HI")
+
+
+def _num(v: Any) -> float | None:
+    try:
+        f = float(str(v).strip().replace(",", "."))
+    except ValueError:
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
+def best_values(sub, conn, corpus_id: str, domain: str, metrics: Iterable[str],
+                pid_of: dict[str, str]) -> dict[str, dict]:
+    """«Лучшее значение» по показателям разбора (спека §9): primary + extracted + не повтор + не отклонено, значения
+    с правками; champion важнее среднего (если у показателя есть champion-строки, выбираем среди них); для Rs и HI
+    лучше меньшее. pid_of - paper_id -> id файла разбора (RunFile.id). Показатели без подходящих строк пропускаются."""
+    metrics = list(metrics)
+    if not metrics:
+        return {}
+    revs_all = reviews_of(conn, corpus_id, domain)
+    by_paper = sub.results_of_metrics(corpus_id, metrics, domain)
+    cands: dict[str, list[tuple[float, str, dict, bool]]] = {m: [] for m in metrics}
+    for paper_id, rows in by_paper.items():
+        pid = pid_of.get(paper_id)
+        if pid is None:
+            continue
+        pub = rows[0].get("publication_id") or pid
+        revs = {k[2]: v for k, v in revs_all.items() if k[1] == pub}
+        for row in _effective_results(rows, revs):
+            if (row.get("result_origin") != "primary" or row.get("extraction_status") != "extracted"
+                    or row.get("duplicate_of")):
+                continue
+            rid = row["result_id"]
+            rv = revs.get(rid)
+            corrected = bool(rv and rv.get("corrected_value") is not None)
+            val = _num(rv["corrected_value"]) if corrected else _num(row.get("normalized_value")
+                                                                     or row.get("metric_value"))
+            m = row.get("metric_name")
+            if val is None or m not in cands:
+                continue
+            cands[m].append((val, pid, row, corrected))
+    out: dict[str, dict] = {}
+    for m, items in cands.items():
+        if not items:
+            continue
+        champ = [c for c in items if c[2].get("aggregation") == "champion"]
+        pool = champ or items
+        sign = 1 if m in LOWER_IS_BETTER else -1
+        val, pid, row, corrected = min(pool, key=lambda c: (sign * c[0], c[1], c[2]["result_id"]))
+        out[m] = {"pid": pid, "result_id": row["result_id"], "value": val,
+                  "unit": row.get("normalized_unit") or row.get("metric_unit") or "",
+                  "aggregation": row.get("aggregation") or "", "corrected": corrected}
+    return out

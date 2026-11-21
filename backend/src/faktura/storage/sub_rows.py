@@ -283,3 +283,26 @@ class SubRowsRepo(_Repo):
         return {p: (_s((d or {}).get("in_scope")), _s((d or {}).get("exclusion_reason")))
                 for p, d in self.c.execute(sa.select(t.c.paper_id, t.c.data)
                                            .where(t.c.corpus_id == corpus_id, t.c.table_name == "publications"))}
+
+    def issue_ids_by_paper(self, corpus_id: str, paper_ids: Sequence[str]) -> dict[str, set[str]]:
+        """paper_id -> issue_id замечаний статей (для счётчиков открытых замечаний v2)."""
+        t = S.sub_rows
+        out: dict[str, set[str]] = {}
+        if not paper_ids:
+            return out
+        q = sa.select(t.c.paper_id, t.c.data).where(t.c.corpus_id == corpus_id, t.c.table_name == "issues",
+                                                    t.c.paper_id.in_(list(paper_ids)))
+        for p, d in self.c.execute(q):
+            out.setdefault(p, set()).add(_s((d or {}).get("issue_id")))
+        return out
+
+    def results_of_metrics(self, corpus_id: str, metrics: Sequence[str], domain: str = "solar"
+                           ) -> dict[str, list[dict[str, str]]]:
+        """paper_id -> строки results указанных метрик (для «лучшего значения»), порядок вставки."""
+        t = S.sub_rows
+        cols = get_domain(domain).tables["results"]
+        where = self._where(corpus_id, "results") + [t.c.metric_name.in_(list(metrics))]
+        out: dict[str, list[dict[str, str]]] = {}
+        for p, d in self.c.execute(sa.select(t.c.paper_id, t.c.data).where(*where).order_by(t.c.id)):
+            out.setdefault(p, []).append({k: _s((d or {}).get(k)) for k in cols})
+        return out
