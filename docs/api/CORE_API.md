@@ -378,6 +378,25 @@ data: {"id": "run_7", "status": "done", "progress": 100, "eta_seconds": null, �
 - Подходят строки: `result_origin = primary`, `extraction_status = extracted`, не повтор, не отклонены (с учётом повышения повтора после отклонения основной записи).
 - Значение — исправленное, если есть, иначе `normalized_value`. Если у показателя есть champion-строки, выбирается среди них (champion важнее среднего); иначе среди всех. Для `Rs` и `HI` лучше меньшее, для остальных — большее. Ничья — по `pid`, затем `result_id`. Показатели без подходящих строк не входят. `pid` — `RunFile.id`.
 
+## 4g. Экспорт: JSON, Excel, набор по всем разборам
+
+Для экранов «Экспорт» и «Настройки». Все три - только для владельца (чужой разбор `404 not_found`), идущий разбор - `409 run_in_progress`, `?partial=true` - выгрузить уже готовые статьи. Правки v2 (§4f) применяются так же, как в `submission.zip`: отклонённые строки не выгружаются, исправленные значения подставлены, замечания `ok` исключены. Заголовки `X-Export-Tables|Results|Papers|Filename` те же, что у `submission.zip`.
+
+### `GET /runs/{id}/dataset.json`
+`application/json`, `Content-Disposition: attachment; filename="submission-{run_id}.json"` (у rag - `submission-rag-{run_id}.json`, как «Один файл JSON» на фронте). Тело: `{ "meta": {...}, "publications": [...], ..., "issues": [...] }` - все 7 таблиц области, ключи объектов - колонки шаблона в порядке схемы.
+- `meta`: `{ "generated_by": "Фактура AI", "tables": { "<таблица>": <число строк> } }`; у rag между ними `"area": "rag"`.
+- Пустая ячейка - `null`. Числовые колонки - числом (solar: `year layer_order active_area bandgap_value metric_value normalized_value source_page spread_value n_devices`; rag: `year source_page metric_value normalized_value baseline_value metric_k top_k chunk_size chunk_overlap latency_ms tokens_per_query sample_size`), нечисловое значение остаётся строкой.
+- Булевы: solar `in_scope mask_used certified`, rag `in_scope`. Списки (разделитель `;`) - массивом строк: `record_ids`, solar `measurements.device_id`, rag `authors`.
+
+### `GET /runs/{id}/dataset.xlsx` - «Только значения, одним листом»
+`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `filename="results-{run_id}.xlsx"` (rag - `results-rag-{run_id}.xlsx`). Книга с одним листом «Факты»: таблица `results` (первая строка - имена колонок шаблона, дальше значения). Числа записаны числами (запятая в десятичных заменяется точкой, число с ведущим нулём, например `007`, остаётся текстом), остальное - текстом, пустые ячейки не пишутся. Писатель минимальный, на `zipfile` (как `toXlsx` фронта), новых зависимостей нет.
+
+### `GET /submission.zip?domain=solar|rag[&check=true][&partial=true]` - набор по всем разборам
+ZIP той же структуры, что `/runs/{id}/submission.zip` (7 CSV + `PASSPORT.md` + `passport.json`, `check_report.txt` и `X-Check-Status` при `check=true`, `422 submission_invalid` при ошибках проверки), `filename*=UTF-8''Набор для сдачи — все разборы.zip`. Берутся все разборы текущего пользователя этой области.
+- Статья с одним `publication_id` в нескольких разборах входит один раз - из самого свежего разбора, где она разобрана (его правки учитываются). Упавшая статья solar даёт строку `publications` только с id, и лишь если нигде не разобрана.
+- Паспорт - по области; версии модели/правил/словаря берутся по разобранным статьям всех разборов (свежие первыми).
+- Нет ни одного разбора области - `400 no_files`; неизвестная область - `422 domain_not_supported`. Разборы есть, но разобранных статей нет - валидный ZIP с пустыми таблицами.
+
 ## 5. Область RAG (`domain=rag`)
 
 Те же эндпоинты, что у `solar`. Отличаются таблицы, объёмы и несколько полей.
@@ -424,12 +443,12 @@ data: {"id": "run_7", "status": "done", "progress": 100, "eta_seconds": null, �
 
 ## 6. Что ещё не сделано (на этих экранах пока мок)
 
-Сделано с 21.11 и больше не заморожено: правки человека, состояния замечаний, журнал и отмена, `/issues/stats`, «лучшее значение» в сводке (§4f); управление разбором и догрузка файлов (§4c, §4f); SSE (§4e); паспорт (§4d).
+Сделано с 21.11 и больше не заморожено: правки человека, состояния замечаний, журнал и отмена, `/issues/stats`, «лучшее значение» в сводке (§4f); управление разбором и догрузка файлов (§4c, §4f); SSE (§4e); паспорт (§4d); экспорт JSON/Excel и набор по всем разборам (§4g).
 
 Пока не сделано:
 - демо-разбор dev;
 - «Данные» по всем разборам: `/results` без `run`, язык запросов (`q`), `group_by`, `/results/summary`;
-- `dataset.json`, `dataset.xlsx`, `/exports`;
+- `/exports` (общий механизм экспорта; JSON, Excel и набор по всем разборам готовы - §4g);
 - просмотр OCR-слоя страниц (`/papers/{domain}/{pid}/ocr`);
 - чат разбора, проекты, словари, поиск (эндпоинты отвечают заглушкой с заголовком `X-Faktura-Stub: 1`).
 

@@ -1,6 +1,7 @@
 """Паспорт набора разбора: один источник для `passport.json` / `passport.md` и для `submission.zip` (§7а.6)."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from ...domain.entities import CorpusFileStatus
@@ -9,23 +10,26 @@ from ...passport.run_passport import build_run_passport
 from .views import RunData
 
 
-def run_passport(services: Services, d: RunData) -> dict[str, Any]:
-    """Паспорт области разбора; версии модели/правил/словаря - по разобранным статьям набора."""
+def run_passport(services: Services, d: RunData | Sequence[RunData]) -> dict[str, Any]:
+    """Паспорт области разбора (или нескольких разборов одной области, новые первыми); версии модели/правил/словаря -
+    по разобранным статьям набора."""
     from ...checks.rules import RULES_VERSION
 
-    domain = d.corpus.collection
+    datas = [d] if isinstance(d, RunData) else list(d)
+    domain = datas[0].corpus.collection
     models: set[str] = set()
     versions: dict[str, str] = {}
-    for f in d.files:
-        paper = d.papers.get(f.paper_id) if f.paper_id else None
-        if paper is None or f.status != CorpusFileStatus.done or paper.status.value != "done":
-            continue
-        if paper.model_version:
-            models.add(paper.model_version)
-        for k in ("dictionary", "rules"):
-            v = (paper.versions or {}).get(k)
-            if v:
-                versions.setdefault(k, v)
+    for rd in datas:
+        for f in rd.files:
+            paper = rd.papers.get(f.paper_id) if f.paper_id else None
+            if paper is None or f.status != CorpusFileStatus.done or paper.status.value != "done":
+                continue
+            if paper.model_version:
+                models.add(paper.model_version)
+            for k in ("dictionary", "rules"):
+                v = (paper.versions or {}).get(k)
+                if v:
+                    versions.setdefault(k, v)
     norm = services.normalizer
     dictionary = versions.get("dictionary")
     if domain == "solar":

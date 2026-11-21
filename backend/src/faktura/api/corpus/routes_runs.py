@@ -1,15 +1,12 @@
-"""Разбор (Run): POST/GET /runs, GET /runs/{id}, /runs/{id}/summary, /runs/{id}/submission.zip (CORE_API §2, §4)."""
+"""Разбор (Run): POST/GET /runs, GET /runs/{id}, /runs/{id}/summary, /runs/{id}/submission.zip (CORE_API §2, §4; сборка - exports.py)."""
 from __future__ import annotations
 
-import io
 import logging
 import re
 import shutil
 import tempfile
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -21,13 +18,13 @@ from ...domain.registry import DOMAINS, get_domain
 from ...pdfio.inputs import CollectResult, ZipLimits, collect_inputs
 from ...storage import decode_cursor, encode_cursor
 from ..base.deps import JSON_MEDIA_TYPE, current_user, get_services, sse_user, upload_rate_limit
+from .exports import collect_tables, submission_response
 from .passports import run_passport
 from .run_sse import HEADERS as SSE_HEADERS, run_events, snapshot
 from .views import (DOMAIN, CORPUS_KIND, RunData, corpus_id_of, default_title, get_corpus, run_id_of, run_summary,
                     run_view, user_corpora)
 
 log = logging.getLogger("faktura.api")
-TABLES = get_domain("solar").tables
 router = APIRouter(tags=["runs"])
 
 _REJECT_CODES = {"duplicate_name": "duplicate", "pdf_broken": "broken_pdf", "pdf_encrypted": "encrypted_pdf",
@@ -288,109 +285,12 @@ def get_summary(run_id: str, user: CurrentUser = Depends(current_user), services
         return run_summary(uow, get_corpus(uow, user, run_id))
 
 
-def _export_name(title: str | None) -> str:
-    """«Набор для сдачи — {title}.zip» без символов, недопустимых в именах файлов."""
-    stem = re.sub(r'[\\/:*?"<>|\r\n]+', "_", (title or "").strip()).strip(" .")
-    return f"Набор для сдачи — {stem}.zip" if stem else "Набор для сдачи.zip"
-
-
-def _run_check(services: Services, tables: dict[str, list[dict]], pdf_keys: list[tuple[str, str]],
-               domain: str = "solar", ocr: bool = False):
-    """check_submission.py области на выгруженных CSV и PDF разбора (во временной папке). Скрипт - по области
-    (solar: settings.check_script, rag: settings.rag_check_script). rag: коды выхода 0/1/2, `--ocr` для сканов."""
-    from ...config import domain_paths
-    from ...export import run_check_script, run_rag_check, table_bytes
-
-    spec = get_domain(domain)
-    script = domain_paths(services.settings, domain)[2]
-    if script is None or not Path(script).is_file():
-        raise AppError("extractor_unavailable", "Проверка недоступна: скрипт проверки не настроен", http_status=503)
-    tmp = Path(tempfile.mkdtemp(prefix="faktura_zipcheck_"))
-    try:
-        csv_dir, pdf_dir = tmp / "csv", tmp / "pdfs"
-        csv_dir.mkdir()
-        pdf_dir.mkdir()
-        for t, cols in spec.tables.items():
-            (csv_dir / f"{t}.csv").write_bytes(table_bytes(t, tables[t], cols))
-        for pid, key in pdf_keys:
-            try:
-                services.store.copy_to(key, pdf_dir / f"{pid}.pdf")
-            except Exception:  # noqa: BLE001
-                log.warning("PDF %s не скопирован для проверки", pid)
-        if domain == "solar":
-            return run_check_script(Path(script), csv_dir, pdf_dir, timeout_s=services.settings.check_timeout_s)
-        return run_rag_check(Path(script), csv_dir, pdf_dir, timeout_s=services.settings.check_timeout_s, ocr=ocr)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 @router.get("/runs/{run_id}/submission.zip", summary="Набор для сдачи: 7 CSV, PASSPORT.md, passport.json")
 def submission_zip(run_id: str, partial: bool = False, check: bool = False,
                    user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
-    from ...export import check_status, table_bytes
-    from ...passport import passport_json_bytes, passport_md_bytes
-
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run_id)
-        d = RunData(uow, corpus)
-        spec = get_domain(corpus.collection)
-        TABLES = spec.tables
-        if d.run is not None and d.run.status in (RunStatus.queued, RunStatus.running, RunStatus.cancelling) \
-                and not partial:
-            raise AppError("run_in_progress")
-        tables: dict[str, list[dict]] = {t: [] for t in TABLES}
-        any_scan = False
-        seen: set[str] = set()
-        papers_n = 0
-        pdf_keys: list[tuple[str, str]] = []
-        for f in d.files:
-            if f.publication_id in seen:
-                continue
-            paper = d.papers.get(f.paper_id) if f.paper_id else None
-            done = paper is not None and f.status == CorpusFileStatus.done and paper.status.value == "done"
-            if not done:
-                if partial and f.status in (CorpusFileStatus.pending, CorpusFileStatus.queued,
-                                            CorpusFileStatus.processing, CorpusFileStatus.downloading):
-                    continue
-                if spec.name == "solar":
-                    tables["publications"].append({"publication_id": f.publication_id})  # упавшая: только id
-                    seen.add(f.publication_id)
-                    papers_n += 1
-                # rag: у упавшей статьи нет данных, строка без in_scope не прошла бы проверку - в выгрузку не входит
-                continue
-            seen.add(f.publication_id)
-            papers_n += 1
-            if f.storage_key:
-                pdf_keys.append((f.publication_id, f.storage_key))
-            any_scan = any_scan or bool(f.is_scan)
-            from ...review.runs_v2 import export_paper_tables  # v2: правки и состояния замечаний (§9)
-            for t, rows in export_paper_tables(uow, corpus.id, spec.name, paper.id).items():
-                tables[t].extend(rows)
+        col = collect_tables(uow, [corpus], partial)
         title = corpus.name
-        passport = run_passport(services, d)
-    headers = {}
-    report = None
-    if check:
-        import shutil as _sh
-
-        report = _run_check(services, tables, pdf_keys, spec.name, ocr=any_scan and _sh.which("tesseract") is not None)
-        status = check_status(report)
-        if status == "failed":
-            raise AppError("submission_invalid", "Набор не прошёл проверку check_submission.py", details={
-                "errors": report.errors[:50], "errors_total": len(report.errors), "crashed": report.crashed,
-                "warnings": len(report.warnings), "report": (report.raw_output or "")[-4000:]})
-        headers["X-Check-Status"] = status or "ok"
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        for t, cols in TABLES.items():
-            z.writestr(f"{t}.csv", table_bytes(t, tables[t], cols))
-        z.writestr("PASSPORT.md", passport_md_bytes(passport))
-        z.writestr("passport.json", passport_json_bytes(passport))
-        if report is not None:
-            z.writestr("check_report.txt", (report.raw_output or "").encode("utf-8"))
-    filename = _export_name(title)
-    return Response(buf.getvalue(), media_type="application/zip", headers={
-        "Content-Disposition": f"attachment; filename=\"submission.zip\"; filename*=UTF-8''{quote(filename, safe='')}",
-        "X-Export-Tables": str(len(TABLES)), "X-Export-Results": str(len(tables["results"])),
-        "X-Export-Papers": str(papers_n), "X-Export-Filename": quote(filename, safe=""), **headers,
-    })
+        passport = run_passport(services, col.datas)
+    return submission_response(services, col, passport, title, check)
