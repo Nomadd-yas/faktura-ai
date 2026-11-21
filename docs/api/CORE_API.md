@@ -268,6 +268,66 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 - В ZIP лежит этот же JSON и `PASSPORT.md` в том же виде, что рисует фронт (+ строка «Собран с версиями»). Раньше в ZIP был паспорт старого формата (`collection`, `tables`, `metrics`…): он заменён.
 - Содержимое областей (критерии, правила, нормализация) — файлы `backend/src/faktura/passport/data/{solar,rag}.json`; при изменении порогов правятся они, фронт подхватывает сам.
 
+## 4e. v2: правки, замечания, журнал (спека §9)
+
+Правки привязаны к разбору: ключ (`run`, `domain`, `pid`, `result_id`). Строки разбора не меняются, правки накладываются при чтении и выгрузке. Все мутации возвращают `action_id` (и заголовок `X-Action-Id`) для отмены. `pid` — id статьи в разборе (`RunFile.id`).
+
+### Правка значения
+`PATCH /runs/{id}/papers/{domain}/{pid}/results/{rid}/review`
+```json
+{ "status": "accepted", "corrected_value": 12.5 }
+```
+`status` ∈ `new` | `accepted` | `rejected`; `corrected_value` — число в целевой единице (строка или число; без поля значение не меняется, `null` или `""` снимает). Нечисло → `400 validation_error`; нет строки → `404`.
+```json
+{ "review": { "result_id": "R002", "status": "accepted", "corrected_value": "12.5", "at": "2026-11-21T10:00:00+00:00", "who": "Анна" },
+  "applied_to": null, "issues_changed": { "opened": [], "closed": ["I3"] }, "action_id": "act_…", "elapsed_ms": 18.4 }
+```
+- Правка, присланная на повтор (`duplicate_of` не пусто), применяется к основной записи: `applied_to` = её `result_id`, `review.result_id` тоже.
+- Проверки статьи пересчитываются сразу: `issues_changed` — id замечаний, ставших открытыми / переставших быть открытыми. Пересчёт правил бэка (solar) может открыть новые замечания (id `V…`, «дополнительные»).
+- Статья должна быть разобрана, иначе `409 conflict`.
+
+### Пакет и сброс
+- `POST /runs/{id}/reviews/batch`, `{ "items": [ { "domain": "solar", "pid": "D001", "rid": "R002", "status": "rejected" } ] }` → `{ "count": 1, "action_id": "…" }`; пустой `items` → `400`.
+- `DELETE /runs/{id}/reviews` — сбрасывает правки, состояния замечаний и дополнительные замечания всего разбора → `{ "count": N, "action_id": "…" }`.
+
+### Состояние замечания
+`PATCH /runs/{id}/papers/{domain}/{pid}/issues/{iid}`, `{ "state": "open" | "fixed" | "ok" }` → `{ "issue": { "issue_id": "I3", "state": "ok", "auto": false }, "action_id": "…" }`; нет замечания → `404`.
+- **Автозакрытие:** когда все `record_ids` замечания исправлены (есть `corrected_value`) или отклонены, либо пересчёт правил бэка по правкам его больше не находит, оно становится `fixed` с `auto: true`. Откат правки возвращает замечание в `open`.
+- Вручную открыть авто-закрытое замечание нельзя: `409 issue_auto_fixed`. Чтобы вернуть — отменить правку (undo) или сбросить правки.
+
+### Чтение
+- `GET /runs/{id}/papers/{domain}/{pid}/review` → `{ "reviews": { "R002": {result_id, status, corrected_value, at, who} }, "issues": [ { "issue_id", "state", "auto", "extra" } ], "extra_issues": [ IssueRow ], "open_issue_count": 3 }`.
+- `GET /issues/stats?run=` → `{ "data": [ { "check_name": "range", "count": 5, "papers": 3 } ] }` — только открытые, с учётом состояний.
+- `GET /papers/{domain}/{pid}?run=` (и `rag`): добавлены `reviews` (`{ result_id: {status, corrected_value, at, who} }`, только тронутые строки) и `issue_states` (`{ issue_id: {state, auto} }`, только записанные состояния; нет записи = `open`). Дополнительные замечания пересчёта дописаны в конец `issues` (колонки шаблона, id `V…`) и учтены в `meta.results[rid].issue_ids`. Строки таблиц остаются колонками шаблона; `record_ids` в них — как в разборе (без вычета отклонённых).
+- `GET /results`: к каждому элементу `review` = `{status, corrected_value, at, who}` (`status: "new"`, если не трогали). `GET /issues`: к элементу `state` (`open`|`fixed`|`ok`) и `auto`; дополнительные замечания в этот список не входят (они в `GET /papers/…`, `/issues/stats` и счётчиках).
+
+### Влияние на `submission.zip`
+- `rejected`: строка не выгружается; убирается из `issues.record_ids` и `duplicate_of`; первый повтор становится основной записью.
+- Исправление: `normalized_value` и `metric_value` = исправленное значение, `raw_*` из статьи; в `note` дописывается «Исправлено вручную: было X».
+- Замечания: выгружаются `open` и `fixed` (и дополнительные), `ok` — нет.
+
+### Журнал и отмена
+Каждая мутация пишет действие с прежними значениями.
+- `GET /history?run=&limit=50` → `{ "data": [ { "id", "action": "review|batch|issue|reset", "label", "run_id", "undone", "at", "changes" } ] }`, новые сверху.
+- `POST /actions/{id}/undo` и `POST /history/undo?run=` (последнее неотменённое) → `{ "undone": {…}, "undo_action_id": "…" }`. Уже отменённое → `409 conflict`; чужое / нет → `404`; нечего отменять → `404`.
+
+### `POST /runs/{id}/files` — догрузить файлы
+`multipart/form-data`: `file` (повторяемое, PDF) и/или `archive` (ZIP); поля, лимиты, проверки и формат `rejected` — как у `POST /runs` (§2; область берётся из разбора). → `202` — Run (+ `rejected`), заголовок `Location`.
+- Дубликат (тот же SHA-256 уже в разборе) → в `rejected` с `code: "duplicate"`; одинаковые имена с разным содержимым — `P042`, `P042-2`.
+- Ничего подходящего → `400 no_files` (`details.rejected`). Нет разбора → `404`.
+- Идущий разбор (`queued`/`running`): файлы дописываются в тот же прогон, он не перезапускается. Завершённый разбор: стартует новый прогон только по новым файлам, остальные не трогаются, `status` снова `queued`/`running`. Разбор в состоянии остановки → `409 run_in_progress`.
+
+### Счётчики открытых замечаний
+- `RunFile.open_issue_count` (в `GET /runs/{id}`, коротком `files` списка и ответе `POST`), `Run.issues_open` и `summary.issues_open`: только открытые замечания с учётом состояний (`fixed`/`ok` не считаются, дополнительные замечания пересчёта считаются). `issues` / `issues_total` остаются числом замечаний в исходных строках. Состояния и дополнительные замечания читаются тремя запросами на разбор, не на статью.
+
+### «Лучшее значение»
+`GET /runs/{id}/summary` → `best_values`: по каждому из 11 оцениваемых показателей `solar` (у `rag` — `{}`):
+```json
+"best_values": { "PCE": { "pid": "D004", "result_id": "R012", "value": 21.4, "unit": "%", "aggregation": "champion", "corrected": false } }
+```
+- Подходят строки: `result_origin = primary`, `extraction_status = extracted`, не повтор, не отклонены (с учётом повышения повтора после отклонения основной записи).
+- Значение — исправленное, если есть, иначе `normalized_value`. Если у показателя есть champion-строки, выбирается среди них (champion важнее среднего); иначе среди всех. Для `Rs` и `HI` лучше меньшее, для остальных — большее. Ничья — по `pid`, затем `result_id`. Показатели без подходящих строк не входят. `pid` — `RunFile.id`.
+
 ## 5. Область RAG (`domain=rag`)
 
 Те же эндпоинты, что у `solar`. Отличаются таблицы, объёмы и несколько полей.

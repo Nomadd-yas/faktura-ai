@@ -70,6 +70,17 @@ def _extras(uow, paper) -> dict[str, Any]:
             "quotes": quotes, "issue_ids": issue_ids, "dups": dups}
 
 
+def _v2_info(uow, corpus, pub_id: str) -> dict[str, Any]:
+    """v2 (§9): правки и состояния замечаний статьи. reviews - только тронутые строки; issue_states - по id замечания
+    (состояния без записи = open не перечисляются). Строки таблиц шаблона эти поля не получают."""
+    from ...review import runs_v2 as V
+    revs = V.reviews_of(uow.conn, corpus.id, corpus.collection, pub_id)
+    states = V.states_of(uow.conn, corpus.id, corpus.collection, pub_id)
+    return {"reviews": {k[2]: {kk: v for kk, v in V.review_out(r, k[2]).items() if kk != "result_id"}
+                        for k, r in revs.items()},
+            "issue_states": {k[2]: {"state": s["state"], "auto": bool(s["auto"])} for k, s in states.items()}}
+
+
 def _result_meta(x: dict, rid: str, with_dups: bool) -> dict[str, Any]:
     m: dict[str, Any] = {"quote_found": x["quotes"].get(rid), "issue_ids": x["issue_ids"].get(rid, [])}
     if with_dups:
@@ -90,7 +101,7 @@ def _rag_paper(uow, corpus, paper, f, d: RunData, pid: str, run: str | None, use
         for n in dict.fromkeys(names):
             rows, total, nxt = uow.sub.paper_table_page(paper.id, corpus.collection, n, limit=limit, cursor=cursor)
             out[n] = {"data": rows, "total": total, "next_cursor": nxt}
-        return {"tables": out}
+        return {"tables": out, **_v2_info(uow, corpus, paper.publication_id)}
     summary = uow.sub.paper_summary(paper.id)
     pub_rows, _, _ = uow.sub.paper_table_page(paper.id, corpus.collection, "publications", limit=1)
     pub = pub_rows[0] if pub_rows else {"publication_id": pid, "title": "", "year": "", "DOI": "", "authors": "",
@@ -110,6 +121,8 @@ def _rag_paper(uow, corpus, paper, f, d: RunData, pid: str, run: str | None, use
     return {
         "publication": pub, "counts": counts,
         "metrics": metrics, "issues": issues, "paper_status": status,
+        **(_v2_info(uow, corpus, pub.get("publication_id") or paper.publication_id) if fstatus != "out"
+           else {"reviews": {}, "issue_states": {}}),
         "meta": {"file_status": fstatus, "run_ids": run_ids, "pdf_pages": paper.page_count,
                  "is_scan": bool(f.is_scan) if f is not None else False},
     }
@@ -128,6 +141,16 @@ def get_paper(domain: str, pid: str, run: str | None = None, tables: str | None 
             return _rag_paper(uow, corpus, paper, f, d, pid, run, user, tables, limit, cursor)
         x = _extras(uow, paper)
         t = x["tables"]
+        pub_id = (t["publications"][0].get("publication_id") if t["publications"] else None) or paper.publication_id
+        v2 = _v2_info(uow, corpus, pub_id)
+        from ...review import runs_v2 as V
+        extra = V.extra_of(uow.conn, corpus.id, "solar", pub_id).get(("solar", pub_id), [])
+        if extra:  # замечания, открытые пересчётом проверок после правок (id «V…»)
+            cols = TABLES["issues"]
+            t = {**t, "issues": [*t["issues"], *[{c: str(e.get(c, "") or "") for c in cols} for e in extra]]}
+            for i in extra:
+                for rid in [r for r in (i.get("record_ids") or "").split(";") if r]:
+                    x["issue_ids"].setdefault(rid, []).append(i["issue_id"])
         pub = t["publications"][0] if t["publications"] else {
             "publication_id": pid, "title": "", "year": "", "DOI": "", "authors": "", "in_scope": "",
             "exclusion_reason": ""}
@@ -138,6 +161,7 @@ def get_paper(domain: str, pid: str, run: str | None = None, tables: str | None 
             status = "out"
             pub = {**pub, "in_scope": "false"}
             t = {k: ([pub] if k == "publications" else []) for k in TABLES}
+            v2 = {"reviews": {}, "issue_states": {}}
         elif fstatus == "done":
             status = "has_data"
         else:
@@ -147,7 +171,7 @@ def get_paper(domain: str, pid: str, run: str | None = None, tables: str | None 
         return {
             "publication": pub, "materials": t["materials"], "devices": t["devices"], "layers": t["layers"],
             "measurements": t["measurements"], "results": t["results"], "issues": t["issues"],
-            "paper_status": status,
+            "paper_status": status, **v2,
             "meta": {"file_status": fstatus, "run_ids": run_ids, "pdf_pages": paper.page_count,
                      "results": {r["result_id"]: _result_meta(x, r["result_id"], True) for r in t["results"]}},
         }
@@ -272,6 +296,7 @@ def list_results(run: str | None = None, pid: list[str] = Query(default=[]), met
             x = x or {"labels": {}, "title": "", "quotes": {}, "issue_ids": {}, "dups": {}}
             data.append({"row": r, "device_label": x["labels"].get(r["device_id"], ""), "paper_title": x["title"],
                          "meta": _result_meta(x, r["result_id"], False)})
+        _add_review(uow, corpus, data)
     return {"data": data, "total": total, "next_cursor": nxt}
 
 
@@ -285,7 +310,19 @@ def _rag_results(uow, corpus, spec, filters: dict[str, str], common: dict) -> di
     data = [{"row": r, "paper_title": titles.get(r["publication_id"], ""),
              "meta": {"quote_found": quotes.get((r["publication_id"], r["result_id"])),
                       "issue_ids": links.get((r["publication_id"], r["result_id"]), [])}} for r in rows]
+    _add_review(uow, corpus, data)
     return {"data": data, "total": total, "next_cursor": nxt}
+
+
+def _add_review(uow, corpus, data: list[dict]) -> None:
+    """v2: к строкам страницы /results добавляется `review` {status, corrected_value, at, who} (status new - не трогали)."""
+    from ...review import runs_v2 as V
+    pids = {x["row"]["publication_id"] for x in data}
+    revs = {k: v for k, v in V.reviews_of(uow.conn, corpus.id, corpus.collection).items() if k[1] in pids}         if data else {}
+    for x in data:
+        rid = x["row"]["result_id"]
+        r = V.review_out(revs.get((corpus.collection, x["row"]["publication_id"], rid)), rid)
+        x["review"] = {k: v for k, v in r.items() if k != "result_id"}
 
 
 @router.get("/issues", summary="Строки issues разбора")
@@ -299,5 +336,12 @@ def list_issues(run: str | None = None, pid: list[str] = Query(default=[]),
         rows, total, nxt = uow.sub.list_issues(corpus.id, pids=pid or None, check_names=check_name or None,
                                                limit=limit, cursor=cursor, domain=corpus.collection)
         titles = uow.sub.publication_titles(corpus.id, sorted({r["publication_id"] for r in rows}))
-    return {"data": [{"row": r, "paper_title": titles.get(r["publication_id"], "")} for r in rows],
-            "total": total, "next_cursor": nxt}
+        from ...review import runs_v2 as V
+        pids = {r["publication_id"] for r in rows}
+        states = {k: v for k, v in V.states_of(uow.conn, corpus.id, corpus.collection).items() if k[1] in pids}
+    data = []
+    for r in rows:
+        st = states.get((corpus.collection, r["publication_id"], r["issue_id"]))
+        data.append({"row": r, "paper_title": titles.get(r["publication_id"], ""),
+                     "state": st["state"] if st else "open", "auto": bool(st and st["auto"])})
+    return {"data": data, "total": total, "next_cursor": nxt}

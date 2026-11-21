@@ -23,7 +23,7 @@ _LABELS = {"queued": "в очереди", "running": "разбор", "done": "г
            "error": "ошибка", "ocr": "скан, распознано OCR"}
 RAG_TOP_METRICS = 20  # coverage сводки rag: топ метрик по числу статей
 _IN_PROGRESS = (RunStatus.queued, RunStatus.running, RunStatus.cancelling)
-SHORT_FILE_KEYS = ("id", "name", "status", "has_data", "results", "issues", "reason", "stage", "progress",
+SHORT_FILE_KEYS = ("id", "name", "status", "has_data", "results", "issues", "open_issue_count", "reason", "stage", "progress",
                    "eta_seconds", "pages", "started_at")
 
 
@@ -88,12 +88,18 @@ class RunData:
         self.results_n: dict[str, int] = uow.sub.counts_by_paper(corpus.id, "results")
         self.issues_n: dict[str, int] = uow.sub.counts_by_paper(corpus.id, "issues")
         self.pub: dict[str, tuple[str, str]] = uow.sub.publication_scopes(corpus.id)
+        # v2: открытые замечания с учётом состояний и пересчёта (3 запроса на весь разбор, не на статью)
+        from ...review.runs_v2 import open_counts
+        self.open_n: dict[str, int] = open_counts(
+            uow.conn, uow.sub, corpus.id, corpus.collection, self.issues_n,
+            {p.id: p.publication_id for p in self.papers.values()})
         self.file_ids = _file_ids(self.files)
 
     def file_view(self, f: CorpusFile) -> dict[str, Any]:
         paper = self.papers.get(f.paper_id) if f.paper_id else None
         results = self.results_n.get(f.paper_id or "", 0)
         issues = self.issues_n.get(f.paper_id or "", 0)
+        open_issues = self.open_n.get(f.paper_id or "", 0)
         status, reason = file_status(f, paper, results, self.pub.get(f.paper_id or ""))
         label = reason if status == "out" and reason else _LABELS.get(status, status)
         if status == "out" and not reason:
@@ -103,7 +109,8 @@ class RunData:
             "stage": (f.stage or "Извлечение") if status == "running" else None,
             "progress": _progress(f, status), "eta_seconds": None, "pages": f.page_count,
             "started_at": iso(f.started_at),
-            "has_data": results > 0, "results": results, "issues": issues, "reason": reason or None,
+            "has_data": results > 0, "results": results, "issues": issues, "open_issue_count": open_issues,
+            "reason": reason or None,
             "size": f.size_bytes, "sha256": f.sha256,
             "suggested_domain": None,  # модель пока не говорит, из какой области статья «не по теме»
         }
@@ -241,6 +248,7 @@ def run_view(uow, corpus, *, files: str = "full", cap: int | None = None) -> dic
         "counts": d.counts(views),
         "results": sum(v["results"] for v in views),
         "issues": sum(v["issues"] for v in views),
+        "issues_open": sum(v["open_issue_count"] for v in views),
     }
     if files == "full":
         out["files"] = views
@@ -275,6 +283,11 @@ def run_summary(uow, corpus) -> dict[str, Any]:
         coverage = [{"metric": m, "n": len(papers_with.get(m, ())), "total": total,
                      "results": per_metric.get(m, 0)} for m in scored]
         scored_results = sum(per_metric.get(m, 0) for m in scored)
+    best: dict[str, Any] = {}
+    if scored is not None:  # «лучшее значение» (спека §9) - по оцениваемым показателям solar
+        from ...review.runs_v2 import best_values
+        pid_of = {f.paper_id: d.file_ids[f.id] for f in d.files if f.paper_id and f.paper_id in in_scope_pids}
+        best = best_values(uow.sub, uow.conn, corpus.id, corpus.collection, scored, pid_of)
     return {
         "files": by_status["files"],
         "papers_in_scope": by_status["done"] + by_status["nodata"] + by_status.get("ocr", 0),
@@ -283,6 +296,8 @@ def run_summary(uow, corpus) -> dict[str, Any]:
         "results": sum(v["results"] for v in views),
         "scored_results": scored_results,
         "issues_total": sum(v["issues"] for v in views),
+        "issues_open": sum(v["open_issue_count"] for v in views),
         "coverage": coverage,
         "issues_by_check": issues_by,
+        "best_values": best,
     }

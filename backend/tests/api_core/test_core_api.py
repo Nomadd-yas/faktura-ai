@@ -48,7 +48,7 @@ def test_e2e_upload_to_zip(client, auth, pdfs):
     res = client.get(f"{API}/results", params={"run": rid, "limit": 1000}, headers=auth).json()
     assert res["total"] == got["results"] and res["next_cursor"] is None
     item = res["data"][0]
-    assert set(item) == {"row", "device_label", "paper_title", "meta"} and item["paper_title"]
+    assert set(item) == {"row", "device_label", "paper_title", "meta", "review"} and item["paper_title"]
 
     z = client.get(f"{API}/runs/{rid}/submission.zip", headers=auth)
     assert z.status_code == 200 and z.headers["content-type"] == "application/zip"
@@ -95,7 +95,8 @@ def test_title_default_and_list(client, auth, pdfs):
     b = upload(client, auth, [pdfs["D001"]]).json()
     lst = client.get(f"{API}/runs", headers=auth).json()
     assert [x["id"] for x in lst["data"]] == [b["id"], a["id"]] and lst["next_cursor"] is None
-    assert set(lst["data"][0]["files"][0]) == {"id", "name", "status", "has_data", "results", "issues", "reason", "stage", "progress",
+    assert set(lst["data"][0]["files"][0]) == {"id", "name", "status", "has_data", "results", "issues", "open_issue_count", "reason", "stage",
+                                                "progress",
                                                 "eta_seconds", "pages", "started_at"}
     nofiles = client.get(f"{API}/runs", params={"files": "false"}, headers=auth).json()
     assert "files" not in nofiles["data"][0]
@@ -242,7 +243,7 @@ def test_issues(client, auth, run_two):
     got = client.get(f"{API}/runs/{rid}", headers=auth).json()
     assert r["total"] == got["issues"]
     if r["data"]:
-        assert set(r["data"][0]) == {"row", "paper_title"} and set(r["data"][0]["row"]) == set(TABLES["issues"])
+        assert set(r["data"][0]) == {"row", "paper_title", "state", "auto"} and set(r["data"][0]["row"]) == set(TABLES["issues"])
         name = r["data"][0]["row"]["check_name"]
         f = client.get(f"{API}/issues", params={"run": rid, "check_name": name}, headers=auth).json()
         assert f["total"] and all(d["row"]["check_name"] == name for d in f["data"])
