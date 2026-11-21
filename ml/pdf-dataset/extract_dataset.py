@@ -533,11 +533,32 @@ class LLMError(Exception):
     pass
 
 
+REASONING_TOKENS = int(os.environ.get("ROUTERAI_REASONING_TOKENS", "6000"))
+SEED = int(os.environ.get("ROUTERAI_SEED", "42"))
+
+
 def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None):
+    """[faktura-patch] Вызов с повтором: модель рассуждает и иногда тратит весь лимит на рассуждение
+    (finish_reason=length, пустой ответ). Рассуждение ограничено (reasoning.max_tokens), при пустом/обрезанном
+    ответе — один повтор с меньшим бюджетом рассуждения и большим общим лимитом."""
+    try:
+        return _call_llm_once(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report,
+                              reasoning_tokens=min(REASONING_TOKENS, max_tokens // 2))
+    except LLMError as e:
+        print(f"[{label}] повтор после сбоя: {e}", flush=True)
+        return _call_llm_once(client, args, messages, schema_name, schema, max_tokens * 2, label + ":retry",
+                              raw_path, report, reasoning_tokens=max(1024, REASONING_TOKENS // 3))
+
+
+def _call_llm_once(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None,
+                   reasoning_tokens=None):
     """Один вызов с fallback json_schema -> json_object и диагностикой."""
     providers = [p.strip().lower() for p in args.provider.split(",") if p.strip()]  # [faktura-patch] slug строчными
     # [faktura-patch] список = приоритет: первый живой из списка, при сбое — следующий, вне списка не уходим
     extra_body = {"provider": {"order": providers, "allow_fallbacks": False}} if providers else {}
+    if reasoning_tokens:
+        extra_body["reasoning"] = {"max_tokens": int(reasoning_tokens)}
+    extra_body["seed"] = SEED  # воспроизводимость замеров (если провайдер поддерживает)
     t0 = time.time()
 
     strict = not args.no_strict
@@ -582,6 +603,8 @@ def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw
         report.append({"step": label, "finish_reason": finish, "strict": strict,
                        "seconds": dt, "usage": usage_d})
     try:
+        if not content.strip():
+            raise ValueError("пустой ответ")
         return parse_json_loose(content)
     except ValueError:
         raw_path.write_text(content, encoding="utf-8")
@@ -592,7 +615,7 @@ def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw
 
 def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             provider="wafer", no_strict=False, max_chars=200000,
-            max_tokens=16384, issues_max_tokens=12288, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
+            max_tokens=24576, issues_max_tokens=12288, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
             issues_with_text=False, meta_path=None, api_key=None) -> dict:
     """Извлекает датасет из markdown-статьи.
 
