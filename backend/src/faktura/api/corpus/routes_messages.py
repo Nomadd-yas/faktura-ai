@@ -239,14 +239,25 @@ def message_sources(run_id: str, message_id: str, user: CurrentUser = Depends(cu
                         media_type=JSON_MEDIA_TYPE)
 
 
-@router.get("/runs/{run_id}/sources", summary="Внешние источники всего чата (?thread=), без повторов")
+@router.get("/runs/{run_id}/sources", summary="Внешние источники чатов разбора (все или ?thread=), без повторов")
 def run_sources(run_id: str, thread: str | None = None, user: CurrentUser = Depends(current_user),
                 services: Services = Depends(get_services)):
-    """`{thread_id, sources[], generated_at}`; у работы `cited_in: [{message_id, question}]`, дубли (openalex_id) слиты."""
+    """Без `thread` или `?thread=all` - работы из ВСЕХ чатов разбора; `?thread=tid` - одного чата.
+    `{thread_id, sources[], generated_at}`; у работы `cited_in: [{message_id, question, thread_id}]`, дубли по
+    openalex_id слиты."""
+    every = not thread or thread == "all"
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run_id)
-        t = _existing_thread(uow, corpus, user, thread)
-        rows = store.list_all(uow, corpus.id, t["id"]) if t else []
+        if every:
+            store.adopt_legacy(uow, corpus.id, user.id)
+            t = None
+            rows = store.list_all(uow, corpus.id)
+        else:
+            t = _existing_thread(uow, corpus, user, thread)
+            rows = store.list_all(uow, corpus.id, t["id"]) if t else []
+    by_thread: dict[str | None, list[dict]] = {}
+    for m in rows:
+        by_thread.setdefault(m.get("thread_id"), []).append(m)
     merged: dict[str, dict] = {}
     for m in rows:
         if m["role"] != "assistant" or m["status"] != "done":
@@ -254,7 +265,8 @@ def run_sources(run_id: str, thread: str | None = None, user: CurrentUser = Depe
         for s in (m.get("answer") or {}).get("sources") or []:
             w = merged.setdefault(s.get("openalex_id") or s.get("url") or s.get("title"),
                                   {**{k: v for k, v in s.items() if k != "id"}, "cited_in": []})
-            w["cited_in"].append({"message_id": m["id"], "question": _question_of(rows, m)})
+            w["cited_in"].append({"message_id": m["id"], "question": _question_of(by_thread[m.get("thread_id")], m),
+                                  "thread_id": m.get("thread_id")})
     return JSONResponse({"thread_id": t["id"] if t else None, "sources": list(merged.values()),
                          "generated_at": iso(auth.utcnow())}, media_type=JSON_MEDIA_TYPE)
 

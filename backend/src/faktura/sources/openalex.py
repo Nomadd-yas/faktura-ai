@@ -150,7 +150,7 @@ class OpenAlex:
         if not wid:
             return []
         return [normalize(w, "cites") for w in
-                self._list({"filter": f"cites:{wid}", "sort": "cited_by_count:desc", "per-page": min(n, MAX_N)})][:n]
+                self._list({"filter": f"cites:{wid}", "sort": "cited_by_count:desc", "per-page": min(n, 25)})][:n]
 
     def search(self, query: str, n: int = 5) -> list[dict]:
         q = " ".join((query or "").split())[:300]
