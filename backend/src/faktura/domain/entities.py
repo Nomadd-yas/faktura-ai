@@ -133,6 +133,8 @@ class CorpusFile(BaseModel):
     dup_kind: DupKind | None = None
     storage_key: str | None = None
     source: str | None = None
+    stage: str | None = None  # этап разбора: «Извлечение» | «Нормализация» | «Проверка»
+    progress: int | None = None  # 0..100
     created_at: datetime | None = None
 
 

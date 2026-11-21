@@ -7,8 +7,10 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
+from starlette.concurrency import run_in_threadpool
 from fastapi.routing import APIRoute
 
 from ... import config as _config
@@ -75,6 +77,13 @@ def mount_router_modules(app: FastAPI, prefix: str) -> list[str]:
     return mounted
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Запуск: незавершённые прогоны (queued/running) продолжаются."""
+    await run_in_threadpool(app.state.faktura.resume_runs)
+    yield
+
+
 def create_app(settings: Settings | None = None, services: Services | None = None) -> FastAPI:
     """services=None -> лениво faktura.pipeline.build_services (при первом обращении). Роутеры модулей из
     api.ROUTER_MODULES подключаются через importlib внутри функции: если пакета нет (ModuleNotFoundError именно
@@ -89,6 +98,7 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         title=API_TITLE, version=API_VERSION,
         description="Бэкенд Faktura: извлечение данных из научных PDF. Контракт — docs/wave1/api_contract.md",
         openapi_url=f"{API_PREFIX}/openapi.json", docs_url=f"{API_PREFIX}/docs", redoc_url=None,
+        lifespan=_lifespan,
     )
     app.state.faktura = make_context(settings, services)
     install_error_handlers(app)

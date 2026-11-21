@@ -41,7 +41,7 @@ def test_build_http_uses_settings(cfg):
 
 def test_build_http_default_retry_delays(cfg):
     ext = build_extractor(cfg, kind="http", url="http://ml")
-    assert tuple(ext.retry_delays) == (30, 120, 600)
+    assert tuple(ext.retry_delays) == (20, 60)
 
 
 def test_build_retry_delays_override(cfg):

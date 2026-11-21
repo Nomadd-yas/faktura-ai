@@ -117,10 +117,17 @@ corpus_files = sa.Table(
     sa.Column("dup_kind", sa.String(16), nullable=True),
     sa.Column("storage_key", sa.String(1000), nullable=True),
     sa.Column("source", sa.String(1000), nullable=True),
+    sa.Column("stage", sa.String(32), nullable=True),
+    sa.Column("progress", sa.Integer, nullable=True),
     sa.Column("created_at", UTCDateTime, nullable=False),
     sa.Index("ix_files_corpus", "corpus_id", "seq"),
     sa.Index("ix_files_sha", "sha256"),
 )
+
+# колонки, добавленные позже первого развёртывания: Database.create_all добавляет их в существующие БД
+LATE_COLUMNS: dict[sa.Table, tuple[sa.Column, ...]] = {
+    corpus_files: (corpus_files.c.stage, corpus_files.c.progress),
+}
 
 runs = sa.Table(
     "runs", metadata,

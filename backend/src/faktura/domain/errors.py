@@ -36,6 +36,7 @@ ERROR_CATALOG: dict[str, tuple[int, str]] = {
     "ml_timeout": (503, "Сервис разбора временно недоступен"),
     "ml_schema_mismatch": (502, "Модель вернула ответ в неверном формате"),
     "ml_error": (502, "Модель не смогла разобрать статью"),
+    "ml_invalid_data": (502, "Модель вернула некорректные данные"),
 }
 
 # Публичные тексты причин по внутренним кодам ошибок (RunFile.reason, error_message): без «ML», «бэк».
@@ -50,12 +51,18 @@ PUBLIC_REASONS: dict[str, str] = {
     "too_many_pages": "В PDF слишком много страниц",
     "file_too_large": "Файл больше допустимого размера",
     "ml_quota": "Исчерпан лимит сервиса разбора",
+    "ml_invalid_data": "Модель вернула некорректные данные",
+    "file_timeout": "Превышено время разбора файла (10 мин)",
 }
+# коды, у которых в публичный текст входит пояснение из сообщения («Модель вернула некорректные данные: ...»)
+DETAILED_CODES: frozenset[str] = frozenset({"ml_invalid_data", "file_timeout"})
 INTERNAL_REASON = "Внутренняя ошибка сервиса разбора"
 
 
 def public_reason(code: str | None, message: str | None = None) -> str:
     """Публичная причина сбоя по коду; неизвестные коды - общий текст (технический текст только в логи)."""
+    if code in DETAILED_CODES and message:
+        return message
     if code in PUBLIC_REASONS:
         return PUBLIC_REASONS[code]
     return INTERNAL_REASON

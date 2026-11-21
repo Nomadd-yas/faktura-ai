@@ -106,8 +106,8 @@ class RunData:
             label = "не по теме"
         return {
             "id": self.file_ids[f.id], "name": f.source or f.name, "status": status, "status_label": label,
-            "stage": "Извлечение" if status == "running" else None,
-            "progress": {"queued": 0, "running": 50}.get(status, 100),
+            "stage": (f.stage or "Извлечение") if status == "running" else None,
+            "progress": _progress(f, status),
             "has_data": results > 0, "results": results, "issues": issues, "reason": reason or None,
             "size": f.size_bytes, "sha256": f.sha256,
         }
@@ -123,8 +123,11 @@ class RunData:
         if run is not None:
             if run.status in _IN_PROGRESS:
                 return "queued" if run.status == RunStatus.queued else "running"
-            if run.status in (RunStatus.failed, RunStatus.cancelled):
+            # spec §4.1: done, когда все файлы в конечном статусе; error - только если упали все файлы
+            if views and all(v["status"] == "error" for v in views):
                 return "error"
+            if run.status == RunStatus.failed and any(v["status"] in ("queued", "running") for v in views):
+                return "error"  # прогон оборвался, часть файлов так и не разобрана
             return "done"
         if any(v["status"] == "running" for v in views):
             return "running"
@@ -133,6 +136,14 @@ class RunData:
     def updated_at(self) -> datetime | None:
         r = self.run
         return (r.finished_at or r.started_at or r.created_at) if r else self.corpus.created_at
+
+
+def _progress(f: CorpusFile, status: str) -> int:
+    if status == "queued":
+        return 0
+    if status == "running":
+        return max(0, min(int(f.progress if f.progress is not None else 10), 99))
+    return 100
 
 
 def _file_ids(files: list[CorpusFile]) -> dict[str, str]:

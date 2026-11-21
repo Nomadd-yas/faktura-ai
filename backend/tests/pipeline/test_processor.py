@@ -68,8 +68,13 @@ def test_quote_found_filled(env, loaded, profile):
     process(env, pids["D001.pdf"], profile)
     with env.uow() as uow:
         rows = uow.facts.query(FactFilter(paper_ids=[pids["D001.pdf"]]), [], 1000, None).data
-    # PDF синтетический: цитаты эталона в нём не встречаются, но значение должно быть выставлено (False), не None
-    assert all(r.fact.quote_found is not None for r in rows if r.fact.source_fragment)
+    # PDF синтетический: цитаты эталона в нём не встречаются, но значение для проверяемых фрагментов выставлено
+    # (False), не None; фрагменты вида Table/Supplementary не проверяются -> None
+    from faktura.pdfio.quotes import is_checkable_fragment
+    assert all(r.fact.quote_found is not None for r in rows
+               if r.fact.source_fragment and is_checkable_fragment(r.fact.source_fragment))
+    assert all(r.fact.quote_found is None for r in rows
+               if r.fact.source_fragment and not is_checkable_fragment(r.fact.source_fragment))
 
 
 def test_unknown_paper_not_found(env, profile):

@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from ..domain.entities import (CorpusFile, CorpusFileStatus, PaperStatus, ProcessOutcome, Run, RunCounts, RunKind,
                                RunOutput, RunStatus)
-from ..domain.errors import INTERNAL_REASON, PUBLIC_REASONS, AppError, ExtractError, public_reason
+from ..domain.errors import DETAILED_CODES, INTERNAL_REASON, PUBLIC_REASONS, AppError, ExtractError, public_reason
 from ..domain.ports import CancelToken
 from ..domain.profile import BUILTIN_SOLAR_ID, ExtractionProfile, builtin_solar_profile
 from ..domain.services import Services
@@ -40,6 +40,14 @@ ACTIVE = (RunStatus.queued, RunStatus.running, RunStatus.cancelling)
 NO_ML_KINDS = (RunKind.renormalize, RunKind.recheck)
 MAX_FILE_RETRIES = 3
 OUTPUT_KEY = "runs/{run_id}/output.zip"
+# прогоны, взятые в работу этим процессом (submit/resume): повторный submit и resume_active не дублируют выполнение
+_INFLIGHT: set[str] = set()
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _timeout_text(timeout_s: float) -> str:
+    human = f"{round(timeout_s / 60):g} мин" if timeout_s >= 60 else f"{timeout_s:g} с"
+    return f"Превышено время разбора файла ({human})"
 
 
 def output_key(run_id: str) -> str:
@@ -253,10 +261,12 @@ class RunService:
         return [f for f in usable if f.status == CorpusFileStatus.done and f.paper_id]
 
     def start(self, corpus_id: str, kind: RunKind | str, *, file_ids: list[str] | None = None,
-              profile_id: str | None = None, model_version: str = "latest", concurrency: int = 4,
+              profile_id: str | None = None, model_version: str = "latest", concurrency: int | None = None,
               keep_review: bool = True, user_id: str | None, build_output: bool = False) -> Run:
-        """AppError('conflict'), если у корпуса уже идёт прогон."""
+        """AppError('conflict'), если у корпуса уже идёт прогон. `concurrency` по умолчанию - `run_concurrency`."""
         k = _kind(kind)
+        if concurrency is None:
+            concurrency = self.services.settings.run_concurrency
         try:
             conc = int(concurrency)
         except (TypeError, ValueError) as e:
@@ -276,7 +286,7 @@ class RunService:
                 if f.status != CorpusFileStatus.queued and not (k in NO_ML_KINDS):
                     if f.status == CorpusFileStatus.failed and not f.storage_key:
                         continue  # отклонён при приёме: останется failed
-                    uow.files.update_status(f.id, CorpusFileStatus.queued)
+                    uow.files.update_status(f.id, CorpusFileStatus.queued, stage=None, progress=0)
             ids = [f.id for f in files]
             counts = RunCounts(total=len(ids), queued=len(ids))
             return uow.runs.create(corpus_id=corpus_id, kind=k, status=RunStatus.queued, profile_id=profile_id,
@@ -320,7 +330,12 @@ class RunService:
     # --- submit / cancel -------------------------------------------------------------------------------
 
     def submit(self, run_id: str) -> None:
-        """Через services.executor."""
+        """Через services.executor. Повторный submit уже поставленного прогона ничего не делает."""
+        with _INFLIGHT_LOCK:
+            if run_id in _INFLIGHT:
+                return
+            _INFLIGHT.add(run_id)
+
         def task() -> None:
             try:
                 self.execute(run_id)
@@ -334,8 +349,16 @@ class RunService:
                                             finished_at=uow.now())
                 except Exception:  # noqa: BLE001
                     log.exception("Не удалось отметить прогон %s", run_id)
+            finally:
+                with _INFLIGHT_LOCK:
+                    _INFLIGHT.discard(run_id)
 
-        self.services.executor.submit(task)
+        try:
+            self.services.executor.submit(task)
+        except BaseException:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.discard(run_id)
+            raise
 
     def cancel(self, run_id: str) -> Run:
         """Незапущенные файлы -> cancelled; готовое сохраняется. Завершённый прогон -> AppError('conflict')."""
@@ -442,9 +465,9 @@ class RunService:
 
     def _run_batch(self, ctx: _Ctx, gate: _MlGate | None, ids: list[str], concurrency: int,
                    processed: set[str]) -> None:
-        # параллельно - только запросы к контейнеру ML-1 (мок и raw упираются в CPU и SQLite: порядок детерминирован)
-        parallel = (concurrency > 1 and len(ids) > 1 and gate is not None
-                    and getattr(gate.extractor, "name", "") == "http")
+        # файлы одного прогона обрабатываются параллельно для любого извлекателя (run_concurrency);
+        # смысловые дубли расставляются после (_dedupe_pass), порядок приёма на них не влияет
+        parallel = concurrency > 1 and len(ids) > 1
         if not parallel:
             for fid in ids:
                 processed.add(fid)
@@ -494,7 +517,18 @@ class RunService:
             self._file_done(ctx, f, None, "failed", code, f.error_message)
             return
         with db.uow() as uow:
-            uow.files.update_status(file_id, CorpusFileStatus.processing, error_code=None, error_message=None)
+            uow.files.update_status(file_id, CorpusFileStatus.processing, error_code=None, error_message=None,
+                                    stage="Извлечение", progress=10)
+        abort = threading.Event()
+
+        def on_stage(name: str, progress: int) -> None:
+            if abort.is_set():
+                return
+            with db.uow() as uow2:
+                uow2.files.update(file_id, stage=name, progress=progress)
+
+        timeout = float(self.services.settings.file_timeout_s or 0)
+        spent = 0.0
         mode = {RunKind.renormalize: "renormalize", RunKind.recheck: "recheck"}.get(ctx.kind, "full")
         outcome: ProcessOutcome | None = None
         code: str | None = None
@@ -503,10 +537,29 @@ class RunService:
         while True:
             seen = gate.gen if gate is not None else 0
             offline = gate is not None and gate.down
+
+            def call(offline=offline):
+                return ctx.processor.process(f.paper_id, profile=ctx.profile, mode=mode,  # type: ignore[arg-type]
+                                             model_version="latest" if offline else ctx.model_version,
+                                             keep_review=ctx.keep_review, on_stage=on_stage, abort=abort)
+
             try:
-                outcome = ctx.processor.process(f.paper_id, profile=ctx.profile, mode=mode,  # type: ignore[arg-type]
-                                                model_version="latest" if offline else ctx.model_version,
-                                                keep_review=ctx.keep_review)
+                if timeout > 0:
+                    if timeout - spent <= 0:
+                        abort.set()
+                        code, message = "file_timeout", _timeout_text(timeout)
+                        break
+                    t0 = time.monotonic()
+                    finished, outcome = self._call_with_deadline(call, timeout - spent)
+                    spent += time.monotonic() - t0
+                    if not finished:
+                        abort.set()
+                        code, message = "file_timeout", _timeout_text(timeout)
+                        log.warning("Статья %s (файл %s, разбор %s): превышено время разбора %g с", f.paper_id,
+                                    file_id, ctx.run_id, timeout)
+                        break
+                else:
+                    outcome = call()
                 break
             except ExtractError as e:
                 code, message = e.code, public_reason(e.code, e.message)
@@ -528,18 +581,22 @@ class RunService:
                 break
         if outcome is not None and outcome.status == PaperStatus.done:
             with db.uow() as uow:
-                f = uow.files.update_status(file_id, CorpusFileStatus.done, error_code=None, error_message=None)
+                f = uow.files.update_status(file_id, CorpusFileStatus.done, error_code=None, error_message=None,
+                                            stage=None, progress=100)
             self._file_done(ctx, f, outcome, "done", None, None)
             return
         if outcome is not None:
             code, message = outcome.error_code or code or "internal_error", outcome.error_message or message
         code = code or "internal_error"
-        if code in PUBLIC_REASONS:
+        if code in DETAILED_CODES:
+            message = message or PUBLIC_REASONS[code]
+        elif code in PUBLIC_REASONS:
             message = PUBLIC_REASONS[code]
         elif code == "internal_error" or not message:
             message = INTERNAL_REASON
         with db.uow() as uow:
-            f = uow.files.update_status(file_id, CorpusFileStatus.failed, error_code=code, error_message=message)
+            f = uow.files.update_status(file_id, CorpusFileStatus.failed, error_code=code, error_message=message,
+                                        stage=None, progress=100)
             if f.paper_id:
                 p = uow.papers.get(f.paper_id)
                 if p is not None and p.status != PaperStatus.failed and mode == "full":
@@ -547,6 +604,28 @@ class RunService:
         self._file_done(ctx, f, outcome, "failed", code, message)
         if ctx.fail_fast:
             ctx.stop = True
+
+    @staticmethod
+    def _call_with_deadline(fn: Callable[[], Any], timeout_s: float) -> tuple[bool, Any]:
+        """(завершилось, результат). По истечении срока поток-исполнитель (daemon) остаётся доживать в фоне:
+        его результат отбрасывается, запись в БД блокирует флаг `abort` процессора."""
+        holder: dict[str, Any] = {}
+        done = threading.Event()
+
+        def target() -> None:
+            try:
+                holder["v"] = fn()
+            except BaseException as e:  # noqa: BLE001 - пробрасывается в вызывающий поток
+                holder["e"] = e
+            finally:
+                done.set()
+
+        threading.Thread(target=target, daemon=True, name="faktura-file-work").start()
+        if not done.wait(max(timeout_s, 0.0)):
+            return False, None
+        if "e" in holder:
+            raise holder["e"]
+        return True, holder.get("v")
 
     def _file_done(self, ctx: _Ctx, f: CorpusFile, outcome: ProcessOutcome | None, status: str,
                    code: str | None, message: str | None) -> None:
@@ -668,12 +747,14 @@ class RunService:
         ids: list[str] = []
         with self.services.db.uow() as uow:
             for r in uow.runs.list_active():
-                if r.status == RunStatus.cancelling:
-                    continue
+                with _INFLIGHT_LOCK:
+                    busy = r.id in _INFLIGHT
+                if r.status == RunStatus.cancelling or busy:
+                    continue  # отмена доводится при выполнении; прогон уже в работе (повторный вызов безопасен)
                 if r.status == RunStatus.running:
                     for f in uow.files.list(r.corpus_id, ids=r.file_ids or []):
                         if f.status == CorpusFileStatus.processing:
-                            uow.files.update_status(f.id, CorpusFileStatus.queued)
+                            uow.files.update_status(f.id, CorpusFileStatus.queued, stage=None, progress=0)
                     uow.runs.update(r.id, status=RunStatus.queued, paused=False)
                 ids.append(r.id)
         for rid in ids:

@@ -85,6 +85,7 @@ def test_numbers_as_strings_and_lists_as_strings(example_7_0_1):
     data = copy.deepcopy(example_7_0_1)
     data["materials"][0]["bandgap_value"] = "1.50"
     data["measurements"][0]["device_id"] = "DV-B4; DV-B5"
+    data["devices"].append({**data["devices"][0], "device_id": "DV-B5"})
     data["publication"]["year"] = "2023"
     b = parse_extract_response(data, "D021").bundle
     assert str(b.materials[0].bandgap_value) == "1.50"
@@ -95,8 +96,9 @@ def test_numbers_as_strings_and_lists_as_strings(example_7_0_1):
 def test_record_without_id_dropped(example_7_0_1):
     data = copy.deepcopy(example_7_0_1)
     del data["devices"][0]["device_id"]
-    out = parse_extract_response(data, "D021")
-    assert out.bundle.devices == [] and any("device_id" in w for w in out.warnings)
+    with pytest.raises(ExtractError) as e:  # WP4: запись без ключевого id - тяжёлое нарушение, файл error
+        parse_extract_response(data, "D021")
+    assert e.value.code == "ml_invalid_data" and "device_id" in e.value.message
 
 
 def test_result_meta_page_defaults_to_source_page(example_7_0_1):

@@ -61,6 +61,22 @@ class AppContext:
                     raise AppError("internal_error", "Сервис не готов: не удалось подключить хранилище") from e
         return self.services
 
+    def resume_runs(self) -> list[str]:
+        """Продолжает прогоны, оставшиеся `queued`/`running` после перезапуска (повторный вызов безопасен).
+        Ошибки не роняют запуск сервера."""
+        if not self.settings.resume_runs_on_start:
+            return []
+        try:
+            from ...pipeline.runs import RunService  # noqa: PLC0415
+
+            ids = RunService(self.get_services()).resume_active()
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось продолжить незавершённые прогоны")
+            return []
+        if ids:
+            log.info("Продолжены прогоны после перезапуска: %s", ", ".join(ids))
+        return ids
+
     def remember_turn(self, turn_id: str, data: dict[str, Any], cap: int = 500) -> None:
         with self._lock:
             self.stub_turns[turn_id] = data

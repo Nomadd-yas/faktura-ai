@@ -32,11 +32,11 @@ class Settings(BaseSettings):
     extract_url: str | None = None
     extract_timeout_s: float = 330
     extract_concurrency: int = 2
-    extract_retry_delays: str = "30,120,600"
+    extract_retry_delays: str = "20,60"  # паузы между попытками: 2 паузы = 3 попытки
     extract_protocol: Literal["contract", "pdf_dataset"] = "contract"  # pdf_dataset - прототип ML-1 (POST /extract)
     extract_retry_on_timeout: bool = True
     ml_pause_poll_s: float = 30
-    ml_pause_max_s: float = 1800
+    ml_pause_max_s: float = 300  # максимум паузы прогона при недоступной модели
     cache_dir: Path | None = None
     mock_issues: Literal["all", "ml_only"] = "all"
     mock_gold_dir: Path | None = None
@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     zip_max_files: int = 500
     zip_max_depth: int = 10
     run_concurrency: int = 4
+    file_timeout_s: float = 600  # предел разбора одного файла (10 мин)
+    resume_runs_on_start: bool = True
     export_sync_limit: int = 50000
     check_script: Path | None = None
     check_timeout_s: int = 900

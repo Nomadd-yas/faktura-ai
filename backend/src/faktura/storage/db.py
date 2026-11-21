@@ -236,11 +236,26 @@ class Database:
     def create_all(self) -> None:
         """Создаёт недостающие таблицы и встроенный профиль; повторный вызов безопасен."""
         S.metadata.create_all(self.engine)
+        self._add_missing_columns()
         for ix in S.sub_issues.indexes:  # индексы, добавленные после первого развёртывания (create_all их не трогает)
             if ix.name == "ix_sub_issues_corpus_check":
                 ix.create(self.engine, checkfirst=True)
         with self.uow() as u:
             u.profiles.ensure_builtin()
+
+    def _add_missing_columns(self) -> None:
+        """Колонки, добавленные после первого развёртывания: create_all не меняет существующие таблицы.
+        Идемпотентно (PostgreSQL и SQLite): `ALTER TABLE ... ADD COLUMN` только для отсутствующих колонок."""
+        insp = sa.inspect(self.engine)
+        for table in S.LATE_COLUMNS:
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in S.LATE_COLUMNS[table]:
+                if col.name in have:
+                    continue
+                ddl = f'ALTER TABLE {table.name} ADD COLUMN {col.name} {col.type.compile(dialect=self.engine.dialect)}'
+                with self.engine.begin() as c:
+                    c.execute(sa.text(ddl))
+                log.info("Добавлена колонка %s.%s", table.name, col.name)
 
     def drop_all(self) -> None:
         S.metadata.drop_all(self.engine)

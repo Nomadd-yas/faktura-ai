@@ -167,7 +167,7 @@ def test_run_progress_emitted_again_after_a_second(make_env, pdf_dir, clock, eve
     env.spy.extract = slow
     c = setup(env, pdf_dir)
     log = event_log(env.services.bus, env.workspace_id)
-    env.full_run(c.id)
+    env.full_run(c.id, concurrency=1)  # последовательно: часы подменены, параллельные файлы сливаются в одну «секунду»
     log.stop()
     assert len(log.of("run.progress")) >= 2
     pr = log.of("run.progress")[-1]

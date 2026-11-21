@@ -14,7 +14,7 @@ import logging
 import threading
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from ..domain.entities import (AnchorDraft, DupKind, Fact, FactDraft, PaperStats, PaperStatus, ProcessOutcome,
                                ReviewStatus)
@@ -135,7 +135,10 @@ def _apply_links(bundle: PaperBundle, links) -> None:
 
 
 def _fill_quote_found(bundle: PaperBundle, quote) -> None:
-    """quote_found по правилам валидатора (pypdf + norm()); ссылка «Table N, строка X» ищется по всему тексту."""
+    """quote_found по правилам валидатора (pypdf + norm()); ссылка «Table N, строка X» ищется по всему тексту.
+    Непроверяемые фрагменты (Table/Supplementary) - None, не False."""
+    from ..pdfio.quotes import is_checkable_fragment
+
     for r in bundle.results:
         frag = r.source_fragment
         if not isinstance(frag, str) or not frag.strip():
@@ -143,9 +146,9 @@ def _fill_quote_found(bundle: PaperBundle, quote) -> None:
             continue
         page = r.source_page if isinstance(r.source_page, int) and not isinstance(r.source_page, bool) else None
         found = quote.check(page, frag)
-        if found is None:
+        if found is None and is_checkable_fragment(frag):
             found = bool(quote.find_pages(frag)) if hasattr(quote, "find_pages") else False
-        r.meta.quote_found = bool(found)
+        r.meta.quote_found = None if found is None else bool(found)
 
 
 def _manual_draft(f: Fact, *, detach: bool) -> FactDraft:
@@ -227,8 +230,11 @@ class PaperProcessor:
 
     # --- главное ---
     def process(self, paper_id: str, *, profile: ExtractionProfile, mode: Literal["full", "renormalize", "recheck"],
-                model_version: str, keep_review: bool = True) -> ProcessOutcome:
-        """parse -> extract (через MlCache) -> scope -> apply_normalization -> build_facts -> link_duplicates
+                model_version: str, keep_review: bool = True, on_stage: Callable[[str, int], None] | None = None,
+                abort: threading.Event | None = None) -> ProcessOutcome:
+        """`on_stage(этап, прогресс)` - сообщает ход разбора («Извлечение» -> «Нормализация» -> «Проверка»);
+        `abort` - флаг «файл брошен по таймауту»: перед записью результата разбор прерывается.
+        parse -> extract (через MlCache) -> scope -> apply_normalization -> build_facts -> link_duplicates
         -> check_paper (+merge) -> quote_found -> paper_quality/coverage -> save_processed (1 транзакция)
         -> смысловые дубли -> paper.done."""
         if mode not in PROCESS_MODES:
@@ -251,7 +257,8 @@ class PaperProcessor:
         try:
             with local_pdf(self.services.store, file.storage_key, f"{paper.publication_id}.pdf") as pdf:
                 return self._process_pdf(paper, file, pdf, profile=profile, mode=mode,
-                                         model_version=model_version, keep_review=keep_review)
+                                         model_version=model_version, keep_review=keep_review, on_stage=on_stage,
+                                         abort=abort)
         except ExtractError as e:
             if e.code == "ml_unavailable":
                 with db.uow() as uow:
@@ -294,7 +301,15 @@ class PaperProcessor:
             return out
 
     def _process_pdf(self, paper, file, pdf: Path, *, profile: ExtractionProfile, mode: str, model_version: str,
-                     keep_review: bool) -> ProcessOutcome:
+                     keep_review: bool, on_stage: Callable[[str, int], None] | None = None,
+                     abort: threading.Event | None = None) -> ProcessOutcome:
+        def stage(name: str, progress: int) -> None:
+            if on_stage is not None:
+                try:
+                    on_stage(name, progress)
+                except Exception:  # noqa: BLE001 - ход разбора не роняет обработку
+                    log.debug("on_stage", exc_info=True)
+
         s = self.services
         warnings: list[str] = []
         doc: ParsedDocument | None = None
@@ -319,6 +334,7 @@ class PaperProcessor:
             with s.db.uow() as uow:
                 bundle = uow.papers.load_bundle(paper.id, apply_review=False)
             mv = paper.model_version or model_version
+        stage("Нормализация", 60)
         pid = paper.publication_id
         for _, rows in bundle.iter_tables():
             for row in rows:
@@ -332,6 +348,7 @@ class PaperProcessor:
             issues: list[IssueRecord] = []
         else:
             bundle = apply_normalization(bundle, s.normalizer, profile)
+            stage("Проверка", 85)
             quote = PypdfQuoteIndex(pdf)
             outcome = check_paper(bundle, profile, quote=quote, autolink=self.autolink())
             _apply_links(bundle, outcome.links)
@@ -350,6 +367,8 @@ class PaperProcessor:
                 prev = uow.papers.get(paper.id)
                 versions["parser"] = (prev.versions or {}).get("parser", "") if prev else ""
                 versions["from_cache"] = (prev.versions or {}).get("from_cache", "false") if prev else "false"
+        if abort is not None and abort.is_set():
+            raise AppError("file_timeout", "Разбор файла прерван по таймауту")
         self._save(paper, bundle, facts, anchors, issues, stats, mv, versions, keep_review=keep_review, profile=profile,
                    needs_ocr=bool(doc.needs_ocr) if doc is not None else None,
                    page_count=doc.page_count if doc is not None else None)

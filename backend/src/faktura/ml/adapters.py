@@ -201,7 +201,7 @@ class HttpExtractor:
     pdf_no_text|pdf_encrypted|pdf_broken (из 422), ml_error."""
     name = "http"
 
-    def __init__(self, base_url: str, timeout_s: float = 330, retry_delays: tuple[float, ...] = (30, 120, 600),
+    def __init__(self, base_url: str, timeout_s: float = 330, retry_delays: tuple[float, ...] = (20, 60),
                  concurrency: int = 2, sleep: Callable[[float], None] = time.sleep, transport: Any = None,
                  health_timeout_s: float = 10.0, protocol: str = "contract", retry_on_timeout: bool = True) -> None:
         if protocol not in ("contract", "pdf_dataset"):
@@ -576,7 +576,7 @@ def build_extractor(settings: Settings, *, kind: str | None = None, url: str | N
         if not base:
             raise AppError("validation_error", "Для извлечения через ML-1 нужен адрес: FAKTURA_EXTRACT_URL / --extract-url")
         ext: ExtractAdapter = HttpExtractor(
-            base, timeout_s=settings.extract_timeout_s,
+            base, timeout_s=min(float(settings.extract_timeout_s), float(settings.file_timeout_s)),  # таймаут файла главнее
             retry_delays=tuple(retry_delays) if retry_delays is not None else settings.retry_delays,
             concurrency=settings.extract_concurrency, protocol=settings.extract_protocol,
             retry_on_timeout=settings.extract_retry_on_timeout)

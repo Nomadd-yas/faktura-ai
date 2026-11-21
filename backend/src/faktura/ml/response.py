@@ -30,6 +30,7 @@ from ..domain.ids import issue_key
 from ..domain.io import parse_cell
 from ..domain.records import ROW_MODELS, PaperBundle, Publication, RecordMeta
 from ..domain.tables import BOOL_FIELDS, ID_COLUMN, INTEGER_FIELDS, LIST_FIELDS, NUMERIC_FIELDS, TABLES
+from .validate import validate_bundle
 
 ROW_TABLES: tuple[str, ...] = ("materials", "devices", "layers", "measurements", "results", "issues")
 # поля results, которые заполняет только бэк (нормализация, REQ-028)
@@ -40,6 +41,10 @@ UNKNOWN_MODEL_VERSION = "unknown"
 
 class _Bad(Exception):
     """Запись не может быть принята."""
+
+
+class _Severe(_Bad):
+    """Тяжёлое нарушение: запись без ключевого id (ответ отклоняется целиком, см. ml/validate.py)."""
 
 
 def _schema_error(message: str) -> ExtractError:
@@ -216,13 +221,13 @@ def _build_record(table: str, obj: Any, publication_id: str, order: int, where: 
     id_col = ID_COLUMN[table]
     if table == "issues":
         if not values.get("check_name"):
-            raise _Bad("нет check_name")
+            raise _Severe("нет check_name")
         values["check_name"] = str(values["check_name"]).strip()
         values["issue_id"] = str(values.get("issue_id") or "").strip()
     else:
         rid = values.get(id_col)
         if rid is None or str(rid).strip() == "":
-            raise _Bad(f"нет {id_col}")
+            raise _Severe(f"нет {id_col}")
         values[id_col] = str(rid).strip()
 
     if table == "results" and values.get("raw_value") in (None, ""):
@@ -307,21 +312,25 @@ def parse_extract_response(data: dict, publication_id: str) -> ExtractOutcome:
         warnings.append("в ответе ML нет model_version")
 
     bundle = PaperBundle(publication=_build_publication(pub, pid, warnings))
+    severe: list[str] = []
     for table in ROW_TABLES:
         arr = data.get(table)
         if arr is None:
             continue
         if not isinstance(arr, list):
-            warnings.append(f"{table}: ожидается массив, получено {type(arr).__name__} - таблица пропущена")
-            continue
+            raise _schema_error(f"таблица «{table}» не является списком записей")
         kept = getattr(bundle, table)
         for i, obj in enumerate(arr):
             where = f"{table}[{i}]"
             try:
                 kept.append(_build_record(table, obj, pid, len(kept), where, warnings))
+            except _Severe as e:
+                severe.append(f"в таблице «{table}» запись {i + 1}: {e}")
             except _Bad as e:
                 rid = obj.get(ID_COLUMN[table]) if isinstance(obj, dict) else None
                 warnings.append(f"{where}{f' ({rid})' if rid else ''}: запись отброшена - {e}")
+
+    validate_bundle(bundle, warnings, severe)
 
     ml_warnings = data.get("warnings")
     if isinstance(ml_warnings, list):
