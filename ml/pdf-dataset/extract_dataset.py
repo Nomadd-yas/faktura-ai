@@ -656,10 +656,56 @@ def _call_llm_once(client, args, messages, schema_name, schema, max_tokens, labe
                        f"Сырой ответ: {raw_path}.{hint}")
 
 
+# [faktura-patch] дозаполнение пропусков results по кандидатам из текста/таблиц
+GAPFILL_PROMPT = """Ниже — уже извлечённые строки results статьи и список УПОМИНАНИЙ значений показателей,
+найденных в тексте/таблицах статьи, которые НЕ попали в results. Для КАЖДОГО упоминания реши:
+  (а) это результат, который нужно добавить — собственный (primary, укажи device_id/measurement_id из
+      «Уже извлечено») или значение другой работы (cited, device_id=null, measurement_id=null);
+  (б) это повтор уже извлечённого значения того же прибора из другого места статьи — добавь строку с
+      duplicate_of = result_id основной (только если это действительно другое место статьи, обычно PCE);
+  (в) не результат (часть другой фразы, условия эксперимента, номер, промежуточное значение,
+      неверно распознанный показатель) — пропусти.
+В контексте упоминания могут быть и другие значения (например «from 3.8% to over 26%») — добавь все,
+которые являются результатами.
+Верни ТОЛЬКО новые строки (не повторяй уже извлечённые) в ключе "results"; result_id — новые,
+не совпадающие с существующими (продолжай нумерацию). Правила полей — как в задании results.
+Если добавлять нечего — {"results": []}."""
+
+
+def gap_fill(client, args, text, state, mentions, pub_id, max_tokens, raw_path, report, call_llm,
+             table_schema, common_rules, results_prompt, nullify_empties, fix_result_origin):
+    if not mentions:
+        return []
+    import json
+    lines = [f"- {m['metric']} = {m['value']:g} (с. {m['page']}, {m['source']}): «{m['context'][:220]}»"
+             for m in mentions[:40]]
+    compact = {k: state.get(k, []) for k in ("materials", "devices", "measurements", "results")}
+    user = (f"publication_id = {pub_id}\n\nТекст статьи (Markdown):\n{text}\n\n"
+            f"Уже извлечено (JSON):\n{json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}\n\n"
+            f"Упоминания, не попавшие в results ({len(lines)}):\n" + "\n".join(lines) +
+            f"\n\nЗадание (дозаполнение results):\n{GAPFILL_PROMPT}\n\nПравила полей results:\n{results_prompt}")
+    messages = [{"role": "system", "content": common_rules}, {"role": "user", "content": user}]
+    res = nullify_empties(call_llm(client, args, messages, "table_results_gapfill", table_schema("results"),
+                                   max_tokens, "gapfill", raw_path, report))
+    rows = res.get("results", []) if isinstance(res, dict) else []
+    have = {r.get("result_id") for r in state.get("results", [])}
+    out, n = [], len(have) + 1
+    for r in rows:
+        r.setdefault("publication_id", pub_id)
+        if not r.get("result_id") or r["result_id"] in have:
+            while f"R{n:03d}" in have:
+                n += 1
+            r["result_id"] = f"R{n:03d}"
+        have.add(r["result_id"])
+        out.append(r)
+    fix_result_origin(out)
+    return out
+
+
 def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             provider="wafer", no_strict=False, max_chars=200000,
             max_tokens=24576, issues_max_tokens=6144, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
-            issues_with_text=False, meta_path=None, api_key=None) -> dict:
+            issues_with_text=False, meta_path=None, api_key=None, pdf_path=None) -> dict:
     """Извлекает датасет из markdown-статьи.
 
     Возвращает dict: dataset, counts, failed_tables, problems, out_path,
@@ -720,6 +766,33 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
                 fix_result_origin(rows)
             state[step] = rows
 
+    def quality_pass(pdf):
+        """[faktura-patch] 1) значения, которых нет в тексте PDF, отбрасываются; страницы правятся;
+        2) кандидаты из текста PDF и HTML-таблиц, не попавшие в results, — на дозаполнение (один вызов LLM)."""
+        from pipeline import _page_texts, verify_values, mine_candidates, uncovered
+        st = {"step": "quality"}
+        try:
+            pages = _page_texts(pdf)
+            keep, vst = verify_values(state["results"], pdf, pages)
+            st["verify"] = vst
+            state["results"] = keep
+            un = uncovered(mine_candidates(pdf, text, pages), keep)
+            st["gap_mentions"] = len(un)
+            if un:
+                raw_path = src.with_name(f"{src.name}.gapfill.raw_response.txt")
+                new = gap_fill(client, args, text, state, un, pub_id, max_tokens, raw_path, report, call_llm,
+                               table_schema, COMMON_RULES, STEP_PROMPTS["results"], nullify_empties,
+                               fix_result_origin)
+                new, nst = verify_values(new, pdf, pages)
+                st["gap_added"], st["gap_verify"] = len(new), nst
+                state["results"] = state["results"] + new
+        except LLMError as e:
+            st["error"] = str(e)[:200]
+        except Exception as e:  # noqa: BLE001 — улучшение качества не роняет прогон
+            st["error"] = f"{type(e).__name__}: {e}"[:200]
+        print(f"      качество: {st}", flush=True)
+        report.append(st)
+
     def out_of_scope():
         return bool(state["publications"]) and state["publications"][0].get("in_scope") is False
 
@@ -736,6 +809,8 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             f_lay = ex.submit(run_step, "layers")  # layers нужен только issues; results его не использует
             apply(*run_step("measurements"))
             apply(*run_step("results"))
+            if pdf_path is not None and state["results"]:
+                quality_pass(pdf_path)
             apply(*f_lay.result())
 
     if not no_issues and (not state["publications"] or state["publications"][0].get("in_scope") is not False):

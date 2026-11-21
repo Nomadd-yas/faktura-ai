@@ -308,6 +308,216 @@ def warm_parser():
         print(f"[!] прогрев glmocr не удался: {type(e).__name__}: {e}", flush=True)
 
 
+
+
+# ---------- [faktura-patch] качество: проверка значений по тексту PDF и кандидаты для дозаполнения ----------
+import html as _html
+
+NUM = r"(\d{1,5}(?:[.,]\d+)?)"
+# метрика -> (шаблоны «ключевое слово … число единица»); группа 1 — число, группа 2 (если есть) — единица
+TEXT_PATTERNS = {
+    "PCE": [r"(?:\bPCEs?\b|efficienc\w*|η)[^%\n]{0,80}?" + NUM + r"\s*%"],
+    "FF": [r"(?:\bFF\b|fill factor)[^%\n]{0,60}?" + NUM + r"\s*%"],
+    "Voc": [r"(?:V\s?_?\s?OC\b|V\s?oc\b|open[- ]circuit voltage)[^\n]{0,60}?" + NUM + r"\s*(m?V)\b"],
+    "Jsc": [r"(?:J\s?_?\s?SC\b|J\s?sc\b|short[- ]circuit current(?: density)?)[^\n]{0,60}?" + NUM + r"\s*(mA|µA|μA|uA)"],
+    "Rs": [r"(?:series resistance|\bR\s?_?\s?s\b|\bR\s?S\b)[^\n]{0,60}?" + NUM + r"\s*(kΩ|Ω|Ohm|ohm)"],
+    "Rsh": [r"(?:shunt resistance|\bR\s?_?\s?sh\b|\bR\s?SH\b)[^\n]{0,60}?" + NUM + r"\s*(kΩ|Ω|Ohm|ohm)"],
+}
+# заголовок столбца таблицы -> метрика
+HEADER_PATTERNS = [
+    ("Jsc_EQE", r"EQE|integrat"), ("Voc", r"V\s*_?\{?\s*\\?(?:mathrm)?\{?\s*O\s*C|V\s*oc|V_\{oc\}|open"),
+    ("Jsc", r"J\s*_?\{?\s*\\?(?:mathrm)?\{?\s*S\s*C|J\s*sc|J_\{sc\}|short"), ("FF", r"\bFF\b|fill"),
+    ("Rsh", r"R\s*_?\{?\s*\\?(?:mathrm)?\{?\s*sh|shunt"), ("Rs", r"R\s*_?\{?\s*\\?(?:mathrm)?\{?\s*s\b|R_\{?s\}?|series"),
+    ("HI", r"\bHI\b|hysteresis"), ("PCE", r"PCE|efficien|η|\\eta"),
+]
+FAMILY = {"stabilized_PCE": "PCE", "retained_PCE": "PCE"}
+
+
+def _num(s):
+    try:
+        return float(str(s).replace(",", ".").replace("−", "-"))
+    except (TypeError, ValueError):
+        return None
+
+
+_REF_HEAD = _re.compile(r"(?:^|\n)\s*(?:\d+\.?\s*)?(?:References|REFERENCES|Bibliography|Literature Cited|Notes and references)\s*\n")
+
+
+def _page_texts(pdf):
+    """Текст страниц PDF; всё после заголовка списка литературы (в последних 60% документа) отбрасывается."""
+    import pymupdf
+    raw = [p.get_text() for p in pymupdf.open(str(pdf))]
+    cut_page, cut_pos = None, None
+    for i in range(int(len(raw) * 0.4), len(raw)):
+        m = _REF_HEAD.search(raw[i])
+        if m:
+            cut_page, cut_pos = i, m.start()
+            break
+    out = []
+    for i, t in enumerate(raw):
+        if cut_page is not None and i > cut_page:
+            t = ""
+        elif i == cut_page:
+            t = t[:cut_pos]
+        t = t.replace("−", "-").replace(" ", " ").replace(" ", " ")
+        t = _re.sub(r"-\n(?=[a-z])", "", t)
+        out.append(_re.sub(r"[ \t]*\n[ \t]*", " ", t))
+    return out
+
+
+def _forms(v):
+    out = set()
+    for x in (v, v * 1000, v / 1000, v * 100, v / 100):
+        if x:
+            s = f"{x:.6f}".rstrip("0").rstrip(".")
+            if s.replace(".", "").strip("0"):
+                out.add(s)
+    return out
+
+
+def _has_value(text, v):
+    for s in _forms(v):
+        ip, _, dp = s.partition(".")
+        rx = r"(?<![\d.])" + _re.escape(ip) + (r"[.,]" + _re.escape(dp) + r"0*" if dp else r"(?:[.,]0+)?") + r"(?![\d])"
+        if _re.search(rx, text):
+            return True
+    return False
+
+
+def verify_values(results, pdf, pages=None):
+    """Числовое значение должно встречаться в тексте PDF. Нет нигде -> строка отбрасывается (обычно OCR с
+    картинки графика или выдумка); есть только на другой странице -> исправить source_page.
+    Возвращает (оставленные строки, статистика)."""
+    pages = pages or _page_texts(pdf)
+    keep, st = [], {"page": 0, "page_fixed": 0, "dropped": 0, "nonnum": 0}
+    for r in results:
+        v = _num(r.get("raw_value")) if r.get("raw_value") is not None else _num(r.get("metric_value"))
+        if v is None or r.get("extraction_status") not in (None, "extracted"):
+            st["nonnum"] += 1
+            keep.append(r)
+            continue
+        try:
+            n = int(r.get("source_page")) - 1
+        except (TypeError, ValueError):
+            n = -1
+        if 0 <= n < len(pages) and _has_value(pages[n], v):
+            st["page"] += 1
+            keep.append(r)
+            continue
+        other = [k for k, t in enumerate(pages) if _has_value(t, v)]
+        if other:
+            if len(other) == 1:
+                r["source_page"] = other[0] + 1
+            st["page_fixed"] += 1
+            keep.append(r)
+        else:
+            st["dropped"] += 1
+            r["_dropped_reason"] = "значение не найдено в тексте PDF"
+    return keep, st
+
+
+def _table_candidates(md):
+    """HTML-таблицы glmocr: столбец-показатель по заголовку, каждая числовая ячейка — кандидат."""
+    out = []
+    page = 1
+    pos_pages = [(m.start(), int(m.group(1))) for m in _re.finditer(r"<!-- page (\d+) -->", md)]
+    for tm in _re.finditer(r"<table.*?</table>", md, _re.S):
+        page = max([p for s, p in pos_pages if s < tm.start()] or [1])
+        cap = md[max(0, tm.start() - 300):tm.start()]
+        capm = _re.findall(r"(Table\s*\d+[^\n]{0,120})", cap)
+        caption = capm[-1].strip() if capm else ""
+        rows = []
+        for tr in _re.findall(r"<tr>(.*?)</tr>", tm.group(0), _re.S):
+            cells = [_html.unescape(_re.sub(r"<[^>]+>", "", c)).strip() for c in _re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, _re.S)]
+            rows.append(cells)
+        if not rows:
+            continue
+        # заголовок: первые строки, где есть ключевые слова
+        hdr_idx, colmetric = None, {}
+        for hi, row in enumerate(rows[:3]):
+            cm = {}
+            for ci, c in enumerate(row):
+                for m, rx in HEADER_PATTERNS:
+                    if _re.search(rx, c, _re.I):
+                        cm[ci] = m
+                        break
+            if len(cm) >= 1:
+                hdr_idx, colmetric = hi, cm
+                break
+        if hdr_idx is None:
+            continue
+        ncols_hdr = len(rows[hdr_idx])
+        scale = {}
+        for ci, m in colmetric.items():
+            h = rows[hdr_idx][ci] if ci < len(rows[hdr_idx]) else ""
+            hs = _re.sub(r"[\s{}\\]|mathrm", "", h)
+            if m == "Voc" and "mV" in hs:
+                scale[ci] = 0.001
+            elif m in ("Jsc", "Jsc_EQE") and _re.search(r"[µμu]A", hs):
+                scale[ci] = 0.001
+            elif m in ("Rs", "Rsh") and _re.search(r"kΩ|kOmega|kOhm", hs):
+                scale[ci] = 1000.0
+        for row in rows[hdr_idx + 1:]:
+            off = ncols_hdr - len(row) if len(row) < ncols_hdr else 0   # rowspan слева
+            label = " ".join(c for c in row[: max(1, min(row and len(row), 2))] if c and _num(c) is None)
+            for ci, c in enumerate(row):
+                m = colmetric.get(ci + off)
+                if not m:
+                    continue
+                mm = _re.match(r"\s*\$?\s*(\d{1,5}(?:[.,]\d+)?)", c)
+                if mm:
+                    out.append({"metric": m, "value": _num(mm.group(1)) * scale.get(ci + off, 1.0), "page": page, "source": "table",
+                                "context": f"{caption} | строка: {label} | ячейка: {c}"})
+    return out
+
+
+def mine_candidates(pdf, md, pages=None):
+    pages = pages or _page_texts(pdf)
+    out = []
+    for i, t in enumerate(pages):
+        for m, pats in TEXT_PATTERNS.items():
+            for rx in pats:
+                for mm in _re.finditer(rx, t, _re.I):
+                    v = _num(mm.group(1))
+                    unit = (mm.group(2) if mm.lastindex and mm.lastindex >= 2 else "") or ""
+                    if v is None:
+                        continue
+                    if m == "Voc" and unit.lower() == "mv":
+                        v /= 1000
+                    if m in ("Rs", "Rsh") and unit.lower().startswith("k"):
+                        v *= 1000
+                    if m == "Jsc" and unit.lower() in ("µa", "μa", "ua"):
+                        v /= 1000
+                    a, b = max(0, mm.start() - 120), min(len(t), mm.end() + 60)
+                    out.append({"metric": m, "value": v, "page": i + 1, "source": "text",
+                                "context": t[a:b].strip()})
+    if md:
+        out += _table_candidates(md)
+    # дубли кандидатов (метрика, значение, страница) — один
+    seen, uniq = set(), []
+    for c in out:
+        k = (c["metric"], round(c["value"], 6), c["page"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    return uniq
+
+
+def uncovered(cands, results):
+    """Кандидаты, чьих (семейство метрики, значение) нет среди извлечённых results (любой страницы)."""
+    have = []
+    for r in results:
+        v = _num(r.get("metric_value")) if r.get("metric_value") not in (None, "") else _num(r.get("raw_value"))
+        if v is not None:
+            m = r.get("metric_name") or ""
+            have.append((FAMILY.get(m, m), v))
+
+    def close(a, b):
+        return abs(a - b) <= max(abs(b) * 0.005, 1e-9)
+    return [c for c in cands if not any(FAMILY.get(c["metric"], c["metric"]) == hm and close(c["value"], hv)
+                                        for hm, hv in have)]
+
+
 def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) -> dict:
     """Прогоняет PDF через весь конвейер. Бросает исключение при фатальной ошибке
     (PDF не найден, glmocr не установлен/не создал md).
@@ -403,7 +613,8 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
                       out=str(dataset_out),
                       model=os.environ.get("ROUTERAI_MODEL", DEFAULT_MODEL),
                       provider=os.environ.get("ROUTERAI_PROVIDER", "wafer"),
-                      meta_path=str(meta_out))
+                      meta_path=str(meta_out),
+                      pdf_path=pdf)
         failed_tables = res["failed_tables"]
     except LLMError as e:
         extract_failed = str(e)
