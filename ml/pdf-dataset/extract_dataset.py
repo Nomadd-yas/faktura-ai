@@ -355,16 +355,18 @@ STEP_PROMPTS = {
   4) значения ЧУЖИХ работ (введение, обсуждение, таблицы сравнения с литературой).
 - Champion и средние по партии — ОТДЕЛЬНЫЕ строки; aggregation ∈ champion/mean/median
   (если в статье не сказано, лучший это прибор или среднее — null).
-- ЦИТИРУЕМЫЕ значения (result_origin=cited) — ЗАПИСЫВАЙ ВСЕ: каждое значение показателя другой
-  работы, упомянутое в тексте («рекорд 22.9% [12]», «reported PCE of 13.1% [24]») или в таблице
-  сравнения (каждая строка со ссылкой — отдельная запись). device_id и measurement_id = null,
-  cited_publication_id — метка ссылки как в статье («[24]»), если её нет — null.
+- result_origin: ПО УМОЛЧАНИЮ primary — всё, что измерено на приборах авторов этой статьи
+  (у таких строк есть device_id). cited — ТОЛЬКО значения ДРУГИХ работ: упомянутые в тексте
+  («рекорд 22.9% [12]», «reported PCE of 13.1% [24]», история рекордов во введении «from 3.8% to
+  over 26%» — даже без номера ссылки) и строки таблиц сравнения с литературой (каждая строка со
+  ссылкой — отдельная запись). Записывай такие значения все. Для cited device_id и measurement_id =
+  null, cited_publication_id — метка ссылки как в статье («[24]»), если её нет — null.
 - ПОВТОРЫ: основная запись — самое подробное место (обычно таблица или раздел результатов).
   Повтор (отдельная строка, duplicate_of = result_id основной) заводи, только если то же значение
   того же прибора пересказано в ДРУГОМ месте статьи: в аннотации, заключении, другой таблице.
-  Обычно это главный результат (champion PCE, показатель стабильности). Внутри одной страницы
-  (таблица и её пересказ в тексте рядом) повторы НЕ заводи; второстепенные Voc/Jsc/FF из аннотации
-  повтором записывай только если они там явно приведены числом.
+  Повторы заводи ПРАКТИЧЕСКИ ТОЛЬКО для PCE (главный результат в аннотации/заключении).
+  Voc/Jsc/FF/retained_PCE и прочие из аннотации/заключения повторами НЕ записывай, если эти же числа
+  уже есть в таблице/результатах. Внутри одной страницы повторы НЕ заводи.
 - extraction_status ∈ extracted, present_not_extractable (например, только на графике
   или только в supplementary), absent.
 - ЧИСЛА: raw_value — ТОЛЬКО число. Слова-уточнители («more than», «~», «about», «over», «close to»,
@@ -417,6 +419,18 @@ check_name — ровно одно из:
 STEP_ORDER = ["publications", "materials", "devices", "layers", "measurements", "results"]
 # [faktura-patch] шаги внутри группы не зависят друг от друга и идут параллельно
 STEP_GROUPS = [["publications"], ["materials"], ["devices"], ["layers", "measurements"], ["results"]]
+
+
+def fix_result_origin(rows):
+    """[faktura-patch] Детерминированно: у значения чужой работы нет прибора/измерения (README),
+    у собственного — есть. Модель иногда помечает cited все строки статьи."""
+    for r in rows:
+        if r.get("device_id") or r.get("measurement_id"):
+            r["result_origin"] = "primary"
+        elif r.get("cited_publication_id"):
+            r["result_origin"] = "cited"
+        elif not r.get("result_origin"):
+            r["result_origin"] = "primary"
 
 
 def pub_id_from_filename(path: Path) -> str:
@@ -705,6 +719,8 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
                 print(f"[!] {err}; таблица {step} будет пустой, продолжаю.", flush=True)
                 failed.append(step)
             else:
+                if step == "results":
+                    fix_result_origin(rows)
                 state[step] = rows
 
     if not no_issues and (not state["publications"] or state["publications"][0].get("in_scope") is not False):
