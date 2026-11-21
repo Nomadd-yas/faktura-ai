@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | База | `http://localhost:8000/api/v1` (CORS открыт для `http://localhost:5200`, меняется в `FAKTURA_CORS_ORIGINS`) |
-| Область | **только `solar`** (кейс 5, область 1). `rag` → `422 domain_not_supported` |
+| Область | `solar` (кейс 5, область 1) и `rag` (область 2, см. §5). Другое значение → `422 domain_not_supported` |
 | Авторизация | `Authorization: Bearer <access_token>`; без токена — `401` |
 | Даты | ISO 8601 UTC, `2026-11-20T09:00:00Z` |
 | Ошибка | всегда `{"error": {"code", "message", "field", "details", "request_id"}}`; `message` — по-русски, можно показывать как есть |
@@ -60,7 +60,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 |---|---|---|
 | `id` | string | `publication_id`; при совпадении имён в одном разборе — `P042-2` |
 | `name` | string | имя файла / путь в ZIP |
-| `status` | `queued` \| `running` \| `done` \| `out` \| `error` \| `nodata` | `out` — статья не по теме (`reason` = `exclusion_reason`); `nodata` — разобрана, значений нет; `error` — `reason` = текст ошибки |
+| `status` | `queued` \| `running` \| `done` \| `out` \| `error` \| `nodata` \| `ocr` (только `rag`) | `out` — статья не по теме (`reason` = `exclusion_reason`); `nodata` — разобрана, значений нет; `error` — `reason` = текст ошибки |
 | `status_label` | string | подпись по-русски: «в очереди», «разбор», «готово», «нет результатов», «ошибка», для `out` — причина |
 | `stage` | string \| null | «Извлечение» → «Нормализация» → «Проверка» — пока `running`; у конечных статусов `null` |
 | `progress` | int 0..100 | |
@@ -69,7 +69,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 | `reason` | string \| null | |
 | `size`, `sha256` | | |
 
-Статуса `ocr` в v1 нет: в области `solar` сканов нет.
+Статус `ocr` (подпись «скан, распознано OCR») бывает только в `rag`: у PDF нет текстового слоя, значения получены распознаванием. В `solar` сканов нет.
 
 ### `POST /runs` — создать разбор
 `multipart/form-data`:
@@ -178,7 +178,48 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 - `RunFile.stage`/`progress` — настоящие (0 → 10 → 60 → 85 → 100), разбор `error` только если упали все файлы.
 - `POST /auth/register` убран (учётки заводит сервер: `faktura users create --email … --name … --generate`).
 
-## 5. Что заморожено (на этих экранах пока мок)
+## 5. Область RAG (`domain=rag`)
+
+Те же эндпоинты, что у `solar`. Отличаются таблицы, объёмы и несколько полей.
+
+**Таблицы шаблона RAG** (колонки — `submission_template/schema.json` области 2, значения строками как в CSV):
+`publications`, `configurations`, `datasets`, `tasks`, `experiments`, `results`, `issues`. Вместо materials/devices/layers/measurements здесь конфигурации RAG-систем, наборы данных, задачи и эксперименты.
+- Закрытые словари: `in_scope`, `result_origin`, `extraction_status`; рекомендуемый — `metric_direction` (`higher_is_better` / `lower_is_better` / `target`).
+- Остальные поля (`metric_group`, `metric_name`, `task_type`, `check_name`…) — свободный текст. Тексты в строках RAG — на английском, как в эталоне.
+- **Объём:** в одной статье бывает до ~28 тыс. строк `results` (значения с графиков) — строки только постранично.
+
+**`POST /runs`** — `domain=rag`. В `counts` разбора добавляется ключ `ocr`.
+
+**`GET /papers/rag/{pid}?run=`** — по умолчанию **сводка**, без строк:
+```json
+{ "publication": { PublicationRow },
+  "counts": { "publications": 1, "configurations": 18, "datasets": 14, "tasks": 8, "experiments": 12, "results": 619, "issues": 20 },
+  "metrics": [ { "metric_name": "EM", "n": 120 }, … ],
+  "issues": [ IssueRow, … ],
+  "paper_status": "has_data",
+  "meta": { "file_status": "done", "run_ids": ["run_…"], "pdf_pages": 13, "is_scan": false } }
+```
+**Строки таблиц** — тем же запросом с `?tables=configurations,results&limit=100&cursor=`:
+```json
+{ "tables": { "configurations": { "data": [ ConfigurationRow, … ], "total": 18, "next_cursor": null },
+              "results":        { "data": [ ResultRow, … ],        "total": 619, "next_cursor": "…" } } }
+```
+`limit` 1..1000; курсор свой у каждой таблицы — передавай `next_cursor` нужной таблицы; неизвестная таблица → `400 validation_error`.
+
+**`GET /results?run=`** для `rag`, фильтры:
+- `pid` (повт.), `metric` или `metric_name` (повт.), `config_id`, `dataset_id`, `experiment_id`, `task_id`;
+- `duplicates`, `sort` (`publication_id` | `metric` | `value` | `page`), `dir`, `limit` (до 1000), `cursor`;
+- `scored=true` для `rag` не действует (оцениваемого списка метрик нет).
+
+Ответ `{ "data": [ { "row": ResultRow, "paper_title": "…", "meta": { "quote_found": true, "issue_ids": [] } } ], "total": N, "next_cursor": … }` — без `device_label`.
+
+**`GET /runs/{id}/summary`** для `rag`: `coverage` — топ-20 метрик по числу статей (`[{metric, n, total, results}]`); `scored_results` = `results`; в `papers_in_scope` входят и статьи со статусом `ocr`.
+
+**`GET /runs/{id}/submission.zip`** — 7 CSV RAG + `PASSPORT.md` + `passport.json`. `?check=true` — проверка скриптом области 2: `X-Check-Status: ok | warnings` (у RAG «нужна проверка цитат», например на сканах, — это `warnings`, не ошибка), ошибки скрипта → `422 submission_invalid`.
+
+**Ещё на будущее** (в работе у модели, в API ничего не меняется): значения с векторных графиков извлекаются из геометрии PDF, с растровых — моделью со зрением (`note` = «approximate, digitized…»); если рисунок не удалось оцифровать — замечание `figure_only`.
+
+## 6. Что заморожено (на этих экранах пока мок)
 
 Вернёмся к ним после того, как пришлёшь обновлённую спеку фронта:
 - правки человека: `PATCH …/review`, `reviews/batch`, undo/история, влияние правок на выгрузку;
@@ -187,7 +228,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 - «Данные» по всем разборам: `/results` без `run`, язык запросов (`q`), `group_by`, `/results/summary`, `/compare`, «лучшее значение»;
 - состояния замечаний, `/issues/stats`;
 - `dataset.json`, `dataset.xlsx`, `/exports`, `/passport`;
-- область `rag`, OCR (`/papers/{domain}/{pid}/ocr`, статус `ocr`);
+- просмотр OCR-слоя страниц (`/papers/{domain}/{pid}/ocr`);
 - чат разбора, граф связей, проекты, словари, поиск.
 
 Если какой-то из этих пунктов нужен раньше — скажи, переставим.
