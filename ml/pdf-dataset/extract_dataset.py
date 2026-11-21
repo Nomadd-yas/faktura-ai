@@ -594,6 +594,8 @@ def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw
     except LLMError as e:
         if not retry:
             raise
+        if budget == 0 and "finish_reason=length" in str(e):
+            raise  # [faktura-patch] рассуждение уже выключено: тот же вызов снова обрежется — пусть вызывающий делит
         print(f"[{label}] повтор после сбоя: {e}", flush=True)
         # [faktura-patch] провайдер (wafer) игнорирует reasoning.max_tokens: модель иногда рассуждает до конца
         # лимита и отдаёт пустой ответ. Повтор — с выключенным рассуждением (reasoning.enabled=false работает).
@@ -726,13 +728,18 @@ DOMAINS = ("solar", "rag")
 RAG_RESULT_ORIGINS = ["primary", "cited"]
 RAG_EXTRACTION_STATUS = ["extracted", "present_not_extractable", "absent"]
 RAG_METRIC_DIRECTIONS = ["higher_is_better", "lower_is_better", "target"]  # рекомендуемый словарь (null допустим)
-RAG_TABLE_CELLS = int(os.environ.get("RAG_TABLE_CELLS", "150"))      # числовых ячеек таблицы на один вызов
+RAG_TABLE_CELLS = int(os.environ.get("RAG_TABLE_CELLS", "110"))      # числовых ячеек таблицы на один вызов
 RAG_RESULTS_MAX_TOKENS = int(os.environ.get("RAG_RESULTS_MAX_TOKENS", "32768"))
 RAG_WORKERS = 4
 # [faktura-patch] экономия: перенос ячеек таблицы в строки не требует рассуждения (85 % стоимости RAG — рассуждение results)
 RAG_TABLE_REASONING = os.environ.get("RAG_TABLE_REASONING", "off").strip().lower() not in ("off", "0", "false", "no")
 RAG_SMALL_TABLE_CELLS = int(os.environ.get("RAG_SMALL_TABLE_CELLS", "40"))  # целые таблицы не больше — склеиваются
-RAG_BATCH_CELLS = int(os.environ.get("RAG_BATCH_CELLS", "150"))             # потолок числовых ячеек в склейке
+RAG_BATCH_CELLS = int(os.environ.get("RAG_BATCH_CELLS", "110"))             # потолок числовых ячеек в склейке
+# [faktura-patch] ~200–230 выходных токенов на строку results: 110 ячеек укладываются в RAG_RESULTS_MAX_TOKENS=32768.
+# Шаг issues: провайдер игнорирует бюджет рассуждения, первый вызов всегда сжигал 16384 токена на рассуждение и
+# обрезался, в итог шёл повтор без рассуждения. Поэтому по умолчанию сразу без рассуждения (0); "" — как раньше.
+_ri = os.environ.get("RAG_ISSUES_REASONING", "0").strip()
+RAG_ISSUES_REASONING = int(_ri) if _ri else None
 
 RAG_PUB = PUB
 
@@ -1187,7 +1194,19 @@ def rag_plan_results(text: str, max_cells: int = RAG_TABLE_CELLS):
 
 
 def _rag_split_chunk(ch: dict):
-    """Пополам по строкам данных (повтор после усечения ответа)."""
+    """Пополам по строкам данных (повтор после усечения ответа). [faktura-patch] Склейка — пополам по таблицам."""
+    if ch.get("batch"):
+        b = ch["batch"]
+        if len(b) < 2:
+            return None
+        m = len(b) // 2
+
+        def pack(part):
+            if len(part) == 1:
+                return part[0]
+            return dict(ch, batch=part, index=part[0]["index"], page=part[0]["page"],
+                        cells=sum(x["cells"] for x in part))
+        return pack(b[:m]), pack(b[m:])
     n = len(ch["rows"])
     if n <= 1 or ch.get("raw"):
         return None
@@ -1546,7 +1565,8 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
         raw_path = src.with_name(f"{src.name}.issues.raw_response.txt")
         try:
             result = nullify_empties(call_llm(client, args, messages, "table_issues", rag_table_schema("issues"),
-                                              issues_max_tokens, "issues", raw_path, report, retry=True))
+                                              issues_max_tokens, "issues", raw_path, report, retry=True,
+                                              reasoning_tokens=RAG_ISSUES_REASONING))
             issues = result.get("issues", []) if isinstance(result, dict) else []
             for r in issues:
                 r["publication_id"] = pub_id  # [faktura-patch] всегда id из запроса (модель пишет «.»)

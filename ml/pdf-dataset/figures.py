@@ -246,6 +246,104 @@ def _marks(page, drawings=None):
     return segs, lines, markers, rects
 
 
+def _bands(drawings):
+    """[faktura-patch] translucent filled polygons (fill_opacity < 0.6) = shaded uncertainty bands around a series."""
+    out = []
+    for d in drawings:
+        items, fill = d.get("items") or [], d.get("fill")
+        op = d.get("fill_opacity")
+        if fill is None or _is_white(fill) or op is None or not (0 < op < 0.6):
+            continue
+        if not {it[0] for it in items} <= {"l", "c"} or len(items) < 3:
+            continue
+        r = d["rect"]
+        if max(r.width, r.height) < 10:
+            continue
+        for sub in _subpaths(items):
+            pts = _verts(sub)
+            if len(pts) >= 3:
+                out.append({"pts": pts, "color": _hexcol(fill), "rect": (r.x0, r.y0, r.x1, r.y1)})
+    return out
+
+
+def _inv(ax, v):
+    """data value -> page coordinate (inverse of _val)."""
+    if ax["scale"] == "log":
+        if v <= 0:
+            return None
+        v = math.log10(v)
+    return (v - ax["b"]) / ax["a"]
+
+
+def _poly_vspan(pts, x):
+    """min/max y where the closed polygon crosses the vertical line at x (None if it does not)."""
+    ys = []
+    n = len(pts)
+    for i in range(n):
+        (x0, y0), (x1, y1) = pts[i], pts[(i + 1) % n]
+        if abs(x1 - x0) < 1e-9:
+            if abs(x - x0) < 0.35:
+                ys += [y0, y1]
+            continue
+        if min(x0, x1) - 0.35 <= x <= max(x0, x1) + 0.35:
+            t = min(1.0, max(0.0, (x - x0) / (x1 - x0)))
+            ys.append(y0 + t * (y1 - y0))
+    return (min(ys), max(ys)) if len(ys) >= 2 else None
+
+
+def _attach_bands(panel, bb, bands):
+    """[faktura-patch] for line/scatter series with a same-colour shaded band: per point [lower, upper] in data units.
+    Generic: any figure that draws a confidence/std band as a translucent polygon in the series colour."""
+    xfit, yfit = panel["_fit"]
+    if not xfit or not bands:
+        return
+    yspan = bb[3] - bb[1]
+    for s in panel["series"]:
+        if s.get("kind") not in ("line", "scatter"):
+            continue
+        mine = [b for b in bands if b["color"] == s["color"] and _in(((b["rect"][0] + b["rect"][2]) / 2,
+                                                                       (b["rect"][1] + b["rect"][3]) / 2), bb, 3)]
+        if not mine:
+            continue
+        out, hit = [], 0
+        for x, y in s["points"]:
+            res = None
+            px = _inv(xfit, x) if isinstance(x, (int, float)) else None
+            py = _inv(yfit, y) if isinstance(y, (int, float)) else None
+            if px is not None and py is not None:
+                for b in mine:
+                    sp = _poly_vspan(b["pts"], px)
+                    if sp and sp[0] - 0.6 <= py <= sp[1] + 0.6 and 0.3 < sp[1] - sp[0] < 0.6 * yspan:
+                        lo, hi = sorted((_val(yfit, sp[1]), _val(yfit, sp[0])))
+                        res = [lo, hi]
+                        break
+            out.append(res)
+            hit += res is not None
+        if hit >= max(2, math.ceil(0.8 * len(out))):
+            s["bands"] = out
+
+
+_BAND_KINDS = [  # (regex inside a sentence about shading/bands/error bars, main aggregation, lower, upper, note)
+    (r"(\d{2}(?:\.\d)?)\s*%\s*(?:confidence|c\.?i\b)", "mean", "lower_{0}CI", "upper_{0}CI", "{0}% confidence band endpoint"),
+    (r"standard error|\bs\.?e\.?m?\b", "mean", "mean_minus_se", "mean_plus_se", "standard-error band endpoint"),
+    (r"standard deviation|\bstd\b|\bs\.d\.", "mean", "mean_minus_std", "mean_plus_std", "standard-deviation band endpoint"),
+    (r"\bmin(?:imum)?\b[^.]{0,40}\bmax(?:imum)?\b|\brange\b", None, "min", "max", "min-max band endpoint"),
+]
+
+
+def band_kind(text):
+    """[faktura-patch] what the shaded bands mean, from the paper's own wording (caption/body); generic default."""
+    for sent in re.split(r"(?<=[.;])\s+", " ".join((text or "").split())):
+        if not re.search(r"(?i)shad(?:ed|ing)|\bbands?\b|error bars?|whiskers?|confidence interval", sent):
+            continue
+        for rx, main, lo, hi, note in _BAND_KINDS:
+            m = re.search(rx, sent, re.I)
+            if m:
+                g = m.groups()
+                return {"main": main, "lower": lo.format(*g), "upper": hi.format(*g), "note": note.format(*g)}
+    return {"main": None, "lower": "band_lower", "upper": "band_upper", "note": "shaded band endpoint"}
+
+
 def _close(items):
     try:
         a, b = items[0][1], items[-1][-1]
@@ -623,21 +721,30 @@ def _group_figures(panels, caps, pno):
 
 
 def _panel_title(spans, bb):
-    """[faktura-patch] text line right above the plot area (candidate panel title) or None."""
-    best = None
+    """[faktura-patch] text line right above the plot area (candidate panel title) or None.
+    A row of numeric tick labels right above the plot = a secondary top axis: the first text line above it is that
+    axis' label, the title is the next line up."""
+    def inx(s):
+        return s["bbox"][2] >= bb[0] and s["bbox"][0] <= bb[2] and not s["rot"]
+    ticks = [s for s in spans if inx(s) and parse_num(s["text"]) is not None and bb[1] - 14 <= s["bbox"][3] <= bb[1] + 5]
+    lines = {}
     for s in spans:
-        if s["rot"] or parse_num(s["text"]) is not None:
+        if not inx(s) or parse_num(s["text"]) is not None:
             continue
-        x0, y0, x1, y1 = s["bbox"]
-        if not (bb[1] - 28 <= y1 <= bb[1] + 2) or x1 < bb[0] or x0 > bb[2]:
+        y1 = s["bbox"][3]
+        if not (bb[1] - 45 <= y1 <= bb[1] + 2):
             continue
-        if best is None or y1 > best[0]:
-            best = (y1, y0)
-    if best is None:
+        key = next((k for k in lines if abs(k - y1) < 2.5), y1)
+        lines.setdefault(key, []).append(s)
+    order = sorted(lines, reverse=True)  # nearest to the plot first
+    if len(ticks) >= 2 and order:
+        tick_top = min(t["bbox"][1] for t in ticks)
+        order = [k for k in order if k <= tick_top + 2.5]
+        order = order[1:]  # skip the top-axis label
+    order = [k for k in order if k >= bb[1] - (45 if len(ticks) >= 2 else 28)]
+    if not order:
         return None
-    parts = [s for s in spans if not s["rot"] and abs(s["bbox"][3] - best[0]) < 2.5 and s["bbox"][2] >= bb[0]
-             and s["bbox"][0] <= bb[2] and parse_num(s["text"]) is None]
-    parts.sort(key=lambda s: s["bbox"][0])
+    parts = sorted(lines[order[0]], key=lambda s: s["bbox"][0])
     t = " ".join(s["text"] for s in parts).strip()
     return t[:80] or None
 
@@ -648,7 +755,10 @@ def digitize_page(page, pno=None, drawings=None):
     panels_raw = _find_panels(page, spans)
     if not panels_raw:
         return []
+    if drawings is None:
+        drawings = page.get_drawings()
     segs, lines, markers, rects = _marks(page, drawings)
+    bands = _bands(drawings)  # [faktura-patch]
     out = []
     tickable = list(segs)
     for l in lines:
@@ -690,10 +800,23 @@ def digitize_page(page, pno=None, drawings=None):
             panel["x_axis"] = _axis_dict(p["xr"], "cx", _axis_label(spans, bb, "x"), xfit, xcoords)
         _fill_series(panel, bb, spans, lines, markers, rects, segs)
         if panel["series"]:
+            _attach_bands(panel, bb, bands)
             out.append(panel)
         else:
             panel.pop("_fit", None)
+    # [faktura-patch] a "title" that is really an axis label (of this or a neighbouring panel), a caption line or a
+    # long sentence is not a panel title
+    axis_txt = {_norm_title(a.get("label_text")) for p in out for a in (p.get("x_axis"), p.get("y_axis")) if a}
+    for p in out:
+        t = p.get("title")
+        if t and (_norm_title(t) in axis_txt or len(t.split()) > 8 or t.rstrip().endswith(".")
+                  or t.lstrip()[:1] in ")]," or re.match(r"(?i)\s*(table|figure|fig\.)\s*\d", t)):
+            p["title"] = None
     return _group_figures(out, _captions(page), pno)
+
+
+def _norm_title(s):
+    return re.sub(r"[\W_]+", "", (s or "").lower())
 
 
 def digitize_pdf(pdf_path, pages=None):
@@ -1033,6 +1156,14 @@ def assess_document(pdf, md=None, *, pages=None):
                          "region": [round(v, 1) for v in region["bbox"]], "state": state, "confidence": 0.0,
                          "signals": {"raster_frac": region["raster_frac"], "vector_marks": region["n_vec"]},
                          "reason": reason, "points": 0, "fig": None, "method": None, "rows": 0})
+    if any((r.get("fig") or {}).get("panels") and any(s.get("bands") for pn in r["fig"]["panels"] for s in pn["series"])
+           for r in recs):  # [faktura-patch] meaning of shaded bands, from the paper's own text
+        try:
+            bk = band_kind(" ".join(pg.get_text() for pg in doc))
+        except Exception:  # noqa: BLE001
+            bk = band_kind("")
+        for r in recs:
+            r["band_kind"] = bk
     return {"pages": out_pages, "figures": recs, "seconds": round(time.time() - t0, 2)}
 
 
@@ -1434,7 +1565,7 @@ def generate_rows(rec, mapping, ids, pub_id, *, max_rows=12000, start=1):
             cmap = {_norm_name(c["category"]): c for c in m.get("category_map") or []}
             unit = m.get("metric_unit")
             sname = m.get("series_name") or s.get("legend_label") or f"series {si + 1}"
-            fig_name = rec["label"] + (f" {p['title']}" if multi and p.get("title") else "")
+            fig_name = (rec["label"] or "Figure") + (f" {p['title']}" if multi and p.get("title") else "")
             for pj, (o, v) in enumerate(pts, start=1):
                 if len(rows) >= max_rows:
                     truncated = True
@@ -1470,6 +1601,10 @@ def generate_rows(rec, mapping, ids, pub_id, *, max_rows=12000, start=1):
                         note += f" Partially digitized figure (confidence {rec['confidence']:.2f})."
                 sv = _sig(v, 3) if vision else _fmt_value(v, maxis)
                 fv = float(sv)
+                band = None
+                if s.get("bands") and axis == "y" and not constant and not vision and pj - 1 < len(s["bands"]):
+                    band = s["bands"][pj - 1]
+                bk = rec.get("band_kind") or band_kind("")
                 rows.append({
                     "publication_id": pub_id, "result_id": f"fig{start + len(rows)}",
                     "experiment_id": m.get("experiment_id") if m.get("experiment_id") in ids["experiments"] else None,
@@ -1486,6 +1621,18 @@ def generate_rows(rec, mapping, ids, pub_id, *, max_rows=12000, start=1):
                     "extraction_status": "extracted", "duplicate_of": None, "note": note,
                     "_tol": tol, "_v": v,
                 })
+                if band:  # [faktura-patch] shaded band around the series -> two more rows (lower / upper endpoint)
+                    rows[-1]["aggregation"] = bk["main"]
+                    base = rows[-1]
+                    for agg, bv in ((bk["lower"], band[0]), (bk["upper"], band[1])):
+                        if len(rows) >= max_rows:
+                            truncated = True
+                            break
+                        bsv = _fmt_value(bv, maxis)
+                        rows.append(dict(base,
+                                         result_id=f"fig{start + len(rows)}", aggregation=agg,
+                                         metric_value=float(bsv), normalized_value=float(bsv), raw_value="~" + bsv,
+                                         note=note + f" {bk['note'][0].upper() + bk['note'][1:]}.", _v=bv))
             if truncated:
                 break
         if truncated:

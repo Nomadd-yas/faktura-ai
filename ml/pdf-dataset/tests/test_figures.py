@@ -305,3 +305,37 @@ def test_no_publication_ids_in_figure_code():
     assert not pat.findall(rag)
     for needle in ("page == ", "pno == ", "page_no == "):  # no per-page special cases in the state model
         assert needle not in src
+
+
+# ---------------------------------------------------------------- [faktura-patch] shaded bands, panel titles
+def test_band_kind_from_paper_wording():
+    import figures as F
+    k = F.band_kind("Accuracy vs tokens. Shaded areas indicate the 95% confidence interval over 8 runs.")
+    assert (k["main"], k["lower"], k["upper"]) == ("mean", "lower_95CI", "upper_95CI")
+    k = F.band_kind("Error bars show one standard deviation.")
+    assert k["lower"] == "mean_minus_std"
+    assert F.band_kind("No uncertainty is described here.")["lower"] == "band_lower"
+
+
+def test_poly_vspan_and_inverse_axis():
+    import figures as F
+    poly = [(0, 10), (10, 8), (10, 2), (0, 4)]  # band between y=4..10 at x=0 and 2..8 at x=10
+    assert F._poly_vspan(poly, 5) == pytest.approx((3.0, 9.0))
+    assert F._poly_vspan(poly, 20) is None
+    ax = {"scale": "log", "a": 0.01, "b": 0.0}
+    assert F._inv(ax, F._val(ax, 123.0)) == pytest.approx(123.0)
+
+
+def test_band_rows_generated():
+    import figures as F
+    rec = {"label": "Figure 1", "page": 3, "caption": "Figure 1: Acc.", "state": "vector_ok", "confidence": 0.9,
+           "method": None, "band_kind": F.band_kind("Shaded: 95% confidence interval."),
+           "use_panels": [{"title": None, "x_axis": {"step": 10, "scale": "linear", "label_text": "x"},
+                           "y_axis": {"step": 10, "scale": "linear", "label_text": "Accuracy"},
+                           "series": [{"points": [(1.0, 50.0), (2.0, 55.0)], "legend_label": "A",
+                                       "bands": [[48.0, 52.0], [53.0, 57.0]]}]}]}
+    m = {"p0s0": {"is_result": True, "metric_axis": "y", "metric_name": "Accuracy"}}
+    rows, _ = F.generate_rows(rec, m, {"configs": set(), "datasets": set(), "tasks": set(), "experiments": set()}, "X")
+    assert [r["aggregation"] for r in rows] == ["mean", "lower_95CI", "upper_95CI"] * 2
+    assert [r["metric_value"] for r in rows[:3]] == [50.0, 48.0, 52.0]
+    assert len({r["result_id"] for r in rows}) == 6
