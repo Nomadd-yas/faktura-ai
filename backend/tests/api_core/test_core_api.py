@@ -56,7 +56,7 @@ def test_e2e_upload_to_zip(client, auth, pdfs):
     assert int(z.headers["x-export-results"]) == got["results"]
     assert "attachment" in z.headers["content-disposition"] and "UTF-8''" in z.headers["content-disposition"]
     zf = zipfile.ZipFile(io.BytesIO(z.content))
-    assert sorted(zf.namelist()) == sorted(f"{t}.csv" for t in TABLES)
+    assert sorted(zf.namelist()) == sorted([*(f"{t}.csv" for t in TABLES), "PASSPORT.md", "passport.json"])
     for t, cols in TABLES.items():
         head = zf.read(f"{t}.csv").decode("utf-8-sig").splitlines()[0]
         assert head == ",".join(cols)
@@ -297,3 +297,56 @@ def test_cors_exposes_export_headers(client):
     h = client.get(f"{API}/health", headers={"Origin": "http://localhost:5200"})
     exp = h.headers.get("access-control-expose-headers", "")
     assert "X-Export-Tables" in exp and "ETag" in exp
+
+
+# --- набор для сдачи: состав, имя файла, ?check=true -----------------------------------------------
+
+_OK_SCRIPT = ('import sys\nprint("внимание: stub warning")\nprint("таблиц: 7, ошибок: 0")\n'
+              'print("проверено цитат: 3, не найдено: 0")\nsys.exit(0)\n')
+_BAD_SCRIPT = ('import sys\nprint("ОШИБКА: results.csv: плохая строка")\nprint("таблиц: 7, ошибок: 1")\nsys.exit(1)\n')
+
+
+def _stub(tmp_path, services, body):
+    p = tmp_path / "check_stub.py"
+    p.write_text(body, encoding="utf-8")
+    services.settings.check_script = p
+
+
+def test_submission_zip_layout_and_filename(client, auth, pdfs):
+    from urllib.parse import quote, unquote
+
+    rid = upload(client, auth, [pdfs["D001"]], title="Мой набор").json()["id"]
+    z = client.get(f"{API}/runs/{rid}/submission.zip", headers=auth)
+    assert z.status_code == 200
+    names = zipfile.ZipFile(io.BytesIO(z.content)).namelist()
+    assert sorted(names) == sorted([*(f"{t}.csv" for t in TABLES), "PASSPORT.md", "passport.json"])
+    assert all("/" not in n for n in names) and "X-Check-Status" not in z.headers
+    cd = z.headers["content-disposition"]
+    human = "Набор для сдачи — Мой набор.zip"
+    assert 'filename="submission.zip"' in cd and f"filename*=UTF-8''{quote(human, safe='')}" in cd
+    assert unquote(z.headers["x-export-filename"]) == human
+    import json
+
+    passport = json.loads(zipfile.ZipFile(io.BytesIO(z.content)).read("passport.json"))
+    assert passport["versions"]["rules"] and "model" in passport["versions"]
+    md = zipfile.ZipFile(io.BytesIO(z.content)).read("PASSPORT.md").decode("utf-8")
+    assert "## Версии" in md and "ML" not in md.replace("HTML", "")
+
+
+def test_submission_zip_check_ok(client, auth, pdfs, services, tmp_path):
+    rid = upload(client, auth, [pdfs["D001"]]).json()["id"]
+    _stub(tmp_path, services, _OK_SCRIPT)
+    z = client.get(f"{API}/runs/{rid}/submission.zip", params={"check": "true"}, headers=auth)
+    assert z.status_code == 200, z.text
+    assert z.headers["x-check-status"] == "warnings"
+    zf = zipfile.ZipFile(io.BytesIO(z.content))
+    assert "stub warning" in zf.read("check_report.txt").decode("utf-8")
+    assert "PASSPORT.md" in zf.namelist()
+
+
+def test_submission_zip_check_failed_is_422(client, auth, pdfs, services, tmp_path):
+    rid = upload(client, auth, [pdfs["D001"]]).json()["id"]
+    _stub(tmp_path, services, _BAD_SCRIPT)
+    r = client.get(f"{API}/runs/{rid}/submission.zip", params={"check": "true"}, headers=auth)
+    err(r, 422, "submission_invalid")
+    assert r.json()["error"]["details"]["errors"] == ["results.csv: плохая строка"]

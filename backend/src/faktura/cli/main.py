@@ -11,7 +11,7 @@ from pathlib import Path
 
 import click
 
-from .extract import (EXIT_CHECK, EXIT_OK, EXIT_PARTIAL, EXIT_USAGE, ExtractOptions, UsageProblem, load_profile,
+from .extract import (CHECK_DEFAULT, EXIT_CHECK, EXIT_OK, EXIT_PARTIAL, EXIT_USAGE, ExtractOptions, UsageProblem, load_profile,
                       parse_formats, parse_retry_delays, run_extract)
 
 
@@ -71,7 +71,9 @@ def cli() -> None:
 @click.option("--in", "in_path", required=True, type=click.Path(exists=True, path_type=Path),
               help="Папка | ZIP | .txt со списком")
 @click.option("--out", "out_dir", required=True, type=click.Path(path_type=Path))
-@click.option("--check", "check_script", type=click.Path(path_type=Path), help="Путь к check_submission.py")
+@click.option("--check", "check_script", is_flag=False, flag_value=CHECK_DEFAULT, default=None,
+              type=click.Path(path_type=Path),
+              help="Проверить набор check_submission.py: --check - скрипт по умолчанию, --check PATH - свой")
 @click.option("--profile", default="tz-solar-v1", show_default=True, help="tz-solar-v1 | ./profile.json")
 @click.option("--format", "formats", default="csv", show_default=True, callback=_format_cb,
               help="csv[,json,xlsx]; json и xlsx пишутся в _meta/")
@@ -108,6 +110,15 @@ def extract(**kw) -> int:
         _err(f"Ошибка: --profile: {e.message}")
         return EXIT_USAGE
     server = kw.pop("server")
+    if kw.get("check_script") is not None and str(kw["check_script"]) == CHECK_DEFAULT:
+        from ..config import Settings
+
+        default = Settings().check_script
+        if default is None:
+            _err("Ошибка: --check без пути: скрипт check_submission.py по умолчанию не найден "
+                 "(задайте FAKTURA_CHECK_SCRIPT или --check PATH)")
+            return EXIT_USAGE
+        kw["check_script"] = Path(default)
     opts = ExtractOptions(profile=profile, **kw)
     try:
         if server:

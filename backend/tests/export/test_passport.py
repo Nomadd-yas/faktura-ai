@@ -132,3 +132,17 @@ def test_markdown_handles_minimal_passport():
     md = passport_markdown({"collection": "solar", "version": "1.0", "tables": [], "units": [], "rules": [],
                             "statuses": {}})
     assert isinstance(md, str) and md
+
+
+def test_passport_versions_block():
+    from faktura.checks import RULES_VERSION
+    from faktura.domain.profile import builtin_solar_profile
+    from faktura.passport import build_passport, build_versions, passport_markdown
+
+    p = build_passport(builtin_solar_profile(), build_versions(["m-2", "m-1", None], dictionary="solar-x"))
+    v = p["versions"]
+    assert v["model"] == ["m-1", "m-2"] and v["rules"] == RULES_VERSION and v["dictionary"] == "solar-x"
+    assert v["template"]
+    md = passport_markdown(p)
+    assert "## Версии" in md and "`m-1`, `m-2`" in md and RULES_VERSION in md
+    assert build_passport(builtin_solar_profile())["versions"]["rules"] == RULES_VERSION

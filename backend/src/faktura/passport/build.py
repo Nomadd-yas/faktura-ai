@@ -5,14 +5,14 @@
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from ..domain.profile import ExtractionProfile
 from ..domain.records import NormStatus
 from ..domain.tables import (BOOL_FIELDS, CHECK_CATALOG, EVAL_METRICS, ID_COLUMN, INTEGER_FIELDS, LIST_FIELDS,
                              NUMERIC_FIELDS, TABLES, TARGET_UNITS, VOCAB)
 
-__all__ = ["build_passport", "passport_markdown", "PASSPORT_VERSION", "SCHEMA_VERSION", "METRIC_LABELS"]
+__all__ = ["build_versions", "build_passport", "passport_markdown", "PASSPORT_VERSION", "SCHEMA_VERSION", "METRIC_LABELS"]
 
 PASSPORT_VERSION = "1.0"
 SCHEMA_VERSION = "2026-11"
@@ -269,8 +269,18 @@ def _rules(profile: ExtractionProfile) -> list[dict[str, Any]]:
     return out
 
 
-def build_passport(profile: ExtractionProfile) -> dict:
-    """7 таблиц, все колонки, 11 метрик с единицами, правила проверок."""
+def build_versions(model_versions: Iterable[str] | None = None, *, rules: str | None = None,
+                   normalization: str | None = None, dictionary: str | None = None) -> dict[str, Any]:
+    """Блок `versions` паспорта: версии модели (по статьям набора), правил проверок, нормализации, словаря и шаблона."""
+    from ..checks.rules import RULES_VERSION
+
+    models = sorted({str(v) for v in (model_versions or []) if v})
+    return {"model": models, "rules": rules or RULES_VERSION, "normalization": normalization,
+            "dictionary": dictionary, "template": SCHEMA_VERSION, "passport": PASSPORT_VERSION}
+
+
+def build_passport(profile: ExtractionProfile, versions: dict[str, Any] | None = None) -> dict:
+    """7 таблиц, все колонки, 11 метрик с единицами, правила проверок; `versions` - блок версий (build_versions)."""
     metrics = _metrics(profile)
     tables = []
     for t, cols in TABLES.items():
@@ -303,6 +313,7 @@ def build_passport(profile: ExtractionProfile) -> dict:
         },
         "rules": _rules(profile),
         "comparability": COMPARABILITY,
+        "versions": versions or build_versions(),
     }
 
 
@@ -392,4 +403,11 @@ def passport_markdown(passport: dict) -> str:
         lines.append("")
     if p.get("comparability"):
         lines += ["## Сопоставимость", "", str(p["comparability"]), ""]
+    ver = p.get("versions") or {}
+    if ver:
+        names = {"model": "версия модели", "rules": "версия правил проверок", "normalization": "версия нормализации",
+                 "dictionary": "версия словаря", "template": "версия шаблона", "passport": "версия паспорта"}
+        lines += ["## Версии", ""]
+        lines += [f"- {names.get(k, k)}: {_md(v) if v else '—'}" for k, v in ver.items()]
+        lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"

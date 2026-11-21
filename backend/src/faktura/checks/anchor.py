@@ -36,13 +36,20 @@ def source_from_result(r: Result, idx: PaperIndex) -> tuple[int | str | None, st
     return _page(r.source_page), (r.source_fragment if frag else result_reference(r, idx))
 
 
-def fill_record_source(issue: IssueRecord, idx: PaperIndex) -> IssueRecord:
+def fill_record_source(issue: IssueRecord, idx: PaperIndex, quote: QuoteChecker | None = None) -> IssueRecord:
+    """source_page/source_fragment у якоря; quote_found - у реальной цитаты якоря (не ссылки «Table N, ...»)."""
     if not issue.record_ids:
         return issue
     anchor = idx.results.get(issue.record_ids[0])
     if anchor is None:
         return issue
     issue.source_page, issue.source_fragment = source_from_result(anchor, idx)
+    frag = (anchor.source_fragment or "").strip()
+    if frag:
+        if quote is not None:
+            issue.meta.quote_found = quote.check(_page(anchor.source_page), frag)  # type: ignore[arg-type]
+        elif anchor.meta.quote_found is not None:
+            issue.meta.quote_found = anchor.meta.quote_found
     return issue
 
 

@@ -372,30 +372,23 @@ def _page_key(v: Any) -> int | None:
     return None
 
 
+def _page_sort_key(page: object) -> tuple[int, float]:
+    """Номер страницы числом; пустая или нераспознанная - в конец."""
+    if page is None or isinstance(page, bool):
+        return (1, 0.0)
+    m = re.match(r"\s*(\d+(?:\.\d+)?)", str(page))
+    return (0, float(m.group(1))) if m else (1, 0.0)
+
+
 def number_issues(bundle: PaperBundle) -> PaperBundle:
-    """Замечания с уже заданным issue_id (от ML) выгружаются как есть и в своём порядке; замечания без номера
-    (правила бэка) получают новые I<n> после максимального числового номера, в порядке списка. Повторный вызов
-    ничего не меняет. Остальные таблицы не трогаются."""
+    """Все замечания (ML и правил бэка) перенумеровываются в I1, I2, ... по (source_page числом, пустая - в конце;
+    затем исходный порядок), список переупорядочивается так же (spec §6: «в выгрузке id перенумеровываются по
+    страницам»). Ссылок на issue_id в других таблицах нет. Повторный вызов ничего не меняет. Остальные таблицы
+    не трогаются."""
     b = bundle.model_copy(deep=True)
-    used: set[str] = set()
-    top = 0
-    for iss in b.issues:
-        iid = (iss.issue_id or "").strip()
-        iss.issue_id = iid
-        if iid and iid not in used:
-            used.add(iid)
-            m = re.fullmatch(r"I(\d+)", iid)
-            if m:
-                top = max(top, int(m.group(1)))
-        else:
-            iss.issue_id = ""
-    for iss in b.issues:
-        if not iss.issue_id:
-            top += 1
-            while f"I{top}" in used:
-                top += 1
-            iss.issue_id = f"I{top}"
-            used.add(iss.issue_id)
+    order = sorted(range(len(b.issues)), key=lambda n: (_page_sort_key(b.issues[n].source_page), n))
+    b.issues = [b.issues[n] for n in order]
     for n, iss in enumerate(b.issues):
+        iss.issue_id = f"I{n + 1}"
         iss.meta.ml_order = n
     return b

@@ -152,6 +152,7 @@ def assign_keys(issues: list[IssueRecord], publication_id: str) -> list[IssueRec
     Совпадения внутри статьи получают суффиксы -2, -3 … в порядке списка. Возвращает копии."""
     out: list[IssueRecord] = []
     used: set[str] = set()
+    used_ids: set[str] = set()
     for src in issues:
         i = src.model_copy(deep=True)
         if not i.publication_id:
@@ -163,5 +164,12 @@ def assign_keys(issues: list[IssueRecord], publication_id: str) -> list[IssueRec
             key = f"{base}-{n}"
         used.add(key)
         i.key = key
+        if i.computed_by == "backend" and i.issue_id.startswith("I-"):  # детерминированный id правила бэка
+            iid, m = i.issue_id, 1
+            while iid in used_ids:
+                m += 1
+                iid = f"{i.issue_id}-{m}"
+            used_ids.add(iid)
+            i.issue_id = iid
         out.append(i)
     return out

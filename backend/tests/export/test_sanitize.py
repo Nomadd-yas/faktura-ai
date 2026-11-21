@@ -350,19 +350,20 @@ def _iss(iid, page, order):
     return r
 
 
-def test_number_issues_keeps_ml_ids_and_order(make_bundle):
+def test_number_issues_renumbers_all_by_page(make_bundle):
     b = make_bundle()
-    b.issues = [_iss("I7", None, 0), _iss("I2", 5, 1), _iss("I5", 2, 2)]
+    b.issues = [_iss("I7", None, 0), _iss("I-range-R001", 5, 1), _iss("I5", 2, 2), _iss("", 5, 3)]
     out = number_issues(b)
-    assert [i.issue_id for i in out.issues] == ["I7", "I2", "I5"]
-    assert [i.meta.ml_order for i in out.issues] == [0, 1, 2]
+    assert [i.issue_id for i in out.issues] == ["I1", "I2", "I3", "I4"]
+    assert [i.source_page for i in out.issues] == [2, 5, 5, None]  # по номеру страницы, пустая - последней
+    assert [i.description for i in out.issues] == ["I5", "I-range-R001", "", "I7"]  # внутри страницы - исходный порядок
+    assert [i.meta.ml_order for i in out.issues] == [0, 1, 2, 3]
 
 
-def test_number_issues_new_ids_continue_after_max(make_bundle):
+def test_number_issues_page_is_numeric_not_text(make_bundle):
     b = make_bundle()
-    b.issues = [_iss("I3", 5, 0), _iss("", 1, 1), _iss("", None, 2), _iss("I3", 4, 3)]
-    out = number_issues(b)
-    assert [i.issue_id for i in out.issues] == ["I3", "I4", "I5", "I6"]  # повтор I3 - как безномерный
+    b.issues = [_iss("a", 10, 0), _iss("b", "9", 1), _iss("c", "", 2)]
+    assert [i.description for i in number_issues(b).issues] == ["b", "a", "c"]
 
 
 def test_number_issues_empty(make_bundle):
@@ -387,9 +388,3 @@ def test_number_issues_preserves_other_tables(make_bundle):
     out = number_issues(make_bundle())
     assert [r.result_id for r in out.results] == ["R001", "R002"]
     assert out.publication.publication_id == "P001"
-
-
-def test_number_issues_does_not_reorder_by_page(make_bundle):
-    b = make_bundle()
-    b.issues = [_iss("I1", 10, 0), _iss("I2", 9, 1)]
-    assert [i.source_page for i in number_issues(b).issues] == [10, 9]

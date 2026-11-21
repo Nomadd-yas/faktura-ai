@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable, Iterable
 
+from ..domain.ids import sha8
 from ..domain.ports import QuoteChecker
 from ..domain.profile import RuleConfig
 from ..domain.records import IssueRecord, Measurement, PaperBundle, Result
@@ -38,7 +39,7 @@ RULES_VERSION: str = "1.0.0"
 BACKEND_RULES: tuple[str, ...] = (
     "jv_consistency", "voc_limit", "range", "eqe_consistency", "champion_vs_mean", "hysteresis_index",
     "contradiction", "unit_inconsistency", "rounding", "voc_deficit_consistency", "missing_conditions",
-    "plausibility", "figure_mismatch", "dedup_trap", "comparability",
+    "plausibility", "figure_mismatch", "dedup_trap", "comparability", "ambiguity",
 )
 
 JV_METRICS = ("Voc", "Jsc", "FF", "PCE")
@@ -99,14 +100,16 @@ class _Ctx:
             if rid not in ids:
                 ids.append(rid)
         info = CHECK_CATALOG.get(check)
+        # детерминированный id правил бэка: I-{check}-{первая запись}; без записей - короткий хеш (spec §6)
         iss = IssueRecord(publication_id=self.idx.pid, record_ids=ids, check_name=check, description=description,
                           severity=info.severity if info else "warn", computed_by="backend",
-                          numbers=numbers or {})
+                          numbers=numbers or {},
+                          issue_id=f"I-{check}-{ids[0] if ids else sha8([check])[:6]}")
         if info is not None and info.scope == "paper":
             iss.record_ids = []
             fill_paper_source(iss, self.idx, self.quote)
         else:
-            fill_record_source(iss, self.idx)
+            fill_record_source(iss, self.idx, self.quote)
         self.out.append(iss)
         return iss
 
@@ -413,6 +416,10 @@ def _rule_hysteresis(ctx: _Ctx) -> None:
                 ctx.emit("hysteresis_index", [rv, fw, st],
                          f"{base}, а в статье HI = {fmt(vs)} % (расхождение больше {fmt(thr)} п.п.)", numbers)
                 continue
+            if vs < 0 and hi >= 0:
+                ctx.emit("hysteresis_index", [rv, fw, st],
+                         f"{base}, а в статье HI = {fmt(vs)} % — отрицательный индекс гистерезиса", numbers)
+                continue
         if hi < 0:
             ctx.emit("hysteresis_index", [rv, fw],
                      f"{base}: отрицательный — прямой ход ({fmt(vf)} %) лучше обратного ({fmt(vr)} %)", numbers)
@@ -689,9 +696,26 @@ def _rule_comparability(ctx: _Ctx) -> None:
                      f"модулю, сравнивать с ячейками нельзя", {"device_id": dev.device_id})
 
 
+# --- ambiguity (диапазон вместо значения) ------------------------------------------------------------------------------
+
+def _rule_ambiguity(ctx: _Ctx) -> None:
+    if not ctx.on("ambiguity"):
+        return
+    idx = ctx.idx
+    for r in idx.sorted(idx.bundle.results):
+        if is_rejected(r) or r.duplicate_of or not r.metric_name:
+            continue
+        if str(r.meta.norm_issue or "") == "ambiguity":
+            raw = " ".join(x for x in (r.raw_value, r.raw_unit) if x)
+            ctx.emit("ambiguity", [r],
+                     f"{r.metric_name}: в статье указан диапазон «{raw}», одно значение не выбрано — "
+                     f"нормализованное значение оставлено пустым", {"raw": raw})
+
+
 _RULES: tuple[Callable[[_Ctx], None], ...] = (
     _rule_jv, _rule_voc_limit, _rule_range, _rule_eqe, _rule_champion, _rule_hysteresis, _rule_places, _rule_unit,
     _rule_voc_deficit, _rule_missing_conditions, _rule_plausibility, _rule_dedup_trap, _rule_comparability,
+    _rule_ambiguity,
 )
 
 

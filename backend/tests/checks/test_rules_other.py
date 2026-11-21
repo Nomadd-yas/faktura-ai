@@ -293,3 +293,63 @@ def test_all_backend_issues_have_russian_description_and_known_name(mk):
     for i in out:
         assert i.check_name in BACKEND_RULES and i.computed_by == "backend" and i.publication_id == mk.PID
         assert re.search(r"[а-яА-Я]{3,}", i.description or ""), i
+
+
+# --- ambiguity: диапазон вместо значения -------------------------------------------------------------
+def _range_result(mk):
+    r = mk.result("R001", "PCE", "18.5", "%")
+    r.raw_value, r.normalized_value, r.metric_value = "18.2–19.0", None, None
+    r.meta.norm_issue = "ambiguity"
+    return r
+
+
+def test_ambiguity_for_range_value(mk):
+    out = run(mk, mk.bundle([_range_result(mk)]), "ambiguity")
+    assert len(out) == 1 and out[0].record_ids == ["R001"] and out[0].computed_by == "backend"
+    assert "18.2–19.0" in out[0].description and "диапазон" in out[0].description
+
+
+def test_ambiguity_skips_rejected_and_plain(mk):
+    assert run(mk, mk.bundle([mk.result("R001", "PCE", "15")]), "ambiguity") == []
+    r = _range_result(mk)
+    r.duplicate_of = "R009"
+    assert run(mk, mk.bundle([r]), "ambiguity") == []
+
+
+# --- hysteresis_index: отрицательный HI из статьи ----------------------------------------------------
+def test_hysteresis_reported_negative_hi_fires(mk):
+    out = run(mk, _hi_bundle(mk, 20, 20.05, "-0.2"), "hysteresis_index")  # рассчитанный HI = -0.25 %, разница < 1 п.п.
+    assert len(out) == 1 and "-0.2" in out[0].description
+    out = run(mk, _hi_bundle(mk, 20, 19.9, "-0.2"), "hysteresis_index")  # расчёт +0.5 %, статья -0.2 -> отрицательный
+    assert len(out) == 1 and "отрицательн" in out[0].description
+
+
+# --- issue_id правил бэка ----------------------------------------------------------------------------
+def test_backend_issue_id_format_and_stability(mk, solar_profile):
+    from faktura.checks import check_paper
+
+    def ids():
+        b = mk.bundle([_range_result(mk), mk.result("R002", "PCE", 150)])
+        return [(i.issue_id, i.key) for i in check_paper(b, solar_profile).issues]
+
+    first, second = ids(), ids()
+    assert first == second
+    got = dict(first)
+    assert "I-ambiguity-R001" in got and "I-range-R002" in got
+    assert all(k.startswith("I-") for k in got.values())
+
+
+def test_backend_issue_id_unique_per_paper(mk, solar_profile):
+    from faktura.checks import check_paper
+
+    rs = [mk.result("R001", "PCE", 150), mk.result("R002", "PCE", 160, device="DV1", meas="MS1")]
+    out = check_paper(mk.bundle(rs), solar_profile).issues
+    ids = [i.issue_id for i in out]
+    assert len(set(ids)) == len(ids)
+
+
+def test_issue_carries_quote_found_of_anchor(mk):
+    b = mk.bundle([mk.result("R001", "PCE", 150, fragment="PCE = 150")])
+    on = run_backend_rules(b, mk.rules_only("range"), quote=mk.FakeQuote({"PCE = 150"}))
+    off = run_backend_rules(b, mk.rules_only("range"), quote=mk.FakeQuote())
+    assert on[0].meta.quote_found is True and off[0].meta.quote_found is False

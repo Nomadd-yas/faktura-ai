@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import re
 import shutil
@@ -206,10 +207,42 @@ def get_summary(run_id: str, user: CurrentUser = Depends(current_user), services
         return run_summary(uow, get_corpus(uow, user, run_id))
 
 
-@router.get("/runs/{run_id}/submission.zip", summary="Набор для сдачи: 7 CSV в ZIP")
-def submission_zip(run_id: str, partial: bool = False, user: CurrentUser = Depends(current_user),
-                   services: Services = Depends(get_services)):
-    from ...export import table_bytes
+def _export_name(title: str | None) -> str:
+    """«Набор для сдачи — {title}.zip» без символов, недопустимых в именах файлов."""
+    stem = re.sub(r'[\\/:*?"<>|\r\n]+', "_", (title or "").strip()).strip(" .")
+    return f"Набор для сдачи — {stem}.zip" if stem else "Набор для сдачи.zip"
+
+
+def _run_check(services: Services, tables: dict[str, list[dict]], pdf_keys: list[tuple[str, str]]):
+    """check_submission.py на выгруженных CSV и PDF разбора (во временной папке). Скрипт - settings.check_script."""
+    from ...export import run_check_script, table_bytes
+
+    script = services.settings.check_script
+    if script is None or not Path(script).is_file():
+        raise AppError("extractor_unavailable", "Проверка недоступна: скрипт проверки не настроен", http_status=503)
+    tmp = Path(tempfile.mkdtemp(prefix="faktura_zipcheck_"))
+    try:
+        csv_dir, pdf_dir = tmp / "csv", tmp / "pdfs"
+        csv_dir.mkdir()
+        pdf_dir.mkdir()
+        for t in TABLES:
+            (csv_dir / f"{t}.csv").write_bytes(table_bytes(t, tables[t]))
+        for pid, key in pdf_keys:
+            try:
+                services.store.copy_to(key, pdf_dir / f"{pid}.pdf")
+            except Exception:  # noqa: BLE001
+                log.warning("PDF %s не скопирован для проверки", pid)
+        return run_check_script(Path(script), csv_dir, pdf_dir, timeout_s=services.settings.check_timeout_s)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@router.get("/runs/{run_id}/submission.zip", summary="Набор для сдачи: 7 CSV, PASSPORT.md, passport.json")
+def submission_zip(run_id: str, partial: bool = False, check: bool = False,
+                   user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
+    from ...domain.profile import builtin_solar_profile
+    from ...export import check_status, table_bytes
+    from ...passport import build_passport, build_versions, passport_markdown
 
     with services.db.uow() as uow:
         corpus = get_corpus(uow, user, run_id)
@@ -220,6 +253,9 @@ def submission_zip(run_id: str, partial: bool = False, user: CurrentUser = Depen
         tables: dict[str, list[dict]] = {t: [] for t in TABLES}
         seen: set[str] = set()
         papers_n = 0
+        model_versions: set[str] = set()
+        versions: dict[str, str] = {}
+        pdf_keys: list[tuple[str, str]] = []
         for f in d.files:
             if f.publication_id in seen:
                 continue
@@ -235,17 +271,43 @@ def submission_zip(run_id: str, partial: bool = False, user: CurrentUser = Depen
                 continue
             seen.add(f.publication_id)
             papers_n += 1
+            if f.storage_key:
+                pdf_keys.append((f.publication_id, f.storage_key))
+            if paper.model_version:
+                model_versions.add(paper.model_version)
+            for k in ("norm", "dictionary", "rules"):
+                v = (paper.versions or {}).get(k)
+                if v:
+                    versions.setdefault(k, v)
             for t, rows in uow.sub.paper_tables(paper.id).items():
                 tables[t].extend(rows)
         title = corpus.name
+    norm = services.normalizer
+    passport = build_passport(builtin_solar_profile(), build_versions(
+        model_versions, rules=versions.get("rules"),
+        normalization=versions.get("norm") or str(getattr(norm, "version", "") or "") or None,
+        dictionary=versions.get("dictionary") or str(getattr(norm, "dictionary_version", "") or "") or None))
+    headers = {}
+    report = None
+    if check:
+        report = _run_check(services, tables, pdf_keys)
+        status = check_status(report)
+        if status == "failed":
+            raise AppError("submission_invalid", "Набор не прошёл проверку check_submission.py", details={
+                "errors": report.errors[:50], "errors_total": len(report.errors), "crashed": report.crashed,
+                "warnings": len(report.warnings), "report": (report.raw_output or "")[-4000:]})
+        headers["X-Check-Status"] = status or "ok"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
         for t in TABLES:
             z.writestr(f"{t}.csv", table_bytes(t, tables[t]))
-    stem = re.sub(r'[\\/:*?"<>|\r\n]+', "_", (title or "submission")).strip(" .") or "submission"
-    filename = f"{stem}.zip" if stem.lower().endswith("submission") else f"{stem} - submission.zip"
+        z.writestr("PASSPORT.md", passport_markdown(passport).encode("utf-8"))
+        z.writestr("passport.json", (json.dumps(passport, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        if report is not None:
+            z.writestr("check_report.txt", (report.raw_output or "").encode("utf-8"))
+    filename = _export_name(title)
     return Response(buf.getvalue(), media_type="application/zip", headers={
-        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        "Content-Disposition": f"attachment; filename=\"submission.zip\"; filename*=UTF-8''{quote(filename, safe='')}",
         "X-Export-Tables": str(len(TABLES)), "X-Export-Results": str(len(tables["results"])),
-        "X-Export-Papers": str(papers_n), "X-Export-Filename": quote(filename),
+        "X-Export-Papers": str(papers_n), "X-Export-Filename": quote(filename, safe=""), **headers,
     })

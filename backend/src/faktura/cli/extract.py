@@ -27,6 +27,9 @@ class UsageProblem(Exception):
     """Ошибка запуска: код 1, ничего не пишется."""
 
 
+CHECK_DEFAULT = "__default_check_script__"  # `--check` без пути: скрипт из настроек (Settings.check_script)
+
+
 @dataclass
 class ExtractOptions:
     in_path: Path

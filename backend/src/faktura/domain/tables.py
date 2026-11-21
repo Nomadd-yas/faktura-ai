@@ -132,7 +132,7 @@ CHECK_CATALOG: dict[str, CheckInfo] = {
     "missing_conditions": _c("warn", "warn", "solar", "Не указаны условия измерения", "both", "paper", True),
     "measurement_conditions": _c("info", "warn", "solar", "Нестандартные условия измерения", "ml"),
     "comparability": _c("warn", "warn", "solar", "Результат несопоставим с остальными", "both", "record", False),
-    "ambiguity": _c("info", "doubt", "solar", "Неоднозначность в тексте", "ml"),
+    "ambiguity": _c("info", "doubt", "solar", "Неоднозначность в тексте", "both", on=True),
     "unit_inconsistency": _c("warn", "warn", "solar", "Единица не согласуется со значением", "both", on=True),
     "derived_values": _c("info", "doubt", "solar", "Производные числа в тексте", "ml"),
     "typo": _c("info", "doubt", "solar", "Опечатка в статье", "ml"),
