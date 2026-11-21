@@ -589,8 +589,10 @@ def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw
         if not retry:
             raise
         print(f"[{label}] повтор после сбоя: {e}", flush=True)
-        return _call_llm_once(client, args, messages, schema_name, schema, max_tokens * 2, label + ":retry",
-                              raw_path, report, reasoning_tokens=max(1024, REASONING_TOKENS // 3))
+        # [faktura-patch] провайдер (wafer) игнорирует reasoning.max_tokens: модель иногда рассуждает до конца
+        # лимита и отдаёт пустой ответ. Повтор — с выключенным рассуждением (reasoning.enabled=false работает).
+        return _call_llm_once(client, args, messages, schema_name, schema, max_tokens, label + ":retry",
+                              raw_path, report, reasoning_tokens=0)
 
 
 def _call_llm_once(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None,
@@ -599,7 +601,9 @@ def _call_llm_once(client, args, messages, schema_name, schema, max_tokens, labe
     providers = [p.strip().lower() for p in args.provider.split(",") if p.strip()]  # [faktura-patch] slug строчными
     # [faktura-patch] список = приоритет: первый живой из списка, при сбое — следующий, вне списка не уходим
     extra_body = {"provider": {"order": providers, "allow_fallbacks": False}} if providers else {}
-    if reasoning_tokens:
+    if reasoning_tokens == 0:
+        extra_body["reasoning"] = {"enabled": False}
+    elif reasoning_tokens:
         extra_body["reasoning"] = {"max_tokens": int(reasoning_tokens)}
     extra_body["seed"] = SEED  # воспроизводимость замеров (если провайдер поддерживает)
     t0 = time.time()
@@ -825,7 +829,7 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             result = nullify_empties(call_llm(client, args, messages, "table_issues",
                                               table_schema("issues"), issues_max_tokens,
                                               "issues", raw_path, report,
-                                              retry=False, reasoning_tokens=2000))  # [faktura-patch] лёгкий проход
+                                              retry=False, reasoning_tokens=0))  # [faktura-patch] лёгкий проход
             issues = result.get("issues", []) if isinstance(result, dict) else []
             for r in issues:
                 r.setdefault("publication_id", pub_id)
