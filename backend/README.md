@@ -3,21 +3,19 @@
 Бэкенд проекта PDF-Analitics (кейс ВИНИТИ, область 1: тонкоплёночные солнечные элементы). Извлекает данные из научных PDF
 в 7 связанных CSV с номером страницы и дословной цитатой к каждому значению.
 
-Состояние: **каркас**. Структура пакетов, общие типы (`faktura.domain`), конфигурация и тестовая инфраструктура готовы;
-публичные интерфейсы модулей описаны заглушками (`NotImplementedError`). Архитектура и порядок работ:
-`docs/wave1/02_plan.md`; контракт API для фронтенда: `docs/wave1/api_contract.md`; спека: `docs/spec_src/`.
+Состояние: **работает в продакшене** (две области: `solar` и `rag`). Обзор проекта, быстрый старт и развёртывание — в корневом [README.md](../README.md); контракт API для фронтенда — [docs/api/CORE_API.md](../docs/api/CORE_API.md).
 
 ## Установка
 
 ```
 cd backend
-python -m pip install -e ".[dev]"          # + extras: pg (PostgreSQL), s3 (MinIO), img (webp-рендер)
-python -m pytest -q
+uv venv && uv pip install -e ".[dev]"     # + extras: pg (PostgreSQL), s3 (MinIO), img (webp-рендер)
+uv run pytest -q
 ```
 
 Без установки пакета тесты тоже работают (`pythonpath = ["src"]` в `pyproject.toml`).
 
-## Главная команда (после реализации модулей)
+## Главная команда
 
 ```
 faktura extract --domain solar --in ../data/caseB_kejs5/test --out ./out \
