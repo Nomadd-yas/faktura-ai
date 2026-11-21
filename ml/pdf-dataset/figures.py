@@ -687,7 +687,47 @@ def _fill_series(panel, bb, spans, lines, markers, rects, segs=()):
         pts = _dedup([conv(m["c"]) for m in ms], 0.02)
         pts.sort(key=lambda p: p[0] if isinstance(p[0], (int, float)) else 0)
         series.append({"color": col, "kind": "scatter", "legend_label": legend.get(col), "points": pts})
-    panel["series"] = series
+    panel["series"] = _dedup_series(series)
+
+
+def _dedup_series(series):
+    """[faktura-patch] one data point -> one row. A line drawn with markers comes out as a 'line' and a same-colour
+    'scatter' with the same coordinates; some plotters also draw the same polyline twice. Markers that sit on a
+    vertex of a same-colour line are dropped (the line keeps the point); identical same-colour lines are kept once."""
+    num = [(x, y) for s in series for x, y in s["points"] if isinstance(x, (int, float)) and isinstance(y, (int, float))]
+    if not num:
+        return series
+    xs, ys = [p[0] for p in num], [p[1] for p in num]
+    tx, ty = 0.006 * ((max(xs) - min(xs)) or 1.0), 0.006 * ((max(ys) - min(ys)) or 1.0)
+
+    def same(a, b):
+        if isinstance(a[0], (int, float)) and isinstance(b[0], (int, float)):
+            return abs(a[0] - b[0]) <= tx and abs(a[1] - b[1]) <= ty
+        return a[0] == b[0] and abs(a[1] - b[1]) <= ty
+
+    out = []
+    for s in series:
+        if s["kind"] == "line":
+            if any(o["kind"] == "line" and o["color"] == s["color"] and len(o["points"]) == len(s["points"])
+                   and all(same(a, b) for a, b in zip(o["points"], s["points"])) for o in out):
+                continue
+            out.append(s)
+    for s in series:
+        if s["kind"] == "line":
+            continue
+        if s["kind"] == "scatter":
+            verts = [p for o in out if o["kind"] == "line" and o["color"] == s["color"] for p in o["points"]]
+            if verts:
+                rest = [p for p in s["points"] if not any(same(p, v) for v in verts)]
+                if not rest:
+                    if not any(o.get("legend_label") for o in out if o["color"] == s["color"]) and s.get("legend_label"):
+                        for o in out:
+                            if o["color"] == s["color"] and o["kind"] == "line":
+                                o["legend_label"] = s["legend_label"]
+                    continue
+                s = dict(s, points=rest)
+        out.append(s)
+    return out
 
 
 def _group_figures(panels, caps, pno):
