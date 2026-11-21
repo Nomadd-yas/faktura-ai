@@ -1268,9 +1268,21 @@ def vision_digitize(client, model, png, caption, label=None):
     msgs = [{"role": "user", "content": [
         {"type": "text", "text": VISION_PROMPT.format(caption=(caption or label or "")[:400])},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}}]}]
-    resp = client.chat.completions.create(model=model, messages=msgs, temperature=0.0, max_tokens=8000,
-                                          response_format={"type": "json_object"})
-    js = _loose_json(resp.choices[0].message.content or "")
+    # [faktura-patch] provider is always pinned (RAG_VISION_PROVIDER, no fallbacks): an unpinned request may be routed
+    # to a provider many times more expensive than the listed price
+    provs = [x.strip() for x in os.environ.get("RAG_VISION_PROVIDER", "").split(",") if x.strip()]
+    if not provs:
+        raise RuntimeError("RAG_VISION_PROVIDER is not set: vision is not called without a pinned provider")
+    for attempt in (1, 2):  # [faktura-patch] one retry: cheap vision models sometimes emit malformed JSON
+        resp = client.chat.completions.create(model=model, messages=msgs, temperature=0.0, max_tokens=8000,
+                                              response_format={"type": "json_object"},
+                                              extra_body={"provider": {"order": provs, "allow_fallbacks": False}})
+        try:
+            js = _loose_json(resp.choices[0].message.content or "")
+            break
+        except ValueError:
+            if attempt == 2:
+                raise
     if not js.get("is_chart", True):
         return [], {"is_chart": False}
     return panels_from_vision(js), {"is_chart": True}

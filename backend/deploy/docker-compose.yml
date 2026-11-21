@@ -54,6 +54,7 @@ services:
       TEXT_SOURCE: ${TEXT_SOURCE:-ocr}
       # графики RAG: модель со зрением для растровых рисунков (пусто — выкл.), 0 — шаг графиков выключен
       RAG_VISION_MODEL: ${RAG_VISION_MODEL:-}
+      RAG_VISION_PROVIDER: ${RAG_VISION_PROVIDER:-}
       RAG_FIGURES: ${RAG_FIGURES:-1}
       RAG_FIGURE_PARTIAL: ${RAG_FIGURE_PARTIAL:-keep}
     command: ["serve"]
