@@ -89,7 +89,29 @@ def collect_tables(uow, corpora: list, partial: bool = False) -> Collected:
             col.any_scan = col.any_scan or bool(f.is_scan)
             for t, rows in export_paper_tables(uow, corpus.id, spec.name, paper.id).items():
                 col.tables[t].extend(rows)
+    canon_results(col.tables.get("results") or [])
     return col
+
+
+def canon_results(rows: list[dict]) -> list[dict]:
+    """Последний шаг выгрузки results (обе области, после правок v2, повторов и отклонений): при заполненном
+    normalized_value пара metric_* = normalized_* (check_submission: «metric_unit differs from normalized_unit»,
+    «metric_value differs from normalized_value»). Исходная запись из статьи остаётся только в raw_value/raw_unit;
+    если raw пуст, туда уходит прежнее metric_* до замены. Нет normalized_unit - единица статьи считается целевой."""
+    for r in rows:
+        nv = str(r.get("normalized_value") or "").strip()
+        if not nv:
+            continue
+        mv = str(r.get("metric_value") or "").strip()
+        mu = str(r.get("metric_unit") or "").strip()
+        nu = str(r.get("normalized_unit") or "").strip() or mu
+        if not str(r.get("raw_value") or "").strip() and mv:
+            r["raw_value"] = mv
+            if not str(r.get("raw_unit") or "").strip() and mu:
+                r["raw_unit"] = mu
+        r["normalized_value"], r["normalized_unit"] = nv, nu
+        r["metric_value"], r["metric_unit"] = nv, nu
+    return rows
 
 
 def export_name(title: str | None) -> str:
