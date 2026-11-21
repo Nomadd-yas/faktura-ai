@@ -18,7 +18,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from vector_digitize import digitize_pdf  # noqa: E402
+from vector_digitize import digitize_pdf  # noqa: E402  (shim -> ml/pdf-dataset/figures.py)
 
 ROOT = HERE.parents[1]
 DATA = ROOT / "data" / "caseA_drive"
@@ -86,13 +86,54 @@ def match(gold, pts, rel, div):
     return hit, used
 
 
+def _base_label(fig):
+    m = re.match(r"\s*(?:Figure|Fig\.?)\s*(\d+)", fig or "", re.I)
+    return f"Figure {m.group(1)}" if m else None
+
+
+def state_report(paper, rel, div):
+    """[faktura-patch] oracle-free state check: classify every figure from geometry only, then (offline, gold used only
+    for REPORTING) show recall of gold figure values per assigned state.  A usable confidence puts the recall of
+    vector_ok figures high and the misses into vector_partial/raster/none."""
+    sys.path.insert(0, str(ROOT / "ml" / "pdf-dataset"))
+    import figures as F
+    asm = F.assess_document(str(DATA / "dev" / f"{paper}.pdf"))
+    gold = load_gold(paper)
+    by = defaultdict(lambda: [0, 0])
+    per_fig = {}
+    for rec in asm["figures"]:
+        per_fig[(rec["label"], rec["page"])] = rec
+    cache = {}
+    for g in gold:
+        lab = _base_label(g["fig"])
+        rec = per_fig.get((lab, g["page"]))
+        state = rec["state"] if rec else "not_found"
+        if id(rec) not in cache:
+            cache[id(rec)] = collect([rec["fig"]] if rec and rec["fig"] else [])[0]
+        hit, _ = match([g], cache[id(rec)], rel, div)
+        by[state][0] += 1
+        by[state][1] += hit[0]
+    print(f"\n=== {paper} STATE: pages {len(asm['pages'])}, figures {len(asm['figures'])}, {asm['seconds']}s")
+    for st, (tot, ok) in sorted(by.items()):
+        print(f"   gold rows in {st:15s} {ok:5d}/{tot:<5d} recall {ok / max(tot, 1):6.1%}")
+    for rec in asm["figures"]:
+        print(f"   {str(rec['label']):10s} p{rec['page']:<3d} {rec['state']:15s} conf {rec['confidence']:.2f} "
+              f"pts {rec['points']:<5d} {rec['reason'][:70]}")
+    return asm
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--state", action="store_true", help="per-figure state/confidence + recall by state")
     ap.add_argument("--papers", nargs="*", default=["D014", "D003", "D008"])
     ap.add_argument("--rel", type=float, default=0.02)
     ap.add_argument("--abs-step-div", type=float, default=100.0)
     ap.add_argument("--examples", type=int, default=5)
     a = ap.parse_args()
+    if a.state:
+        for paper in a.papers:
+            state_report(paper, a.rel, a.abs_step_div)
+        return
     for paper in a.papers:
         gold = load_gold(paper)
         t = time.time()

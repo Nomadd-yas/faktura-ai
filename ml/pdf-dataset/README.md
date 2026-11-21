@@ -148,3 +148,16 @@ ROUTERAI_API_KEY=sk-... python extract_dataset.py D001.clean.md --out D001.datas
 - Layout-модель по умолчанию на CPU — GPU сервера занята vLLM. Хотите layout на GPU: `device: cuda`(или `cuda:0`) в конфиге + `docker run --gpus all ...`.
 - `run_glmocr.py` больше не нужен — его роль исполняет `pipeline.py` (шаг 1).
 - Первый боевой прогон: смотрите `finish_reason` по шагам в stdout и `.meta.json`; `finish_reason=length` — поднимите `--max-tokens` (передаётся только в CLI-режиме; для конвейера лимиты в `extract_dataset.py` — `max_tokens`/`issues_max_tokens` в вызове `extract()`).
+
+## Графики (домен rag) [faktura-patch]
+
+`figures.py` оцифровывает графики прямо из векторной геометрии PDF (оси калибруются по подписям делений) и **знает своё
+состояние**: для каждой страницы (`text_layer` ok/poor/none, `vector_paths`, `raster_frac`, `ocr_used`) и каждого
+графика (`vector_ok` / `vector_partial` / `raster` / `none` + `confidence` по общим сигналам: невязка калибровки, число
+делений, найдены ли обе оси, есть ли серии, покрытие легенды, доля точек внутри осей) — всё в `meta.extraction_state`.
+Запасной путь: `RAG_VISION_MODEL=<модель с картинками на RouterAI>` — растровые/ненадёжные графики рисуются в PNG и
+оцифровываются vision-моделью (строки помечены `approximate, digitized from raster image by vision model`); без неё или
+при ошибке вызова — issue `figure_only`. Смысл серий (метрика, k, конфигурация) определяет один вызов LLM на график, строки
+порождает программа. Переменные: `RAG_FIGURES=0` (выключить), `RAG_VISION_MODEL`, `RAG_FIGURE_PARTIAL=keep|drop`
+(`keep` по умолчанию: частично оцифрованные графики без vision остаются с пометкой), `RAG_FIGURE_VISION_MAX` (8),
+`RAG_FIGURE_MAX_ROWS` (12000 на график), `RAG_FIGURE_MAX_ROWS_TOTAL` (40000).

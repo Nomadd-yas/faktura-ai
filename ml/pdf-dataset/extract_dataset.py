@@ -1055,7 +1055,7 @@ RAG_RESULT_FIELDS = """Правила полей results (одна строка 
 - duplicate_of — result_id основной записи (в рамках этого вызова), если то же значение того же результата повторно
   встречено в другом месте (в другой таблице/разделе); у основной записи null. Разные числа дублями не объявляй.
 - source_page — страница PDF по маркеру <!-- page N -->; source_section — раздел (например «4.2»); source_table —
-  «Table N»; source_figure — только для графика (в этом проходе графики не извлекаются — не заполняй); source_fragment:
+  «Table N»; source_figure — не заполняй (строки с графиков добавляет программа отдельным проходом); source_fragment:
   для значения из таблицы — «Table N, строка <метка строки как в таблице>» (например «Table 1, строка RA-CoT»),
   для значения из текста — короткая дословная цитата (слова вокруг числа).
 - note — уточнение столбца/блока столбцов («column EM, dataset HotpotQA»), нестандартность значения, ссылка на условие.
@@ -1091,7 +1091,7 @@ protocol_mismatch, normalization, contradiction):
   других работ с другим протоколом;
 - normalization — округление/пересчёт/арифметика не сходятся (суммы, разности, «improves by» не совпадает со строками);
 - ambiguity — из текста нельзя однозначно понять модель/версию/выборку/агрегацию;
-- figure_only — результаты есть только на графиках, без чисел (графики в этом проходе не извлечены).
+- figure_only — НЕ создавай: такие замечания добавляет программа для графиков, которые не удалось оцифровать. [faktura-patch]
 Каждая запись — ОДНА фраза-описание ПО-АНГЛИЙСКИ с конкретикой (числа и условия с обеих сторон). record_ids — result_id из
 датасета через «;», если замечание про конкретные результаты, иначе null. source_page — страница по маркеру
 <!-- page N -->; source_fragment — короткая дословная цитата. Если проблем нет — {"issues": []}. Не больше 12;
@@ -1288,7 +1288,8 @@ def rag_link_duplicates(rows) -> int:
 def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_tokens, no_issues, out, meta_path,
                  pdf_path, model, provider, report) -> dict:
     """Конвейер области RAG: publications ‖ configurations ‖ datasets ‖ tasks -> experiments -> results (кусками) ->
-    проверка значений -> issues. Графики не извлекаются (glmocr их пропускает): meta.figures_skipped."""
+    проверка значений -> issues. [faktura-patch] Графики: оцифровка из векторной геометрии PDF (figures.py) с оценкой
+    состояния (meta.extraction_state), запасной вариант — vision-модель (RAG_VISION_MODEL) или issue figure_only."""
     from concurrent.futures import ThreadPoolExecutor
     state: dict = {t: [] for t in RAG_TABLES}
     failed: list[str] = []
@@ -1323,7 +1324,9 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
     def out_of_scope():
         return bool(state["publications"]) and state["publications"][0].get("in_scope") is False
 
-    rag_meta = {"domain": "rag", "figures_skipped": True, "chunks": []}
+    fig_on = pdf_path is not None and os.environ.get("RAG_FIGURES", "1").strip() != "0"  # [faktura-patch]
+    rag_meta = {"domain": "rag", "figures_skipped": not fig_on, "chunks": [], "timings": {}}
+    fig_box: dict = {"asm": None, "error": None, "issues": [], "stats": None}
 
     def run_chunk(ch, prose=False, depth=0):
         """Один вызов results -> (список строк с локальными id, ошибка | None). При обрезке ответа — деление пополам."""
@@ -1401,6 +1404,42 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
             nrows += len(rows)
         return merged
 
+    def fig_phase1():
+        """[faktura-patch] оценка состояния страниц/графиков + запасной вариант (vision): не зависит от LLM-таблиц."""
+        t0 = time.time()
+        try:
+            import figures as F
+            asm = F.assess_document(pdf_path, text)
+            vm = os.environ.get("RAG_VISION_MODEL", "").strip() or None
+            F.run_fallbacks(asm, pdf_path, client if vm else None, vm)
+            fig_box["asm"] = asm
+        except Exception as e:  # noqa: BLE001 — графики не роняют прогон
+            fig_box["error"] = f"{type(e).__name__}: {e}"[:300]
+            print(f"[!] графики: {fig_box['error']}", flush=True)
+        rag_meta["timings"]["figures_assess"] = round(time.time() - t0, 2)
+
+    def fig_phase2():
+        """[faktura-patch] семантическое сопоставление серий (1 вызов LLM на график) -> строки results."""
+        phase1.result()
+        asm = fig_box["asm"]
+        if asm is None:
+            return []
+        import figures as F
+        ctx = json.dumps(_rag_compact(state), ensure_ascii=False, separators=(",", ":"))
+        ids = {"configs": {r.get("config_id") for r in state["configurations"]},
+               "datasets": {r.get("dataset_id") for r in state["datasets"]},
+               "tasks": {r.get("task_id") for r in state["tasks"]},
+               "experiments": {r.get("experiment_id") for r in state["experiments"]}}
+
+        def llm(messages, schema_name, schema, label):
+            raw = src.with_name(f"{src.name}.{re.sub(r'[^A-Za-z0-9_.-]+', '_', label)}.raw_response.txt")
+            return nullify_empties(call_llm(client, args, messages, schema_name, schema, 8192, label, raw, report))
+
+        rows, issues, st = F.map_and_generate(asm, pub_id, ctx, ids, llm, workers=4)
+        fig_box["issues"], fig_box["stats"] = issues, st
+        rag_meta["timings"]["figures_map"] = st["seconds"]
+        return rows
+
     def quality(rows):
         """verify_values: значение должно встречаться в тексте PDF или OCR-markdown; дозаполнения (mining) для RAG нет."""
         st = {"step": "quality"}
@@ -1417,6 +1456,8 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
         report.append(st)
         return rows
 
+    fig_ex = ThreadPoolExecutor(max_workers=2)
+    phase1 = fig_ex.submit(fig_phase1) if fig_on else None
     with ThreadPoolExecutor(max_workers=RAG_WORKERS) as ex:
         futs = {s: ex.submit(run_step, s) for s in ("publications", "configurations", "datasets", "tasks")}
         apply(*futs["publications"].result())
@@ -1427,7 +1468,15 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
             for s in ("configurations", "datasets", "tasks"):
                 apply(*rest[s])
             apply(*run_step("experiments"))
+            phase2 = fig_ex.submit(fig_phase2) if fig_on else None
             rows = quality(run_results())
+            if phase2 is not None:  # [faktura-patch] строки графиков — после таблиц/текста, со связью дублей
+                try:
+                    import figures as F
+                    rag_meta["figures_merged_duplicates"] = F.merge_figure_rows(rows, phase2.result())
+                except Exception as e:  # noqa: BLE001
+                    fig_box["error"] = fig_box["error"] or f"{type(e).__name__}: {e}"[:300]
+                    print(f"[!] графики (строки): {fig_box['error']}", flush=True)
             # перенумерация R001.. + ссылки; id вне извлечённых таблиц -> null
             rag_renumber(rows)
             ids = {t: {r.get(RAG_KEYS[t]) for r in state[t]} for t in ("experiments", "configurations", "datasets", "tasks")}
@@ -1441,6 +1490,10 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
             rag_meta["ref_nullified"] = nfix
             rag_meta["duplicates_linked"] = rag_link_duplicates(rows)
             state["results"] = rows
+
+    if phase1 is not None:
+        phase1.result()
+    fig_ex.shutdown(wait=True)
 
     if not no_issues and not out_of_scope():
         compact = _rag_compact(state)
@@ -1464,6 +1517,20 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
             print(f"[!] issues не получены: {e}\n    Основной датасет сохраню без issues.", flush=True)
             failed.append("issues")
 
+    if fig_box["issues"] and not out_of_scope():  # [faktura-patch] figure_only — программные issues
+        state["issues"] = state["issues"] + fig_box["issues"]
+        for i, r in enumerate(state["issues"], start=1):
+            r["issue_id"] = f"I{i}"
+    extraction_state = None
+    if fig_box["asm"] is not None:
+        import figures as F
+        extraction_state = F.extraction_state_meta(fig_box["asm"], {"error": fig_box["error"],
+                                                                    "mapping": fig_box["stats"]})
+    elif fig_on:
+        extraction_state = {"error": fig_box["error"], "pages": [], "figures": []}
+    if fig_box["asm"] is not None:
+        rag_meta["figures_skipped"] = False
+
     dataset = {k: state[k] for k in RAG_TABLES}
     out_path = Path(out) if out else src.with_name(src.stem + ".dataset.json")
     out_path.write_text(json.dumps(dataset, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1474,7 +1541,8 @@ def _extract_rag(*, src, text, pub_id, client, args, max_tokens, issues_max_toke
         meta = {"input_md": str(src), "publication_id": pub_id, "model": model,
                 "provider": [p.strip() for p in provider.split(",") if p.strip()] or "auto",
                 "steps": report, "failed_tables": failed, "counts": counts,
-                "domain": "rag", "figures_skipped": True, "rag": rag_meta}
+                "domain": "rag", "figures_skipped": rag_meta["figures_skipped"], "rag": rag_meta,
+                "extraction_state": extraction_state}
         meta_out.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print("\nСтрок по таблицам:", json.dumps(counts, ensure_ascii=False), flush=True)
     if failed:

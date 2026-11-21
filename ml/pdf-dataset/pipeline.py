@@ -50,7 +50,7 @@ def _code_hash() -> str:
     """[faktura-patch] хеш кода конвейера и промптов: правка промптов -> новая версия -> бэкенд не берёт старый кеш."""
     import hashlib
     h = hashlib.sha256()
-    for name in ("pipeline.py", "extract_dataset.py", "strip_tail.py"):
+    for name in ("pipeline.py", "extract_dataset.py", "strip_tail.py", "figures.py"):  # [faktura-patch]
         p = BASE / name
         if p.exists():
             h.update(p.read_bytes())
@@ -788,7 +788,8 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
         "total_seconds": round(time.time() - _t_start, 2),
         "cost": round(sum(((s.get("usage") or {}).get("cost") or 0) for s in (meta.get("steps") or [])), 4),
         "timings": {"ocr": ocr_seconds, "llm_wall": llm_wall, "snap": snap_seconds,
-                    "total": round(time.time() - _t_start, 2)},  # [faktura-patch]
+                    "total": round(time.time() - _t_start, 2),
+                    **{k: v for k, v in ((meta.get("rag") or {}).get("timings") or {}).items()}},  # [faktura-patch] figures_*
         "failed_tables": meta.get("failed_tables", failed_tables),
         "extract_error": extract_failed,
         "outputs": {
