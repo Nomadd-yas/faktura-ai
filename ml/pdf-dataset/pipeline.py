@@ -642,7 +642,70 @@ def _ocr_page_texts(json_result):
     return out
 
 
-def _ocr_subset(parser, pdf, pages, work, stem):
+# ---------- [faktura-patch] §10: ocr_confidence файла (0..1) ----------
+# Определение (meta.ocr_confidence, meta.ocr_confidence_basis): среднее по страницам оценки надёжности текста страницы.
+#   страница из текстового слоя PDF: ok -> 1.0, poor -> 0.5, none -> 0.2 (по figures.page_state / meta.text_source);
+#   страница через glmocr: если в блоках json_result есть числовой confidence/score (0..1) - его среднее по блокам;
+#     иначе эвристика: 0.9 * (1 - min(1, 5 * доля мусорных символов «�»/(cid:N) в тексте страницы));
+#     пустой текст OCR - 0.5 (страница могла быть чисто графической).
+# Потолок 0.9 для OCR-страниц без собственной оценки: распознавание не бывает увереннее текстового слоя.
+OCR_HEURISTIC_CAP = 0.9
+OCR_EMPTY_PAGE = 0.5
+LAYER_SCORE = {"ok": 1.0, "poor": 0.5, "none": 0.2}
+
+
+def _ocr_page_confs(json_result):
+    """list[float|None] по страницам: среднее числового confidence/score блоков (0..1) или None, если его нет."""
+    if not (isinstance(json_result, list) and json_result and all(isinstance(pg, list) for pg in json_result)):
+        return None
+    out = []
+    for blocks in json_result:
+        vals = []
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            for k in ("confidence", "score", "conf"):
+                v = b.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0:
+                    vals.append(float(v))
+                    break
+        out.append(sum(vals) / len(vals) if vals else None)
+    return out
+
+
+def ocr_page_score(text, conf=None):
+    """Оценка 0..1 для страницы, распознанной glmocr (см. определение выше)."""
+    if conf is not None:
+        return max(0.0, min(1.0, float(conf)))
+    t = text or ""
+    if not t.strip():
+        return OCR_EMPTY_PAGE
+    bad = t.count("�") + 6 * len(re.findall(r"\(cid:\d+\)", t))
+    return round(OCR_HEURISTIC_CAP * (1.0 - min(1.0, 5.0 * bad / max(len(t), 1))), 4)
+
+
+def compute_ocr_confidence(pages):
+    """pages: [{"source": "pdf"|"ocr", "reason": str, "text": str, "conf": float|None}] -> (ocr_confidence|None, basis)."""
+    if not pages:
+        return None, {"method": "none", "pages": 0}
+    scores, n_pdf, n_ocr, n_native = [], 0, 0, 0
+    for p in pages:
+        if p.get("source") == "ocr":
+            n_ocr += 1
+            n_native += p.get("conf") is not None
+            scores.append(ocr_page_score(p.get("text"), p.get("conf")))
+        else:
+            n_pdf += 1
+            reason = p.get("reason") or ""
+            layer = "none" if "text_layer_none" in reason else "poor" if "text_layer_poor" in reason else "ok"
+            scores.append(LAYER_SCORE[layer])
+    native = bool(n_ocr) and n_native == n_ocr and not n_pdf
+    basis = {"method": "glmocr_confidence" if native else "text_layer_ocr_heuristic",
+             "pages": len(pages), "pdf_pages": n_pdf, "ocr_pages": n_ocr, "ocr_pages_with_native_conf": n_native}
+    return round(sum(scores) / len(scores), 3), basis
+
+
+def _ocr_subset(parser, pdf, pages, work, stem, confs_out=None):
     """glmocr только на страницах `pages` (номера с 1): под-PDF через insert_pdf, parse(), страницы результата
     возвращаются к номерам исходного PDF. -> {page: text}."""
     import pymupdf
@@ -658,6 +721,10 @@ def _ocr_subset(parser, pdf, pages, work, stem):
     result = parser.parse(str(sub_path))
     result.save(output_dir=str(work))
     texts = _ocr_page_texts(getattr(result, "json_result", None))
+    if confs_out is not None:
+        pc = _ocr_page_confs(getattr(result, "json_result", None)) or []
+        if len(pc) == len(pages):
+            confs_out.update({pg: c for pg, c in zip(pages, pc) if c is not None})
     if texts is None or len(texts) != len(pages):
         raise PipelineError("ml_error", f"glmocr: под-PDF из {len(pages)} страниц вернул "
                                         f"{None if texts is None else len(texts)} страниц результата")
@@ -1034,6 +1101,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
 
     ocr_seconds = 0.0
     text_source_meta = None
+    conf_pages = None  # [faktura-patch] §10: данные для meta.ocr_confidence
     if ts_infos is None:
         print(f"[1/3] glmocr: {pdf.name} -> markdown (config={config})", flush=True)
         t0 = time.time()
@@ -1058,15 +1126,23 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
         # [faktura-patch] markdown для LLM — постранично, с маркерами <!-- page N -->
         md_text, paged = build_paged_markdown(getattr(result, "json_result", None),
                                               getattr(result, "markdown_result", None) or raw_md)
+        try:
+            jr = getattr(result, "json_result", None)
+            _t, _c = _ocr_page_texts(jr), (_ocr_page_confs(jr) or [])
+            if _t:
+                conf_pages = [{"source": "ocr", "text": t, "conf": (_c[i] if i < len(_c) else None)}
+                              for i, t in enumerate(_t)]
+        except Exception:  # noqa: BLE001 - оценка качества не роняет прогон
+            conf_pages = None
     else:
         # [faktura-patch] R6: страницы из текстового слоя + OCR только там, где нужно
         print(f"[1/3] text_source={ts_mode}: {len(ts_infos) - len(ocr_pages)} стр. из PDF, "
               f"{len(ocr_pages)} стр. через glmocr", flush=True)
-        ocr_texts = {}
+        ocr_texts, ocr_confs = {}, {}
         if need_ocr:
             t0 = time.time()
             try:
-                ocr_texts = _ocr_subset(_get_parser(config), pdf, ocr_pages, work, stem)
+                ocr_texts = _ocr_subset(_get_parser(config), pdf, ocr_pages, work, stem, ocr_confs)
             except PipelineError:
                 raise
             except Exception as e:
@@ -1085,6 +1161,9 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
             "mode": ts_mode,
             "pages": [{"page": i["page"], "source": i["source"], "reason": i["reason"]} for i in ts_infos],
             "ocr_pages": len(ocr_pages), "pdf_pages": len(ts_infos) - len(ocr_pages)}
+    if ts_infos is not None:
+        conf_pages = [{"source": i["source"], "reason": i["reason"], "text": ocr_texts.get(i["page"], ""),
+                       "conf": ocr_confs.get(i["page"])} for i in ts_infos]
     md_src = work / f"{stem}.paged.md"
     md_src.write_text(md_text, encoding="utf-8")
     print(f"      готово за {ocr_seconds}s, markdown {len(md_text)} символов "
@@ -1169,6 +1248,10 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
             meta = {}
     md_copy = out_dir / f"{stem}.md"
     shutil.copy(clean_md, md_copy)
+    try:
+        _conf = compute_ocr_confidence(conf_pages)
+    except Exception:  # noqa: BLE001
+        _conf = (None, {"method": "error"})
     meta.update({
         "input_pdf": str(pdf),
         "domain": domain,  # [faktura-patch]
@@ -1179,6 +1262,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
         "markdown_chars": len(md_text),
         "glmocr_config": str(config),
         "glmocr_config_text": config.read_text(encoding="utf-8", errors="replace") if config.exists() else None,
+        "ocr_confidence": _conf[0], "ocr_confidence_basis": _conf[1],  # [faktura-patch] §10
         "text_source": text_source_meta or {"mode": "ocr", "pages": None, "ocr_pages": pages, "pdf_pages": 0},  # [faktura-patch] R6
         "strip_tail": strip_info,
         "quote_snap": snap_stats,
