@@ -27,7 +27,7 @@
 → `200`
 ```json
 { "access_token": "…", "token_type": "Bearer", "expires_in": 900,
-  "user": { "id": "u_1", "user_id": "u_1", "email": "admin@faktura.local", "name": "Админ", "role": null, "team": null,
+  "user": { "id": "u_1", "user_id": "u_1", "email": "admin@faktura.local", "name": "Админ", "role": "", "team": "",
             "color": "#…", "focus": null, "is_admin": true } }
 ```
 Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "include"`). Ошибки: `401 invalid_credentials`, `429`.
@@ -35,7 +35,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 ### `POST /auth/refresh` → новая пара (тело как у login, без `user`). `401` — снова на вход.
 ### `POST /auth/logout` → `204`.
 ### `GET /auth/me` → `user`.
-### `GET /health` — без авторизации, `{"status": "ok", …}`.
+### `GET /health` — без авторизации, `{"status": "ok", "version": "0.1.0", "model_version": "…", …}`.
 
 Регистрации нет: учётку выдаём мы (логин/пароль скажу отдельно).
 
@@ -62,7 +62,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 | `name` | string | имя файла / путь в ZIP |
 | `status` | `queued` \| `running` \| `done` \| `out` \| `error` \| `nodata` | `out` — статья не по теме (`reason` = `exclusion_reason`); `nodata` — разобрана, значений нет; `error` — `reason` = текст ошибки |
 | `status_label` | string | подпись по-русски: «в очереди», «разбор», «готово», «нет результатов», «ошибка», для `out` — причина |
-| `stage` | string | «Извлечение» \| «Нормализация» \| «Проверка» — пока `running` |
+| `stage` | string \| null | «Извлечение» → «Нормализация» → «Проверка» — пока `running`; у конечных статусов `null` |
 | `progress` | int 0..100 | |
 | `has_data` | bool | есть строки `results` |
 | `results`, `issues` | int | |
@@ -86,13 +86,13 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
   "files": [ { "id": "D001", "name": "D001.pdf", "status": "queued", "status_label": "в очереди", "progress": 0, "has_data": false } ],
   "rejected": [ { "name": "readme.txt", "code": "unsupported_file", "message": "Можно загрузить только PDF" } ] }
 ```
-Коды в `rejected`: `unsupported_file`, `duplicate` (тот же SHA-256 в этом разборе), `broken_pdf`, `empty_file`.
-Ошибки: `400 no_files`, `413 too_large`, `415 unsupported_media_type`, `422 zip_bomb` / `domain_not_supported`.
+Коды в `rejected`: `unsupported_file`, `duplicate` (тот же SHA-256 в этом разборе), `broken_pdf`, `encrypted_pdf`, `empty_file`, `file_too_large`, `too_many_pages`. Файлы с одинаковым именем, но разным содержимым принимаются: id `P042`, `P042-2`.
+Ошибки: `400 no_files`, `413 too_large`, `415 unsupported_media_type`, `422 zip_bomb` / `domain_not_supported`. Лимиты: PDF до 50 МБ и 300 страниц; до 200 файлов и 1 ГБ на разбор; ZIP — до 500 файлов и 2 ГБ в распакованном виде.
 
 ### `GET /runs` — список
 Параметры: `limit` (по умолчанию 20), `cursor`, `files=false` (без списка файлов). Сортировка — новые сверху.
 ```json
-{ "data": [ Run, … ], "next_cursor": null }
+{ "data": [ Run, … ], "total": 23, "next_cursor": null }
 ```
 В списке `files` короткие: `id, name, status, has_data, results, issues, reason`.
 
@@ -162,11 +162,21 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 ## 4. Скачать набор
 
 ### `GET /runs/{id}/submission.zip`
-Ответ — сразу файл: `application/zip`, `Content-Disposition: attachment; filename*=UTF-8''…zip`. Внутри **ровно 7 CSV** шаблона области 1 по всем статьям разбора (статья не по теме — только строка в `publications`).
+Ответ — сразу файл: `application/zip`, `Content-Disposition: attachment; filename="submission.zip"; filename*=UTF-8''Набор%20для%20сдачи%20—%20{title}.zip`. Внутри **7 CSV** шаблона области 1 по всем статьям разбора (статья не по теме — только строка в `publications`) **+ `PASSPORT.md` и `passport.json`** (поля, словари, правила проверок, нормализация, версии модели/правил/словаря).
+
+`?check=true` — сервер прогоняет `check_submission.py`: в ZIP добавляется `check_report.txt`, заголовок `X-Check-Status: ok|warnings|failed`; если скрипт нашёл ОШИБКИ — вместо файла `422 submission_invalid` (в `details.errors` — первые ошибки).
 
 Заголовки для тоста (открыты в `Access-Control-Expose-Headers`): `X-Export-Tables: 7`, `X-Export-Results`, `X-Export-Papers`, `X-Export-Filename`.
 
 Пока разбор идёт — `409 run_in_progress`; `?partial=true` — выгрузить уже готовые статьи.
+
+## 4a. Изменения 21.11
+
+- Разборы видны только владельцу: чужой разбор → `404 not_found`.
+- Тексты для людей (`reason`, `message`) — «сервис разбора» и «модель», без технических терминов: например «Сервис разбора временно недоступен» (`extractor_unavailable`, 503), «Модель вернула некорректные данные: …», «Превышено время разбора файла (10 мин)».
+- Во всех ошибках есть `request_id`.
+- `RunFile.stage`/`progress` — настоящие (0 → 10 → 60 → 85 → 100), разбор `error` только если упали все файлы.
+- `POST /auth/register` убран (учётки заводит сервер: `faktura users create --email … --name … --generate`).
 
 ## 5. Что заморожено (на этих экранах пока мок)
 
