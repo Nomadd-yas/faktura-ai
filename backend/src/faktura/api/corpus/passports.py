@@ -32,7 +32,14 @@ def run_passport(services: Services, d: RunData | Sequence[RunData]) -> dict[str
                     versions.setdefault(k, v)
     norm = services.normalizer
     dictionary = versions.get("dictionary")
-    if domain == "solar":
-        dictionary = dictionary or str(getattr(norm, "dictionary_version", "") or "") or None
+    if dictionary is None:  # статей с версией нет: текущая версия словаря + своих синонимов рабочей области
+        from ...norm.user_dict import version_suffix  # noqa: PLC0415
+        from ...passport.run_passport import _rag_dictionary_version  # noqa: PLC0415
+
+        with services.db.uow() as uow:
+            own = [s for s in uow.synonyms.list(d.corpus.workspace_id) if s.collection == domain]
+        base = (str(getattr(norm, "dictionary_version", "") or "") if domain == "solar"
+                else _rag_dictionary_version() or "")
+        dictionary = (base + version_suffix(own)) or None
     return build_run_passport(domain, model_versions=models, dictionary=dictionary,
                               rules=versions.get("rules") or (RULES_VERSION if domain == "solar" else None))

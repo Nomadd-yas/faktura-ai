@@ -224,6 +224,14 @@ class PaperProcessor:
                     self._extractor = self.services.extractor_factory()
         return self._extractor
 
+    def _user_normalizer(self, workspace_id: str):
+        """Нормализатор со своими синонимами рабочей области (CORE_API §4h); без них - общий нормализатор."""
+        from ..norm.user_dict import with_user_synonyms
+
+        with self.services.db.uow() as uow:
+            syn = uow.synonyms.list(workspace_id)
+        return with_user_synonyms(self.services.normalizer, syn)
+
     def autolink(self) -> bool:
         if self._autolink is not None:
             return self._autolink
@@ -356,11 +364,12 @@ class PaperProcessor:
         from ..checks import RULES_VERSION, check_paper
         from ..pdfio.quotes import PypdfQuoteIndex
 
+        normalizer = self._user_normalizer(paper.workspace_id)
         if _out_of_scope(bundle.publication.in_scope):
             bundle = PaperBundle(publication=bundle.publication)
             issues: list[IssueRecord] = []
         else:
-            bundle = apply_normalization(bundle, s.normalizer, profile)
+            bundle = apply_normalization(bundle, normalizer, profile)
             stage("Проверка", 85)
             quote = PypdfQuoteIndex(pdf)
             outcome = check_paper(bundle, profile, quote=quote, autolink=self.autolink())
@@ -372,7 +381,7 @@ class PaperProcessor:
             f.model_version = mv
         stats = paper_stats(bundle, facts, issues, profile)
         versions = {"model": str(mv), "norm": str(getattr(s.normalizer, "version", "")),
-                    "dictionary": str(getattr(s.normalizer, "dictionary_version", "")), "rules": str(RULES_VERSION),
+                    "dictionary": str(getattr(normalizer, "dictionary_version", "")), "rules": str(RULES_VERSION),
                     "parser": str(getattr(s.parser, "version", "")) if mode == "full" else "",
                     "from_cache": "true" if from_cache else "false"}
         if mode != "full":
