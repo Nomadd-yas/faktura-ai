@@ -85,8 +85,9 @@ class RunData:
         self.papers = {p.id: p for p in uow.papers.list(corpus_id=corpus.id)}
         runs = uow.runs.list(corpus.id, limit=1)
         self.run: Run | None = runs[0] if runs else None
-        self.results_n: dict[str, int] = uow.sub.counts_by_paper(corpus.id, "results")
-        self.issues_n: dict[str, int] = uow.sub.counts_by_paper(corpus.id, "issues")
+        counts = uow.sub.counts_by_paper_tables(corpus.id, ("results", "issues"))
+        self.results_n: dict[str, int] = counts["results"]
+        self.issues_n: dict[str, int] = counts["issues"]
         self.pub: dict[str, tuple[str, str]] = uow.sub.publication_scopes(corpus.id)
         # v2: открытые замечания с учётом состояний и пересчёта (3 запроса на весь разбор, не на статью)
         from ...review.runs_v2 import open_counts

@@ -364,7 +364,18 @@ sub_rows = sa.Table(
     sa.Index("ix_sub_rows_corpus_pub", "corpus_id", "table_name", "publication_id"),
     sa.Index("ix_sub_rows_corpus_metric", "corpus_id", "table_name", "metric_name"),
     sa.Index("ix_sub_rows_corpus_check", "corpus_id", "table_name", "check_name"),
+    # покрывающие индексы счётчиков (counts_by_paper, metric_counts, paper_summary) и страниц по id (list_results)
+    sa.Index("ix_sub_rows_corpus_paper_metric", "corpus_id", "table_name", "paper_id", "metric_name"),
+    sa.Index("ix_sub_rows_corpus_id", "corpus_id", "table_name", "id"),
+    sa.Index("ix_sub_rows_paper_metric", "paper_id", "table_name", "metric_name"),
 )
+
+# индексы, добавленные после первого развёртывания: create_all их у существующих таблиц не создаёт,
+# Database.create_all досоздаёт их идемпотентно (checkfirst)
+LATE_INDEXES: dict[sa.Table, tuple[str, ...]] = {
+    sub_issues: ("ix_sub_issues_corpus_check",),
+    sub_rows: ("ix_sub_rows_corpus_paper_metric", "ix_sub_rows_corpus_id", "ix_sub_rows_paper_metric"),
+}
 
 # --- кеш агрегатов корпуса (REQ-101) -----------------------------------------------------------
 

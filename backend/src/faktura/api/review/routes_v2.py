@@ -212,8 +212,9 @@ def issues_stats(run: str = Query(...), user: CurrentUser = Depends(current_user
         states_all = V.states_of(uow.conn, corpus.id, domain)
         extra_all = V.extra_of(uow.conn, corpus.id, domain)
         agg: dict[str, dict[str, Any]] = {}
+        small = uow.sub.tables_of_corpus(corpus.id, domain, ("publications", "issues"))  # 1 запрос вместо статья-за-статьёй
         for p in d.papers.values():
-            tables = uow.sub.paper_tables(p.id, domain)
+            tables = small.get(p.id) or {"publications": [], "issues": []}
             pub = (tables.get("publications") or [{}])[0].get("publication_id") or p.publication_id
             revs = {k[2]: v for k, v in revs_all.items() if k[1] == pub}
             states = {k[2]: v for k, v in states_all.items() if k[1] == pub}

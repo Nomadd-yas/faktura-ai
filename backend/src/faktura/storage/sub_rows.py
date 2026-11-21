@@ -262,6 +262,32 @@ class SubRowsRepo(_Repo):
             sa.select(t.c.paper_id, sa.func.count()).where(t.c.corpus_id == corpus_id, t.c.table_name == table)
             .group_by(t.c.paper_id))}
 
+    def counts_by_paper_tables(self, corpus_id: str, tables: Sequence[str]) -> dict[str, dict[str, int]]:
+        """{table: {paper_id: число строк}} одним запросом (покрывающий индекс ix_sub_rows_corpus_paper_metric)."""
+        t = S.sub_rows
+        out: dict[str, dict[str, int]] = {n: {} for n in tables}
+        for p, name, n in self.c.execute(
+                sa.select(t.c.paper_id, t.c.table_name, sa.func.count())
+                .where(t.c.corpus_id == corpus_id, t.c.table_name.in_(list(tables)))
+                .group_by(t.c.paper_id, t.c.table_name)):
+            out[name][p] = n
+        return out
+
+    def tables_of_corpus(self, corpus_id: str, domain: str, names: Sequence[str]) -> dict[str, dict[str, list[dict[str, str]]]]:
+        """paper_id -> {table: строки по position} только для перечисленных (небольших) таблиц корпуса: один запрос
+        вместо paper_tables на каждую статью."""
+        spec = get_domain(domain)
+        t = S.sub_rows
+        out: dict[str, dict[str, list[dict[str, str]]]] = {}
+        q = sa.select(t.c.paper_id, t.c.table_name, t.c.data).where(
+            t.c.corpus_id == corpus_id, t.c.table_name.in_(list(names))).order_by(
+            t.c.paper_id, t.c.table_name, t.c.position, t.c.id)
+        for p, name, data in self.c.execute(q):
+            if name in spec.tables:
+                tabs = out.setdefault(p, {n: [] for n in names})
+                tabs[name].append({k: _s((data or {}).get(k)) for k in spec.tables[name]})
+        return out
+
     def metric_counts(self, corpus_id: str) -> list[tuple[str, str, int]]:
         """(paper_id, metric_name, число results) по корпусу."""
         t = S.sub_rows
