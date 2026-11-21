@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+from collections import Counter, defaultdict
 import sys
 import time
 from pathlib import Path
@@ -425,6 +426,167 @@ source_page — страница по маркеру <!-- page N -->; source_fra
 STEP_ORDER = ["publications", "materials", "devices", "layers", "measurements", "results"]
 # [faktura-patch] порядок зависимостей (вместо STEP_GROUPS), см. extract():
 #   publications || materials -> devices -> (layers в фоне) || (measurements -> results) -> issues
+
+
+# ---------------------------------------------------------------- [faktura-patch] solar: deterministic conventions
+_TCO_RX = re.compile(r"(?i)^\s*(i-?ZnO|intrinsic ZnO|undoped ZnO|UZO|AZO|ZnO:Al|Al:ZnO|Al-doped ZnO|BZO|ZnO:B|ITO|IZO|IWO|"
+                     r"IOH|FTO|ZnO\s*/\s*(AZO|ITO|ZnO:Al))\b")
+_INORGANIC = {"CIGS", "CdTe", "kesterite", "Sb2Se3"}
+_CLASS_RX = [(re.compile(r"(?i)CIGS|Cu\(In,?\s*Ga\)|CuInGa|CuIn\(?S?,?Se"), "CIGS"), (re.compile(r"CdTe"), "CdTe"),
+             (re.compile(r"(?i)CZTS|Cu2ZnSn|kesterite"), "kesterite"), (re.compile(r"Sb2\(?S?e?"), "Sb2Se3"),
+             (re.compile(r"(?i)perovskite|Pb[IBC]|MAPb|FAPb|CsPb"), "perovskite")]
+
+
+def _acronym(words: str) -> str:
+    return "".join(w[0] for w in re.findall(r"[A-Za-z][A-Za-z\-]*", words) if w.lower() not in ("of", "and", "the")).upper()
+
+
+def _drop_synonym_paren(s: str, prefer_short: bool) -> str:
+    """'AZO (Al-doped ZnO)' -> 'AZO'; 'aluminum-doped zinc oxide (AZO)' -> 'AZO' (materials, prefer_short);
+    'pulsed electron deposition (PED)' -> 'pulsed electron deposition' (methods). Other brackets are kept."""
+    if not s:
+        return s
+    m = re.match(r"^\s*([^()]+?)\s*\(([^()]+)\)\s*(.*)$", s)
+    if not m:
+        return s
+    head, inner, tail = m.group(1), m.group(2), m.group(3)
+    hn, inn = re.sub(r"[\W_]+", "", head).upper(), re.sub(r"[\W_]+", "", inner).upper()
+    if 2 <= len(inn) <= 6 and inner.strip().isupper() and _acronym(head).startswith(inn[:2]) and len(head.split()) >= 2:
+        keep = inner.strip() if prefer_short else head.strip()            # "long words (ACR)"
+    elif 2 <= len(hn) <= 6 and (
+            (len(inner.split()) >= 2 and (_acronym(inner).startswith(hn[:2]) or hn in inn))
+            or re.fullmatch(r"(?i)[\w\s\-]*(doped|oxide|intrinsic|undoped|molybdenum|gold|silver|alumin(i)?um|copper|"
+                            r"nickel|titanium|carbon|tin)[\w\s\-]*", inner.strip())):
+        keep = head.strip()                                               # "ACR (long words)"
+    else:
+        return s
+    return (keep + (" " + tail if tail else "")).strip()
+
+
+def solar_normalize(state: dict, text: str) -> dict:
+    """Conventions of the solar template (README) that the model applies unevenly; generic, per paper:
+    device_role record->target; area defined by a mask -> aperture; architecture consistent with the absorber class
+    and the layer order; substrate_type rigid for glass; TCO windows of inorganic thin-film cells -> front_contact;
+    J-V spectrum/intensity from the paper's single stated condition; no synonym brackets in materials/methods."""
+    st = Counter()
+    text = text or ""
+    mats = {m.get("material_id"): (m.get("material_class") or "") for m in state.get("materials") or []}
+    layers_by_dev = defaultdict(list)
+    for l in state.get("layers") or []:
+        layers_by_dev[l.get("device_id")].append(l)
+    for ls in layers_by_dev.values():
+        ls.sort(key=lambda l: (l.get("layer_order") is None, _as_num(l.get("layer_order")) or 0))
+    glass = re.search(r"(?i)\bglass\b|soda[- ]lime|\bSLG\b", text) and not re.search(
+        r"(?i)flexible|polyimide|\bPET\b|\bPEN\b|metal foil|stainless[- ]steel foil", text)
+    for d in state.get("devices") or []:
+        if d.get("device_role") == "record":
+            d["device_role"] = "target"; st["device_role"] += 1
+        if d.get("area_definition") == "designated illumination" and re.search(r"(?i)\bmask|aperture", text):
+            d["area_definition"] = "aperture"; st["area_definition"] += 1
+        if not d.get("substrate_type") and glass:
+            d["substrate_type"] = "rigid"; st["substrate_type"] += 1
+        if not d.get("device_role"):  # the template has a role for every device; not control/record -> target
+            d["device_role"] = "target"; st["device_role"] += 1
+        ls = layers_by_dev.get(d.get("device_id")) or []
+        cls = mats.get(d.get("absorber_material_id")) or (next(iter(set(mats.values()))) if len(set(mats.values())) == 1 else "")
+        if not cls:
+            ab = " ".join(l.get("layer_material") or "" for l in ls if l.get("layer_function") == "absorber")
+            cls = next((c for rx, c in _CLASS_RX if rx.search(ab)), "")
+        funcs = [l.get("layer_function") for l in ls]
+        arch = d.get("architecture")
+        if cls in _INORGANIC:
+            for l in ls:
+                if l.get("layer_function") in ("interlayer", "ETL") and _TCO_RX.match(l.get("layer_material") or ""):
+                    l["layer_function"] = "front_contact"; st["layer_function"] += 1
+            funcs = [l.get("layer_function") for l in ls]
+            if funcs:
+                want = "substrate" if funcs[0] == "back_contact" else ("superstrate" if funcs[0] == "front_contact" else None)
+                if want and want != arch:
+                    d["architecture"] = want; st["architecture"] += 1
+        elif cls == "perovskite" and "absorber" in funcs:
+            k = funcs.index("absorber")
+            below = funcs[:k]
+            want = "n-i-p" if "ETL" in below and "HTL" not in below else ("p-i-n" if "HTL" in below and "ETL" not in below else None)
+            if want and arch != want:
+                d["architecture"] = want; st["architecture"] += 1
+    for l in state.get("layers") or []:
+        for f, short in (("layer_material", True), ("deposition_method", False)):
+            v = l.get(f)
+            if isinstance(v, str):
+                nv = _drop_synonym_paren(v, short)
+                if nv != v:
+                    l[f] = nv; st[f] += 1
+    # results from a J-V table: the paper's single J-V curve figure is also their source (template: source_figure);
+    # a table whose caption says "best/champion devices" (and not average) -> aggregation champion
+    flat = " ".join(text.split())
+    jv = _jv_figures(flat)
+    best = _best_tables(flat)
+    for r in state.get("results") or []:
+        if r.get("result_origin") != "primary" or not r.get("source_table") or r.get("metric_name") not in _JV_METRICS:
+            continue
+        tn = re.search(r"(\d+)", str(r.get("source_table")))
+        if not r.get("aggregation") and tn and tn.group(1) in best:
+            r["aggregation"] = "champion"; st["aggregation"] += 1
+        if not r.get("source_figure") and len(jv) == 1:
+            n, (lab, pan) = next(iter(jv.items()))
+            r["source_figure"] = ("Fig. " if lab.lower().startswith("fig.") else "Figure ") + n + pan
+            st["source_figure"] += 1
+    specs = {re.sub(r"\s+", "", m.group(0)).upper().replace("AM1.5GLOBAL", "AM1.5G")
+             for m in re.finditer(r"(?i)\bAM\s?1\.5\s?G\b|\bAM\s?1\.5\s?global", text)}
+    ints = {(m.group(1), re.sub(r"\s+", "", m.group(2)).replace("cm-2", "/cm2").replace("cm−2", "/cm2")
+             .replace("m-2", "/m2").replace("m−2", "/m2").replace("·", "").replace("//", "/"))
+            for m in re.finditer(r"(?<![\d.])(100|1000)\s*(mW\s*/?\s*cm[-−]?2|mW\s*cm[-−]2|W\s*/?\s*m[-−]?2|W\s*m[-−]2)", text)}
+    for ms in state.get("measurements") or []:
+        if ms.get("measurement_type") not in ("J-V", "MPP tracking"):
+            continue
+        if not ms.get("spectrum") and len(specs) == 1:
+            ms["spectrum"] = "AM1.5G"; st["spectrum"] += 1
+        if ms.get("light_intensity") in (None, "") and len(ints) == 1:
+            v, u = next(iter(ints))
+            ms["light_intensity"] = float(v)
+            ms["intensity_unit"] = "mW/cm2" if u.lower().startswith("mw") else "W/m2"
+            st["light_intensity"] += 1
+    return dict(st)
+
+
+SOLAR_NORMALIZE = os.environ.get("SOLAR_NORMALIZE", "1").strip() not in ("0", "off", "false", "no")
+_JV_METRICS = {"PCE", "Voc", "Jsc", "FF", "Rs", "Rsh"}
+_JV_CAP_RX = re.compile(r"(?i)\bJ\s*[–\-−]\s*V\b|\bI\s*[–\-−]\s*V\b|current[\s-]*(?:density)?\s*[–\-−]\s*voltage")
+
+
+def _captions(text: str, kind: str) -> dict:
+    lab = r"Fig\.|Figure" if kind == "fig" else r"Table"
+    out: dict = {}
+    for m in re.finditer(r"(?i)\b(" + lab + r")\s*(\d+)\s*[.:|]\s", text):
+        out.setdefault(m.group(2), []).append((m.group(1), text[m.end():m.end() + 260]))
+    return out
+
+
+def _jv_figures(text: str) -> dict:
+    """{figure number: (label word, panel letter)} for figures whose caption starts with J-V curves."""
+    hits = {}
+    for n, occ in _captions(text, "fig").items():
+        for lab, cap in occ:
+            mm = _JV_CAP_RX.search(cap[:160])
+            if mm:
+                pan = re.findall(r"(?:^|[\s;,(])\(?([a-h])\)\s", cap[:mm.start()])
+                hits[n] = (lab, pan[-1] if pan else "")
+                break
+    return hits
+
+
+def _best_tables(text: str) -> set:
+    return {n for n, occ in _captions(text, "table").items()
+            if any(re.search(r"(?i)\b(best|champion|highest[- ]efficiency|record)\b", cap[:200])
+                   and re.search(r"(?i)parameter|performance|characteristic|efficienc", cap[:200])
+                   and not re.search(r"(?i)\b(average|mean|median|statistic)", cap[:200]) for _, cap in occ)}
+
+
+def _as_num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def fix_result_origin(rows):
@@ -1851,6 +2013,12 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
 
     for k in TABLES:
         state.setdefault(k, [])
+    norm_stats = {}
+    if SOLAR_NORMALIZE:  # [faktura-patch] deterministic template conventions (see solar_normalize)
+        try:
+            norm_stats = solar_normalize(state, text)
+        except Exception as e:  # noqa: BLE001 — never lose the dataset because of a post-rule
+            norm_stats = {"error": f"{type(e).__name__}: {e}"[:200]}
     dataset = {k: state[k] for k in TABLES}
 
     out_path = Path(out) if out else src.with_name(src.stem + ".dataset.json")
@@ -1867,6 +2035,7 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             "steps": report,
             "failed_tables": failed,
             "counts": {k: len(v) for k, v in dataset.items()},
+            "solar_normalize": norm_stats,
         }
         meta_out.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 

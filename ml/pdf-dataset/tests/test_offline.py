@@ -292,3 +292,36 @@ def test_rag_small_tables_batched_without_reasoning(monkeypatch, tmp_path):
     assert ("results:prose", None) in rcalls                       # текст — с рассуждением
     pages = {r["source_table"]: r["source_page"] for r in res["dataset"]["results"]}
     assert pages == {"Table 1": 1, "Table 2": 2, "Table 3": 3}     # страницы — по меткам таблиц
+
+
+def test_solar_normalize_template_conventions():
+    st = {
+        "materials": [{"material_id": "M1", "material_class": "CIGS"}],
+        "devices": [{"device_id": "DV1", "absorber_material_id": "M1", "device_role": "record",
+                     "architecture": "n-i-p", "area_definition": "designated illumination", "substrate_type": None},
+                    {"device_id": "DV2", "absorber_material_id": "M1", "device_role": None}],
+        "layers": [{"device_id": "DV1", "layer_order": 1, "layer_function": "back_contact", "layer_material": "Mo (molybdenum)",
+                    "deposition_method": "DC magnetron sputtering"},
+                   {"device_id": "DV1", "layer_order": 2, "layer_function": "absorber", "layer_material": "CIGS",
+                    "deposition_method": "pulsed electron deposition (PED)"},
+                   {"device_id": "DV1", "layer_order": 3, "layer_function": "interlayer", "layer_material": "i-ZnO",
+                    "deposition_method": None},
+                   {"device_id": "DV1", "layer_order": 4, "layer_function": "ETL", "layer_material": "AZO (Al-doped ZnO)",
+                    "deposition_method": None}],
+        "measurements": [{"measurement_id": "MS1", "measurement_type": "J-V", "spectrum": None, "light_intensity": None}],
+        "results": [{"result_origin": "primary", "source_table": "Table 2", "metric_name": "PCE", "aggregation": None,
+                     "source_figure": None}],
+    }
+    text = ("Cells on soda-lime glass were measured under AM 1.5G, 100 mW/cm2 with a metal mask. "
+            "Figure 3. J–V curves of the best cells. Table 2. Photovoltaic parameters of the best devices.")
+    ed.solar_normalize(st, text)
+    d1, d2 = st["devices"]
+    assert (d1["device_role"], d2["device_role"]) == ("target", "target")
+    assert d1["architecture"] == "substrate" and d1["area_definition"] == "aperture" and d1["substrate_type"] == "rigid"
+    assert [l["layer_function"] for l in st["layers"]][2:] == ["front_contact", "front_contact"]
+    assert st["layers"][0]["layer_material"] == "Mo" and st["layers"][3]["layer_material"] == "AZO"
+    assert st["layers"][1]["deposition_method"] == "pulsed electron deposition"
+    ms = st["measurements"][0]
+    assert (ms["spectrum"], ms["light_intensity"], ms["intensity_unit"]) == ("AM1.5G", 100.0, "mW/cm2")
+    r = st["results"][0]
+    assert (r["aggregation"], r["source_figure"]) == ("champion", "Figure 3")
