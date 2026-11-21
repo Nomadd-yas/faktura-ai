@@ -37,7 +37,7 @@ from .errors import JSON_MEDIA_TYPE
 
 __all__ = [
     "JSON_MEDIA_TYPE", "PageParams", "IdempotencyContext", "get_context", "get_services", "get_uow", "request_uow",
-    "bearer_token", "optional_user", "current_user", "admin_user", "page_params", "make_page_params",
+    "bearer_token", "sse_user", "optional_user", "current_user", "admin_user", "page_params", "make_page_params",
     "page_response", "mutation_response", "stub_response", "idempotent", "remember_idempotent", "replay_response",
     "upload_rate_limit", "client_ip", "STATE_UOW", "STATE_USER", "DEFAULT_LIMIT", "MAX_LIMIT",
 ]
@@ -146,6 +146,19 @@ def current_user(request: Request) -> CurrentUser:
         return cached
     token = bearer_token(request)
     if token is None:
+        raise AppError("unauthorized", "Нужно войти")
+    user = _load_user(request, token)
+    get_context(request).rate_limiter.hit(f"user:{user.id}", now=auth.utcnow())
+    return user
+
+
+def sse_user(request: Request, access_token: str | None = None) -> CurrentUser:
+    """Как ``current_user``, но для SSE: если нет заголовка Bearer, токен берётся из ``?access_token=``
+    (EventSource не умеет заголовки). Подключать только к SSE-маршрутам; токен проверяется так же (подпись, срок)."""
+    if bearer_token(request) is not None:
+        return current_user(request)
+    token = (access_token or request.query_params.get("access_token") or "").strip()
+    if not token:
         raise AppError("unauthorized", "Нужно войти")
     user = _load_user(request, token)
     get_context(request).rate_limiter.hit(f"user:{user.id}", now=auth.utcnow())

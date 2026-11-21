@@ -209,7 +209,7 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
     { "id": "D003", "status": "queued", "progress": 0, "eta_seconds": 150, "pages": 17 } ] }
 ```
 
-Те же поля будет нести будущий SSE `/runs/{id}/events`.
+Те же поля несёт SSE `/runs/{id}/events` (§4e).
 
 ## 4c. Управление разбором и «Разобрать как…» (спека §7а.3, §7а.4)
 
@@ -267,6 +267,50 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 - `versions.model` — `model_version` статей набора (несколько — через «, »; `null`, пока нет разобранных статей). `versions.rules` — версия набора проверок (solar: `1.0.0`, rag: `rag-checks-1`), `versions.dictionary` — версия словаря нормализации (solar) или схемы rag.
 - В ZIP лежит этот же JSON и `PASSPORT.md` в том же виде, что рисует фронт (+ строка «Собран с версиями»). Раньше в ZIP был паспорт старого формата (`collection`, `tables`, `metrics`…): он заменён.
 - Содержимое областей (критерии, правила, нормализация) — файлы `backend/src/faktura/passport/data/{solar,rag}.json`; при изменении порогов правятся они, фронт подхватывает сам.
+
+## 4e. SSE: события разбора
+
+### `GET /runs/{id}/events` — `text/event-stream`
+Ход разбора без опроса. Заголовки ответа: `Cache-Control: no-cache`, `X-Accel-Buffering: no`. Только владелец разбора; чужой или неизвестный `{id}` — `404 not_found` обычным JSON `{error:{…}}` (до начала потока).
+
+**Авторизация.** `Authorization: Bearer <access>` как везде. Браузерный `EventSource` не умеет заголовки, поэтому здесь (и только здесь) принимается `?access_token=<access>`; если есть и заголовок, берётся он. Токен проверяется целиком (подпись, срок, блокировка), на остальных маршрутах параметр игнорируется (`401`). Токен проверяется один раз при подключении; access живёт 15 мин, поток им не ограничен. Путь в логах пишется без query. Токен в URL может попасть в логи прокси: nginx для этого маршрута лучше не логировать query.
+
+**События** (`event:` / `data:` JSON, `id:` растёт в пределах соединения; `Last-Event-ID` не используется, после переподключения всегда приходит свежий снимок):
+
+| event | когда | data |
+|---|---|---|
+| `file.progress` | снимок при подключении (по одному на каждый файл), затем при каждом изменении файла | поля файла как в `GET /runs/{id}`: `id, name, status, status_label, stage, progress, eta_seconds, pages, started_at, has_data, results, issues, reason` |
+| `file.done` | файл стал конечным (`done`, `out`, `nodata`, `ocr`, `error`); в снимке не шлётся | то же |
+| `run.progress` | снимок при подключении, затем при каждом изменении | `id, status, progress, eta_seconds, started_at, updated_at, counts, results, issues` — как у Run |
+| `run.done` | разбор в конечном статусе (`done`, `error`; в т.ч. остановленный) | то же, что `run.progress`; после него поток закрывается |
+
+Значения берутся теми же функциями, что `GET /runs/{id}`, поэтому совпадают с ним в тот же момент (прогресс плавно растёт внутри этапа, поэтому пока разбор идёт, `file.progress`/`run.progress` приходят примерно раз в 2 с — только изменившиеся). Каждые ~15 с без событий шлётся комментарий `: ping`. Если разбор уже завершён, придёт снимок и сразу `run.done`.
+
+```
+id: 1
+event: file.progress
+data: {"id": "D001", "status": "running", "stage": "Извлечение", "progress": 38, "eta_seconds": 45, "pages": 12, "started_at": "2026-11-21T10:02:11Z", …}
+
+id: 2
+event: file.progress
+data: {"id": "D002", "status": "queued", "stage": null, "progress": 0, "eta_seconds": 150, "pages": 17, "started_at": null, …}
+
+id: 3
+event: run.progress
+data: {"id": "run_7", "status": "running", "progress": 43, "eta_seconds": 370, "started_at": "2026-11-21T10:02:11Z", "counts": {…}, …}
+
+: ping
+
+id: 4
+event: file.done
+data: {"id": "D001", "status": "done", "progress": 100, "eta_seconds": null, …}
+
+id: 7
+event: run.done
+data: {"id": "run_7", "status": "done", "progress": 100, "eta_seconds": null, …}
+```
+
+Клиент: `new EventSource('/api/v1/runs/run_7/events?access_token=' + token)`; на `run.done` вызвать `close()` (иначе браузер переподключится).
 
 ## 5. Область RAG (`domain=rag`)
 

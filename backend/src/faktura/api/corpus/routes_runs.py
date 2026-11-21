@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ...domain.entities import CorpusFileStatus, CurrentUser, RunStatus
 from ...domain.errors import AppError
@@ -20,8 +20,9 @@ from ...domain.services import Services
 from ...domain.registry import DOMAINS, get_domain
 from ...pdfio.inputs import CollectResult, ZipLimits, collect_inputs
 from ...storage import decode_cursor, encode_cursor
-from ..base.deps import JSON_MEDIA_TYPE, current_user, get_services, upload_rate_limit
+from ..base.deps import JSON_MEDIA_TYPE, current_user, get_services, sse_user, upload_rate_limit
 from .passports import run_passport
+from .run_sse import HEADERS as SSE_HEADERS, run_events, snapshot
 from .views import (DOMAIN, CORPUS_KIND, RunData, corpus_id_of, default_title, get_corpus, run_id_of, run_summary,
                     run_view, user_corpora)
 
@@ -206,6 +207,18 @@ def list_runs(limit: int = Query(20, ge=1, le=200), cursor: str | None = None, f
 def get_run(run_id: str, user: CurrentUser = Depends(current_user), services: Services = Depends(get_services)):
     with services.db.uow() as uow:
         return run_view(uow, get_corpus(uow, user, run_id), cap=_cap(services))
+
+
+@router.get("/runs/{run_id}/events", summary="SSE: события разбора")
+async def run_events_stream(run_id: str, request: Request, user: CurrentUser = Depends(sse_user),
+                            services: Services = Depends(get_services)):
+    """text/event-stream: file.progress, file.done, run.progress, run.done (CORE_API §4e). Токен - Bearer
+    или ?access_token=. Снимок готовится до ответа, поэтому чужой/неизвестный разбор - обычный 404."""
+    import anyio  # noqa: PLC0415
+    cap = _cap(services)
+    first = await anyio.to_thread.run_sync(snapshot, services, user, run_id, cap)
+    return StreamingResponse(run_events(request, services, user, run_id, first, cap),
+                             media_type="text/event-stream", headers=SSE_HEADERS)
 
 
 @router.get("/runs/{run_id}/summary", summary="Сводка разбора")
