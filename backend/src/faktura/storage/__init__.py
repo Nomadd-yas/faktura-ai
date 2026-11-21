@@ -9,6 +9,7 @@ from ._types import DEFAULT_WORKSPACE_ID, GoldSet, RefreshSession, StoredUser, S
 from .cursor import decode_cursor, encode_cursor
 from .db import Database, UnitOfWork, seed_admin
 from .files import LocalFileStore, S3FileStore, build_file_store, normalize_key
+from . import review_tables as _review_tables  # noqa: F401  v2: run_reviews / run_issue_states (create_all)
 
 __all__ = ["Database", "UnitOfWork", "seed_admin", "LocalFileStore", "S3FileStore", "build_file_store",
            "normalize_key", "encode_cursor", "decode_cursor", "DEFAULT_WORKSPACE_ID", "GoldSet", "RefreshSession",

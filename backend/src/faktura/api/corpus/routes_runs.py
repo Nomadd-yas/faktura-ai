@@ -289,7 +289,8 @@ def submission_zip(run_id: str, partial: bool = False, check: bool = False,
             if f.storage_key:
                 pdf_keys.append((f.publication_id, f.storage_key))
             any_scan = any_scan or bool(f.is_scan)
-            for t, rows in uow.sub.paper_tables(paper.id, spec.name).items():
+            from ...review.runs_v2 import export_paper_tables  # v2: правки и состояния замечаний (§9)
+            for t, rows in export_paper_tables(uow, corpus.id, spec.name, paper.id).items():
                 tables[t].extend(rows)
         title = corpus.name
         passport = run_passport(services, d)
