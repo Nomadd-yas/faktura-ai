@@ -2,7 +2,7 @@
 # [faktura] ПОЛНЫЙ конфиг = стандартный config.yaml glmocr 0.1.5 + наши правки. Без label_task_mapping
 # glmocr распознаёт таблицы как текст (пересказ вместо таблицы) — поэтому стандартные секции нужны целиком.
 # Правки: ocr_api -> vLLM GLM-OCR на хосте (host.docker.internal:8123); layout на CPU по 1 странице (память);
-# max_workers 12 (потоки OCR = HTTP-запросы к vLLM), очереди короче.
+# max_workers 8 (потоки OCR = HTTP-запросы к vLLM), очереди короче.
 
 logging:
   level: INFO
@@ -50,7 +50,7 @@ pipeline:
     - 503
     - 504
     connection_pool_size: 128
-  max_workers: 12
+  max_workers: 8
   page_maxsize: 8
   region_maxsize: 200
   page_loader:
