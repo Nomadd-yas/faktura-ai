@@ -1,6 +1,10 @@
 # glmocr для сервиса ml (прототип ML-1, ml/pdf-dataset) в compose: монтируется поверх /app/glmocr.config.yaml.
 # GLM-OCR — vLLM на хосте сервера (:8123); из контейнера хост виден как host.docker.internal (extra_hosts: host-gateway).
 pipeline:
+  # память: сервер 9.6 ГБ, из них ~4.6 ГБ у vLLM — параллелизм glmocr урезан (по умолчанию 16 потоков, пачки по 8)
+  max_workers: 4
+  page_maxsize: 8
+  region_maxsize: 200
   maas:
     enabled: false
   ocr_api:
@@ -14,6 +18,8 @@ pipeline:
   layout:
     model_dir: PaddlePaddle/PP-DocLayoutV3_safetensors
     device: cpu
+    batch_size: 1
+    workers: 1
 
 result_formatter:
   output_format: both

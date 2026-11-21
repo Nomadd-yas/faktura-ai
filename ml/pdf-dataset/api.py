@@ -35,6 +35,30 @@ OUT_DIR = Path(os.environ.get("OUT_DIR", "/out"))
 _PIPELINE_LOCK = threading.Lock()
 
 
+def _child_run(pdf_path, out_dir, pub_id, no_strip):
+    """[faktura-patch] Выполняется в ОТДЕЛЬНОМ процессе: torch/glmocr на CPU не отдают память системе,
+    поэтому после каждой статьи процесс завершается и память освобождается целиком.
+    Исключения возвращаются словарём (PipelineError не всегда сериализуется pickle)."""
+    try:
+        return {"result": run_pipeline(pdf_path, out_dir=out_dir, publication_id=pub_id, no_strip=no_strip)}
+    except PipelineError as e:
+        return {"perr": {"code": e.code, "message": e.message, "retryable": e.retryable, "status": e.status}}
+    except Exception as e:  # noqa: BLE001
+        return {"err": f"{type(e).__name__}: {e}"}
+
+
+def _run_isolated(pdf_path, out_dir, pub_id, no_strip):
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+    with ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as ex:
+        try:
+            return ex.submit(_child_run, str(pdf_path), str(out_dir), pub_id, no_strip).result()
+        except BrokenProcessPool:  # процесс убит (OOM по лимиту контейнера)
+            return {"perr": {"code": "ml_error", "retryable": False, "status": 500,
+                             "message": "разбор прерван: процесс извлечения завершён (вероятно, не хватило памяти)"}}
+
+
 def _error(status, code, message, *, retryable=False, headers=None):
     """[faktura-patch] Единый формат ошибки; detail = message — для совместимости со старыми клиентами."""
     return JSONResponse(status_code=status, headers=headers,
@@ -82,15 +106,16 @@ def extract_pdf(file: UploadFile = File(...),
 
     try:
         with _PIPELINE_LOCK:
-            result = run_pipeline(pdf_path, out_dir=out_dir,
-                                  publication_id=pub_id, no_strip=no_strip)
-    except PipelineError as e:
-        headers = {"Retry-After": "60"} if e.code == "ocr_unavailable" else None
-        return _error(e.status, e.code, e.message, retryable=e.retryable, headers=headers)
-    except (FileNotFoundError, RuntimeError) as e:
-        return _error(500, "ml_error", str(e))
-    except Exception as e:  # noqa: BLE001 - любой другой сбой -> 500 ml_error
+            out = _run_isolated(pdf_path, out_dir, pub_id, no_strip)
+    except Exception as e:  # noqa: BLE001 - сбой запуска процесса -> 500 ml_error
         return _error(500, "ml_error", f"{type(e).__name__}: {e}")
+    if "perr" in out:
+        e = out["perr"]
+        headers = {"Retry-After": "60"} if e["code"] == "ocr_unavailable" else None
+        return _error(e["status"], e["code"], e["message"], retryable=e["retryable"], headers=headers)
+    if "err" in out:
+        return _error(500, "ml_error", out["err"])
+    result = out["result"]
 
     return {
         "ok": result["ok"],

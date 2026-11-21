@@ -47,6 +47,9 @@ services:
       ROUTERAI_MODEL: ${ROUTERAI_MODEL:-deepseek/deepseek-v4.1-flash-1017}
       ROUTERAI_PROVIDER: ${ROUTERAI_PROVIDER:-wafer}
     command: ["serve"]
+    # лимит памяти: при переполнении убивается только ml, а не весь сервер (vLLM, api, postgres)
+    mem_limit: 3500m
+    memswap_limit: 3500m
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - ./ml/glmocr.config.yaml:/app/glmocr.config.yaml:ro

@@ -212,6 +212,8 @@ def _is_connection_error(exc) -> bool:
         if names & {"ConnectionError", "ConnectError", "ConnectTimeout", "ConnectionRefusedError",
                     "NewConnectionError", "MaxRetryError"}:
             return True
+        if "Failed to connect to API server" in str(exc):  # glmocr: TimeoutError при недоступном OCR
+            return True
         exc = exc.__cause__ or exc.__context__
         seen += 1
     return False
