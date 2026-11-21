@@ -3,7 +3,7 @@
 Форма ответа - как в контракте, данные пустые или нули, заголовок ``X-Faktura-Stub: 1``. Изменяющие заглушки
 ничего не сохраняют (отдают переданные поля, ``id`` и ``action_id``). Объекты по id не находятся -> 404 (тоже со
 ``X-Faktura-Stub: 1``). Группы: ``/me/stats``, ``/collections/{id}/stats``, ``/views*``, ``/graph*``, ``/entities/*``,
-``/search``, ``/projects*``, ``/chats*``, ``/turns*``, ``POST/DELETE /dictionary/*``.
+``/search``, ``/projects*``, ``/chats*``, ``/turns*``, ``POST /dictionary/units`` (синонимы словаря - routes_dictionary.py).
 """
 from __future__ import annotations
 
@@ -309,94 +309,6 @@ def turn_update(turn_id: str, request: Request, user: CurrentUser = Depends(curr
 
 
 # --- правка словаря ----------------------------------------------------------------------------
-
-def _builtin_param_synonyms(request: Request, collection: str, key: str) -> set[str]:
-    """Встроенные написания параметра: ключ, подпись, metric_name, синонимы профиля и словаря нормализатора."""
-    p = get_param(collection, key)
-    if p is None:
-        return set()
-    names: set[str] = {p["key"], p["label"]}
-    metric = (p.get("target") or {}).get("metric_name")
-    if metric:
-        names.add(metric)
-        try:
-            from ...domain.profile import builtin_solar_profile  # noqa: PLC0415
-
-            for f in builtin_solar_profile().fields:
-                if f.key == metric:
-                    names.update(f.synonyms)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            snap = get_services(request).normalizer.dictionary()
-            for m in getattr(snap, "metrics", []) or []:
-                if m.get("metric_name") == metric:
-                    names.update(m.get("synonyms") or [])
-        except Exception:  # noqa: BLE001 - у нормализатора может не быть словаря
-            pass
-    return {n.casefold() for n in names if n}
-
-
-def _synonym_text(data: dict[str, Any]) -> str:
-    text = data.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise AppError("validation_error", "Введите написание", field="text")
-    text = text.strip()
-    if len(text) > 200:
-        raise AppError("validation_error", "Написание длиннее 200 символов", field="text")
-    return text
-
-
-@router.post("/dictionary/params/{collection}/{param}/synonyms", tags=["stub"],
-             summary="Добавить синоним параметра (P2, заглушка)")
-async def add_param_synonym(collection: str, param: str, request: Request,
-                            user: CurrentUser = Depends(current_user)) -> JSONResponse:
-    if get_param(collection, param) is None:
-        return stub_not_found(request, "Параметр не найден")
-    text = _synonym_text(await read_json_object(request))
-    coll = get_collection(collection) or {}
-    taken = set().union(*(_builtin_param_synonyms(request, collection, p["key"]) for p in coll.get("params", [])))
-    if text.casefold() in taken:
-        raise AppError("synonym_exists", field="text")
-    synonym = {"id": new_id("syn"), "text": text, "custom": True, "collection": collection, "param": param.lower(),
-               "created_at": _now_iso()}
-    return stub_mutation({"synonym": synonym, "renormalize": {"papers": 0, "job_id": None}})
-
-
-@router.delete("/dictionary/params/{collection}/{param}/synonyms/{text}", tags=["stub"],
-               summary="Удалить свой синоним параметра (P2, заглушка)")
-def delete_param_synonym(collection: str, param: str, text: str, request: Request,
-                         user: CurrentUser = Depends(current_user)) -> JSONResponse:
-    if get_param(collection, param) is None:
-        return stub_not_found(request, "Параметр не найден")
-    if text.strip().casefold() in _builtin_param_synonyms(request, collection, param):
-        return error_response("forbidden", "Встроенные написания удалить нельзя", request=request,
-                              headers=dict(STUB_HEADER))
-    return stub_not_found(request, "Такого написания нет в словаре")
-
-
-@router.post("/dictionary/entries/{entry_id}/synonyms", tags=["stub"],
-             summary="Добавить синоним материала или условия (P2, заглушка)")
-async def add_entry_synonym(entry_id: str, request: Request,
-                            user: CurrentUser = Depends(current_user)) -> JSONResponse:
-    text = _synonym_text(await read_json_object(request))
-    entry = _material_entry(request, entry_id)
-    if entry is not None and text.casefold() in {s.casefold() for s in entry["synonyms"]}:
-        raise AppError("synonym_exists", field="text")
-    synonym = {"id": new_id("syn"), "text": text, "custom": True, "entry_id": entry_id, "created_at": _now_iso()}
-    return stub_mutation({"synonym": synonym, "renormalize": {"papers": 0, "job_id": None}})
-
-
-@router.delete("/dictionary/entries/{entry_id}/synonyms/{text}", tags=["stub"],
-               summary="Удалить свой синоним материала или условия (P2, заглушка)")
-def delete_entry_synonym(entry_id: str, text: str, request: Request,
-                         user: CurrentUser = Depends(current_user)) -> JSONResponse:
-    entry = _material_entry(request, entry_id)
-    if entry is not None and text.strip().casefold() in {s.casefold() for s in entry["synonyms"]}:
-        return error_response("forbidden", "Встроенные написания удалить нельзя", request=request,
-                              headers=dict(STUB_HEADER))
-    return stub_not_found(request, "Такого написания нет в словаре")
-
 
 @router.post("/dictionary/units", tags=["stub"], summary="Своя единица (появится)")
 async def add_unit(request: Request, user: CurrentUser = Depends(current_user)) -> JSONResponse:

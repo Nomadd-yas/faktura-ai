@@ -22,10 +22,8 @@ STUBS = [
       "open_issues", "action_id"}, None),
     ("chats_list", "GET", "/chats", None, 200, {"data", "total", "next_cursor"},
      {"data": [], "total": 0, "next_cursor": None}),
-    ("dict_param_synonym_add", "POST", "/dictionary/params/solar/voc/synonyms", {"text": "U_oc"}, 201,
-     {"synonym", "renormalize", "action_id"}, None),
-    ("dict_entry_synonym_add", "POST", "/dictionary/entries/mapbi/synonyms", {"text": "CH3NH3PbI3"}, 201,
-     {"synonym", "renormalize", "action_id"}, None),
+    ("dict_unit_add", "POST", "/dictionary/units", {"param": "voc", "unit": "uV", "factor": 0.000001}, 201,
+     {"unit", "renormalize", "action_id"}, None),  # синонимы словаря - настоящие, см. tests/api_core/test_dictionary.py
 ]
 STUB_IDS = [s[0] for s in STUBS]
 
@@ -125,20 +123,6 @@ class TestStubDetails:
     def test_search_echoes_query(self, client, user_token, h):
         r = client.get(h.url("/search"), params={"q": "КПД выше 18"}, headers=h.bearer(user_token))
         assert r.json()["q"] == "КПД выше 18" and r.json()["groups"] == []
-
-    def test_dictionary_synonym_add_renormalize_is_empty(self, client, user_token, h):
-        r = client.post(h.url("/dictionary/params/solar/voc/synonyms"), json={"text": "U_oc"},
-                        headers=h.bearer(user_token))
-        assert r.json()["renormalize"] == {"papers": 0, "job_id": None}
-        assert r.json()["synonym"]["text"] == "U_oc"
-
-    def test_dictionary_synonym_empty_text_400(self, client, user_token, h):
-        r = client.post(h.url("/dictionary/params/solar/voc/synonyms"), json={"text": ""}, headers=h.bearer(user_token))
-        h.assert_error(r, 400, "validation_error", field="text")
-
-    def test_dictionary_delete_builtin_forbidden(self, client, user_token, h):
-        r = client.delete(h.url("/dictionary/params/solar/voc/synonyms/Voc"), headers=h.bearer(user_token))
-        h.assert_error(r, 403, "forbidden")
 
 
 class TestChatAskStub:

@@ -91,7 +91,7 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     Эндпоинты base: GET /health; POST /auth/login|refresh|logout, GET /auth/me; GET/PATCH /me;
     GET /collections; GET/POST /admin/users, PATCH /admin/users/{id}; заглушки P2 (X-Faktura-Stub: 1)."""
     from .. import API_PREFIX  # noqa: PLC0415
-    from . import routes_auth, routes_stubs, routes_users  # noqa: PLC0415
+    from . import routes_auth, routes_dictionary, routes_stubs, routes_users  # noqa: PLC0415
 
     settings = settings if settings is not None else _config.get_settings()
     app = FastAPI(
@@ -108,7 +108,7 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     app.add_middleware(CorsMiddleware, origins=list(settings.cors_origins or []))
     app.add_middleware(RequestIdMiddleware)
 
-    for r in (routes_users.router, routes_auth.router, routes_stubs.router):
+    for r in (routes_users.router, routes_auth.router, routes_dictionary.router, routes_stubs.router):
         add_router(app, r, API_PREFIX)
     mount_router_modules(app, API_PREFIX)
     log.debug("Приложение собрано (JSON %s)", JSON_MEDIA_TYPE)

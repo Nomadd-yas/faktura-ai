@@ -28,6 +28,7 @@ from ..domain.errors import AppError, ExtractError
 from ..domain.extraction import ExtractRequest, GenericOutcome
 from ..domain.registry import DomainSpec, get_domain
 from ..ml.validate import invalid_error
+from ..norm.user_dict import _collapse, rag_metric_map, version_suffix
 from ._pdf import local_pdf
 from .processor import file_ml_meta
 
@@ -260,6 +261,10 @@ class GenericProcessor:
         except AppError as e:
             return p._fail(paper, e.code, e.message)
 
+    def _user_synonyms(self, workspace_id: str) -> list:
+        with self.parent.services.db.uow() as uow:
+            return uow.synonyms.list(workspace_id)
+
     def _process_pdf(self, paper, file, pdf: Path, domain: str, model_version: str,
                      on_stage: Callable[[str, int], None] | None, abort: threading.Event | None) -> ProcessOutcome:
         from ..pdfio.quotes import VariantQuoteIndex
@@ -283,6 +288,13 @@ class GenericProcessor:
         if not isinstance(out, GenericOutcome):
             raise ExtractError("ml_schema_mismatch", "Сервис разбора вернул ответ другой области")
         stage("Нормализация", 60)
+        user_syn = self._user_synonyms(paper.workspace_id)
+        names = rag_metric_map(user_syn)
+        if names:  # свои синонимы названий показателей рабочей области (CORE_API §4h)
+            for r in out.tables.get("results", []):
+                hit = names.get(_collapse(str(r.get("metric_name") or "")))
+                if hit:
+                    r["metric_name"] = hit
         tables, warns = validate_tables(spec, out.tables, paper.publication_id)
         ml_meta = file_ml_meta(out, tables["publications"][0].get("in_scope") != "false")
         out.tables, out.raw = {}, {}  # строки дальше живут только в `tables` (D014: ~28k строк результатов)
@@ -301,6 +313,10 @@ class GenericProcessor:
         n_res, n_iss = len(tables["results"]), len(tables["issues"])
         mv = out.model_version
         versions = {"model": str(mv), "from_cache": "true" if out.from_cache else "false"}
+        if any(s.collection == "rag" for s in user_syn):
+            from ..passport.run_passport import _rag_dictionary_version  # noqa: PLC0415
+
+            versions["dictionary"] = f"{_rag_dictionary_version() or 'rag'}{version_suffix([s for s in user_syn if s.collection == 'rag'])}"
         stats = PaperStats(open_issues=n_iss, facts_count=n_res)
         with s.db.uow() as uow:
             uow.sub.replace(paper.id, paper.corpus_id, domain, tables, quote_found=quotes_r,
