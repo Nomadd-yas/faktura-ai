@@ -9,7 +9,9 @@
                           (без учёта пробелов и регистра); числа из текста страницы допускаются, как у chunk;
   [[calc:c1]]             результат `calc` в этом ответе: число в тексте должно совпасть со значением с точностью округления;
   [[issue:D005/I03]]      замечание;
-  [[row:devices/D001/DEV1]]  значение из другой таблицы (число должно стоять в ячейке строки).
+  [[row:devices/D001/DEV1]]  значение из другой таблицы (число должно стоять в ячейке строки);
+  [[src:S1]]              внешняя работа (OpenAlex), выданная `external_sources` в этом ответе; из чисел допустимы только
+                          год и число цитирований этой работы (и числа из её названия).
 Ответ режется на пункты (строки и предложения). Пункт с нарушением отбрасывается (`drop`) или помечается (`mark`).
 """
 from __future__ import annotations
@@ -23,7 +25,7 @@ from ..ask import solar
 from ..ask.builder import to_float
 from .tools import FACT_NUM_FIELDS, Toolbox
 
-MARKER = re.compile(r"\[\[\s*(fact|agg|chunk|page|calc|issue|row)\s*:\s*([^\]|]+?)\s*(?:\|([^\]]*))?\]\]")
+MARKER = re.compile(r"\[\[\s*(fact|agg|chunk|page|calc|issue|row|src)\s*:\s*([^\]|]+?)\s*(?:\|([^\]]*))?\]\]")
 NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
 SENT = re.compile(r"(?<=[.!?;])\s+(?=[A-ZА-ЯЁ«\"(—-])")
 FOOT = re.compile(r"\[\d+\]")
@@ -47,6 +49,7 @@ class Verified:
     used_aggs: list[str] = field(default_factory=list)
     used_calc_facts: list[str] = field(default_factory=list)
     unverified: list[str] = field(default_factory=list)
+    used_srcs: list[str] = field(default_factory=list)
 
     @property
     def too_many_dropped(self) -> bool:
@@ -261,6 +264,9 @@ class Verifier:
         if kind == "agg":
             a = tb.aggs.get(ref)
             return (None, a) if a else (f"unknown agg {ref}", None)
+        if kind == "src":
+            s = tb.sources.get(ref)
+            return (None, s) if s else (f"unknown src {ref}", None)
         if kind == "calc":
             c = tb.calcs.get(ref)
             return (None, c) if c else (f"unknown calc {ref}", None)
@@ -318,6 +324,9 @@ class Verifier:
             xs = [obj["value"]] + [i.get("value") for i in (obj.get("inputs") or {}).values() if isinstance(i, dict)]
             xs += _nums_in(obj.get("expr") or "")
             return any(x is not None and _value_match(w, d, pct, x, "") for x in xs)
+        if kind == "src":  # метаданные работы: год, число цитирований, числа из названия
+            xs = [float(obj[k]) for k in ("year", "cited_by_count") if isinstance(obj.get(k), (int, float))]
+            return any(abs(x - w) < 1e-9 for x in xs + _nums_in(obj.get("title") or ""))
         if kind in ("chunk", "page"):
             return any(abs(x - w) < 1e-9 for x in _nums_in((quote or "") + " " + obj["text"]))
         cells = " ".join(str(x) for x in obj[1].values())
@@ -433,6 +442,11 @@ class Verifier:
             v.used_issues.append(ref)
             return {**base, "pid": p.pid, "issue_id": r.get("issue_id"), "page": _page(r.get("source_page")),
                     "fragment": (r.get("source_fragment") or r.get("description") or "")[:300]}
+        if kind == "src":
+            if ref not in v.used_srcs:
+                v.used_srcs.append(ref)
+            return {**base, "src_id": ref, "openalex_id": obj["openalex_id"], "url": obj.get("url"),
+                    "fragment": ((obj.get("title") or "") + (f" ({obj['year']})" if obj.get("year") else ""))[:300]}
         if kind == "agg":
             v.used_aggs.append(ref)
             pids = {i.split("/", 1)[0] for i in obj["ids"]}

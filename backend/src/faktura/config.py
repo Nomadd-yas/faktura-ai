@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     agent_mode: Literal["auto", "off"] = "auto"
     agent_timeout_s: float = 40
     agent_max_tool_calls: int = 12
+    # внешние источники агента (OpenAlex): ключ и mailto необязательны, ключ кладёт админ в .env сервера
+    openalex_enabled: bool = True
+    openalex_key: str | None = None
+    openalex_mailto: str | None = None
     rag_unverified: Literal["drop", "mark"] = Field("drop", validation_alias=AliasChoices("RAG_UNVERIFIED", "FAKTURA_RAG_UNVERIFIED"))
     cache_dir: Path | None = None
     mock_issues: Literal["all", "ml_only"] = "all"

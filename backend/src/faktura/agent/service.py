@@ -12,6 +12,7 @@ from ..ask.context import RunCtx, load_ctx
 from ..ask.execute import suggestions
 from ..ask.service import answer_question
 from ..domain.entities import CorpusFileStatus
+from ..sources.openalex import build_client as build_sources_client
 from . import MAX_TOOL_CALLS, TOTAL_TIMEOUT_S, store
 from .loop import Outcome, run_loop
 from .prompt import history_messages, system_prompt
@@ -127,6 +128,19 @@ def _llm(actx) -> Any:
     return actx.llm_client
 
 
+def _sources(actx) -> Any:
+    """Клиент OpenAlex: из настроек один раз; None - отключён. Тесты подставляют свой в `actx.sources_client`."""
+    if isinstance(actx.sources_client, str):
+        actx.sources_client = build_sources_client(actx.settings)
+    return actx.sources_client
+
+
+def answer_sources(tb: Toolbox, v: Verified) -> list[dict]:
+    """Работы ответа: процитированные [[src:Sn]] по порядку первого упоминания; нет ссылок - всё, что нашёл инструмент."""
+    ids = v.used_srcs or list(tb.sources)
+    return [{"id": i, **tb.sources[i]} for i in ids][:20]
+
+
 def _ask_client(actx) -> Any:
     if isinstance(actx.ask_client, str):
         actx.ask_client = ask_client_mod.build_ask_client(actx.settings)
@@ -160,7 +174,7 @@ def run_agent(actx, corpus_id: str, question: str, *, pid: str | None = None, on
     answer: dict | None = None
     status = "done"
     dropped = 0
-    tb = Toolbox(run, services, corpus_id)
+    tb = Toolbox(run, services, corpus_id, _sources(actx))
     llm = _llm(actx)
     if not run.has_data:
         fallback = "nodata"
@@ -192,7 +206,7 @@ def run_agent(actx, corpus_id: str, question: str, *, pid: str | None = None, on
                 fallback = "verification"
             else:
                 answer = {"text": v.text, "cards": _cards(run, tb, v), "cites": v.cites,
-                          "suggestions": fresh_suggestions(run, asked)}
+                          "suggestions": fresh_suggestions(run, asked), "sources": answer_sources(tb, v)}
                 if v.unverified:
                     answer["unverified"] = v.unverified
     meta["planner"] = "agent"
@@ -210,7 +224,7 @@ def run_agent(actx, corpus_id: str, question: str, *, pid: str | None = None, on
         if fallback in NOTES:
             text += "\n\n" + NOTES[fallback]
         answer = {"text": text, "cards": base["cards"], "cites": _spec_cites(run, base["cites"]),
-                  "suggestions": fresh_suggestions(run, asked)}
+                  "suggestions": fresh_suggestions(run, asked), "sources": []}
         if fallback in NOTES:
             answer["fallback"] = fallback
     if answer is not None and partial:
@@ -250,6 +264,8 @@ def _cite_label(c: dict) -> str:
     pid, page = c.get("pid") or "", c.get("page")
     pg = f"стр. {page}" if page else ""
     frag = (c.get("fragment") or "").strip()
+    if c.get("src_id"):
+        return "Источник: " + frag
     if c.get("calc_id"):
         return "Расчёт: " + frag
     if c.get("agg_id"):
@@ -282,7 +298,7 @@ def ask_cite(c: dict, run: RunCtx) -> dict:
         out["page"] = str(c["page"])
     if run.domain == "rag":
         out["domain"] = "rag"
-    for k in ("fragment", "chunk_id", "calc_id", "expr"):
+    for k in ("fragment", "chunk_id", "calc_id", "expr", "src_id", "openalex_id", "url"):
         if c.get(k):
             out[k] = c[k]
     return {k: v for k, v in out.items() if v is not None}
@@ -310,7 +326,7 @@ def ask_via_agent(actx, corpus_id: str, question: str, pid: str | None, only: se
         return None
     out = {"text": a["text"], "cards": [ask_card(c) for c in a.get("cards") or []],
            "cites": [ask_cite(c, run) for c in a.get("cites") or []], "suggestions": a.get("suggestions") or [],
-           "meta": a["meta"]}
+           "sources": a.get("sources") or [], "meta": a["meta"]}
     for k in ("clarify", "fallback", "partial", "unverified"):
         if a.get(k):
             out[k] = a[k]
@@ -319,12 +335,14 @@ def ask_via_agent(actx, corpus_id: str, question: str, pid: str | None, only: se
 
 
 def emit_answer(emit: Callable[[str, dict], None], mid: str, answer: dict, clarify: bool = False) -> None:
-    """text -> card -> cite -> suggestions -> done (порядок событий §15.9)."""
+    """text -> card -> cite -> [sources] -> suggestions -> done (порядок событий §15.9)."""
     for line in answer["text"].splitlines(keepends=True):
         emit("text", {"text": line})
     for c in answer.get("cards") or []:
         emit("card", {"card": c})
     for c in answer.get("cites") or []:
         emit("cite", {"cite": c})
+    if answer.get("sources"):  # внешние работы (OpenAlex): фронт рисует блок и ведёт на страницу «Источники»
+        emit("sources", {"sources": answer["sources"]})
     emit("suggestions", {"suggestions": answer.get("suggestions") or []})
     emit("done", {"message_id": mid, "status": "done", "answer": answer, **({"clarify": True} if clarify else {})})

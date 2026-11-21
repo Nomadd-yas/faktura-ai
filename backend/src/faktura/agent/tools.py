@@ -17,6 +17,7 @@ from ..ask.builder import to_float
 from ..ask.context import PaperData, RunCtx
 from ..domain.registry import get_domain
 from . import MAX_ROWS
+from ..sources.openalex import MAX_N as SRC_MAX_N, SourcesError, normalize as normalize_work
 from .calc import MAX_NAMES, NAME, CalcError, rules_for, safe_eval
 
 OPS = ("=", "!=", ">", ">=", "<", "<=", "in", "contains", "is_null")
@@ -79,8 +80,11 @@ def _r(v: float) -> float:
 
 
 class Toolbox:
-    def __init__(self, ctx: RunCtx, services: Any = None, corpus_id: str | None = None) -> None:
+    def __init__(self, ctx: RunCtx, services: Any = None, corpus_id: str | None = None, sources: Any = None) -> None:
         self.ctx, self.services, self.corpus_id = ctx, services, corpus_id
+        self.sources_client = sources  # клиент OpenAlex или None (инструмент external_sources не предлагается)
+        self.sources: dict[str, dict] = {}  # S1..Sn этого ответа -> нормализованная работа
+        self._src_by_oa: dict[str, str] = {}
         self.spec = get_domain(ctx.domain)
         self.aggs: dict[str, dict] = {}
         self.chunks: dict[str, dict] = {}
@@ -524,6 +528,54 @@ class Toolbox:
         self.fixes = out
         return {"ok": True, "proposed": len(out), "note": "shown to the user as a card; nothing is applied"}
 
+    # --- внешние источники (OpenAlex) -----------------------------------------------------------------------
+
+    @property
+    def specs(self) -> list[dict]:
+        return TOOL_SPECS if self.sources_client is not None else [t for t in TOOL_SPECS
+                                                                  if t["function"]["name"] != "external_sources"]
+
+    def _register(self, w: dict) -> dict:
+        """Работа получает номер S<n> в пределах ответа (одна работа - один номер)."""
+        sid = self._src_by_oa.get(w["openalex_id"])
+        if sid is None:
+            sid = self._src_by_oa[w["openalex_id"]] = f"S{len(self.sources) + 1}"
+            self.sources[sid] = w
+        return {"id": sid, **w}
+
+    def external_sources(self, kind: str = "related", pid: str | None = None, query: str | None = None, n: Any = 5,
+                         **_: Any) -> dict:
+        """Работы из OpenAlex: сама статья, связанные, цитирующие её или поиск по запросу. Только чтение."""
+        cl = self.sources_client
+        if cl is None:
+            raise ToolError("external sources are disabled")
+        if kind not in ("this", "related", "cites", "search"):
+            raise ToolError("kind: this | related | cites | search")
+        n = self._limit(n, 5, SRC_MAX_N)
+        try:
+            if kind == "search":
+                q = (query or "").strip()
+                if not q:
+                    raise ToolError("query is required for kind=search")
+                works = cl.search(q, n)
+            else:
+                p = self.ctx.by_pid.get(pid or "") if pid else (self.ctx.papers[0] if len(self.ctx.papers) == 1 else None)
+                if p is None:
+                    raise ToolError("pid of a paper of this run is required for this kind")
+                pub = (p.tables.get("publications") or [{}])[0]
+                year = _num(pub.get("year"))
+                raw = cl.find_work(pub.get("DOI"), pub.get("title") or p.title, int(year) if year else None)
+                if raw is None:
+                    return {"works": [], "note": f"paper {p.pid} was not found in OpenAlex"}
+                if kind == "this":
+                    works = [normalize_work(raw, "this")]
+                else:
+                    works = cl.related(raw, n) if kind == "related" else cl.cited_by(raw, n)
+        except SourcesError as e:
+            return {"error": f"{e}; say that external sources are unavailable now"}
+        return {"works": [self._register(w) for w in works[:n]], "total": len(works[:n]),
+                "hint": "cite a work with [[src:S1]]; never mention a work that is not in this list"}
+
     # --- вызов --------------------------------------------------------------------------------------------------
 
     def call(self, name: str, args: dict) -> tuple[dict, str]:
@@ -584,6 +636,9 @@ def describe(name: str, a: dict) -> str:
         return f"Считаю: {g('expr') or ''}"
     if name == "propose_fix":
         return "Готовлю предложение правок"
+    if name == "external_sources":
+        return {"search": f"Ищу работы в OpenAlex: {g('query') or ''}", "cites": "Ищу работы, которые цитируют статью",
+                "this": "Смотрю статью в OpenAlex"}.get(g("kind"), "Ищу связанные работы в OpenAlex")
     return f"Вызов {name}"
 
 
@@ -643,6 +698,12 @@ TOOL_SPECS = [
         {"items": {"type": "array", "items": {"type": "object", "properties": {
             "fact_id": {"type": "string"}, "suggested": {"type": "number"}, "unit": {"type": "string"},
             "reason": {"type": "string"}}, "required": ["fact_id", "suggested", "reason"]}}}, ["items"]),
+    _fn("external_sources", "Scholarly works from OpenAlex (outside this run): kind=related (similar works of a paper), "
+        "cites (works that cite the paper, most cited first), this (the paper itself: DOI, links, citations), "
+        "search (by an English query). Returns works with ids S1..Sn; cite with [[src:S1]]. Needs pid for "
+        "related/cites/this and query for search. Never invent works that this tool did not return.",
+        {"kind": {"type": "string", "enum": ["related", "cites", "search", "this"]}, "pid": {"type": "string"},
+         "query": {"type": "string"}, "n": {"type": "integer", "description": "1-8"}}, ["kind"]),
     _fn("clarify", "Use INSTEAD of answering when the question is ambiguous (which metric, which paper): ask one short "
         "question in Russian with 2-4 options. Ends the turn.",
         {"question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}, "minItems": 2,
