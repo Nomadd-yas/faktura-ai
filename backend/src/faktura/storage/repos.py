@@ -240,6 +240,8 @@ class CorporaRepo(_Repo):
             pids = sa.select(S.papers.c.id).where(S.papers.c.corpus_id == cid)
             for t in (S.facts, S.anchors, S.issues, S.tz_records):
                 self.c.execute(t.delete().where(t.c.paper_id.in_(pids)))
+            for t in (S.text_chunks, S.text_pages):  # полнотекстовый индекс (FTS-триггеры чистят виртуальную таблицу)
+                self.c.execute(t.delete().where(t.c.corpus_id == cid))
             self.c.execute(S.papers.delete().where(S.papers.c.corpus_id == cid))
             for t in (S.corpus_files, S.runs, S.corpus_stats):
                 self.c.execute(t.delete().where(t.c.corpus_id == cid))

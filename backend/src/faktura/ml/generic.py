@@ -16,7 +16,7 @@ from typing import Any
 from ..domain.errors import extract_error
 from ..domain.extraction import GenericOutcome
 from ..domain.registry import DomainSpec, get_domain
-from .response import file_meta
+from .response import file_meta, page_texts
 
 log = logging.getLogger(__name__)
 
@@ -51,9 +51,10 @@ def parse_generic_response(raw: Any, publication_id: str, spec: DomainSpec) -> G
     return GenericOutcome(
         tables=tables, model_version=str(mv) if isinstance(mv, (str, int, float)) and str(mv) else "unknown",
         warnings=[str(w) for w in warns] if isinstance(warns, list) else [],
-        ocr_confidence=ocr_conf, suggested_domain=suggested,
+        ocr_confidence=ocr_conf, suggested_domain=suggested, page_texts=page_texts(raw),
         raw={"model_version": raw.get("model_version"), "domain": spec.name, "tables": tables,
-             "warnings": warns if isinstance(warns, list) else [], **extra})
+             "warnings": warns if isinstance(warns, list) else [], **extra,
+             **({"page_texts": raw["page_texts"]} if page_texts(raw) else {})})
 
 
 def pdf_dataset_to_generic(body: Any, publication_id: str, domain: str) -> dict:
@@ -86,7 +87,9 @@ def pdf_dataset_to_generic(body: Any, publication_id: str, domain: str) -> dict:
 def _meta_fields(meta: Any) -> dict[str, Any]:
     """ocr_confidence / suggested_domain из meta ответа прототипа pdf-dataset - на верхний уровень сырого ответа."""
     conf, sug = file_meta(meta)
-    return {k: v for k, v in (("ocr_confidence", conf), ("suggested_domain", sug)) if v is not None}
+    pt = page_texts(meta)
+    return {k: v for k, v in (("ocr_confidence", conf), ("suggested_domain", sug), ("page_texts", pt))
+            if v is not None}
 
 
 class GenericGoldExtractor:

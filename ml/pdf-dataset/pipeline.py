@@ -822,6 +822,18 @@ def _md_pages(md):
     return out
 
 
+def build_page_texts(md, n_pages, ts_infos=None):
+    """[faktura-patch] meta.page_texts: текст страниц (индекс 0 = страница 1) из постраничного markdown для полнотекстового
+    индекса бэка. Страницы, взятые из текстового слоя PDF (text_source auto/pdf), отдаются пустыми - бэк читает
+    текстовый слой сам; OCR-страницы - текст glmocr. Без маркеров страниц (markdown не постраничный) - None."""
+    if not _re.search(r"<!-- page \d+ -->", md or ""):
+        return None
+    mdp = _md_pages(md)
+    n = max(int(n_pages or 0), len(ts_infos or []), max(mdp))
+    pdf_pages = {i["page"] for i in (ts_infos or []) if i.get("source") == "pdf"}
+    return [("" if k in pdf_pages else (mdp.get(k) or "").strip()) for k in range(1, n + 1)]
+
+
 def verify_values(results, pdf, pages=None, md=None, leading_zero=False):
     """Числовое значение должно встречаться в тексте PDF ИЛИ в OCR-markdown (таблица может быть картинкой —
     тогда чисел нет в текстовом слое, но OCR их прочитал). Нет нигде -> строка отбрасывается (выдумка);
@@ -1258,6 +1270,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False, do
         "publication_id": pub_id,
         "pages": pages,
         "page_markers": paged,
+        "page_texts": build_page_texts(md_text, pages, ts_infos) if paged else None,  # [faktura-patch] полнотекстовый индекс бэка
         "ocr_seconds": ocr_seconds,
         "markdown_chars": len(md_text),
         "glmocr_config": str(config),

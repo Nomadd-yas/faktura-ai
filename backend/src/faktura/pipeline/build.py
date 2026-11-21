@@ -135,5 +135,8 @@ def build_services(settings: Settings, **overrides: Any) -> Services:
                     holder["x"] = make_extractor(settings)
                 return holder["x"]
 
+    from ..textindex.sources import register_store
+
+    register_store(db, store)  # ленивая индексация текста при поиске берёт PDF из этого хранилища
     return Services(settings=settings, db=db, store=store, parser=parser, normalizer=normalizer, bus=bus,
                     executor=executor, extractor_factory=factory, evaluator=evaluator)

@@ -334,6 +334,7 @@ class PaperProcessor:
         doc: ParsedDocument | None = None
         from_cache = False
         ml_meta: dict[str, Any] | None = None
+        ocr_pages: list[str] | None = None
         if mode == "full":
             try:
                 with PDF_LOCK:
@@ -349,6 +350,7 @@ class PaperProcessor:
             from_cache = out.from_cache
             mv = out.model_version
             ml_meta = file_ml_meta(out, not _out_of_scope(out.bundle.publication.in_scope))
+            ocr_pages = out.page_texts
             bundle = out.bundle
             bundle.publication.publication_id = paper.publication_id
         else:  # renormalize: сохранённые сырые значения, без ML
@@ -397,6 +399,10 @@ class PaperProcessor:
         if ml_meta is not None and file is not None:
             with s.db.uow() as uow:
                 uow.files.update(file.id, **ml_meta)
+        if mode == "full":  # полнотекстовый индекс: текстовый слой PDF + OCR для страниц без текста
+            from ..textindex.sources import index_pdf
+
+            index_pdf(s.db, paper, pdf, ocr_pages)
         self._publish(paper.workspace_id, "paper.done",
                       {"paper_id": paper.id, "chat_id": None, "title": bundle.publication.title,
                        "facts": stats.facts_count, "issues": stats.open_issues})

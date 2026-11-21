@@ -54,6 +54,17 @@ def file_meta(data: Any) -> tuple[float | None, str | None]:
     return conf, sug
 
 
+def page_texts(data: Any) -> list[str] | None:
+    """OCR-текст страниц из ответа ML (`page_texts`: список строк, индекс 0 = страница 1) или None, если поле
+    отсутствует или имеет другую форму. Нужен только полнотекстовому индексу, на разбор статьи не влияет."""
+    if not isinstance(data, dict):
+        return None
+    v = data.get("page_texts")
+    if not isinstance(v, list) or not any(isinstance(x, str) and x.strip() for x in v):
+        return None
+    return [x if isinstance(x, str) else "" for x in v]
+
+
 class _Bad(Exception):
     """Запись не может быть принята."""
 
@@ -353,4 +364,4 @@ def parse_extract_response(data: dict, publication_id: str) -> ExtractOutcome:
 
     ocr_conf, suggested = file_meta(data)
     return ExtractOutcome(bundle=bundle, model_version=model_version, warnings=warnings, raw=copy.deepcopy(data),
-                          ocr_confidence=ocr_conf, suggested_domain=suggested)
+                          ocr_confidence=ocr_conf, suggested_domain=suggested, page_texts=page_texts(data))
