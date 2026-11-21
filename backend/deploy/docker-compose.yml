@@ -47,6 +47,8 @@ services:
       ROUTERAI_MODEL: ${ROUTERAI_MODEL:-deepseek/deepseek-v4.1-flash-1017}
       ROUTERAI_PROVIDER: ${ROUTERAI_PROVIDER:-wafer}
       ML_CONCURRENCY: ${ML_CONCURRENCY:-1}  # = FAKTURA_EXTRACT_CONCURRENCY у api; при полном конфиге glmocr в 4g влезают 2
+      # рабочий процесс перезапускается после N статей (память torch/glmocr не возвращается); замена прогревается в паузе
+      ML_TASKS_PER_CHILD: ${ML_TASKS_PER_CHILD:-1}
     command: ["serve"]
     # лимит памяти: при переполнении убивается только ml, а не весь сервер (vLLM, api, postgres)
     mem_limit: 4g
