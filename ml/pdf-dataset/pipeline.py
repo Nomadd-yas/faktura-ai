@@ -271,6 +271,43 @@ def build_paged_markdown(json_result, fallback_markdown=None):
     return (fallback_markdown or ""), False
 
 
+# [faktura-patch] прогретый парсер glmocr: создаётся один раз на процесс (layout-модель + потоки конвейера),
+# дальше parse() вызывается на каждую статью. В API живёт в воркере ProcessPool (см. api.py).
+_PARSER = None
+_PARSER_CONFIG = None
+
+
+def _close_parser():
+    global _PARSER
+    if _PARSER is not None:
+        try:
+            _PARSER.close()
+        except Exception:
+            pass
+        _PARSER = None
+
+
+def _get_parser(config):
+    global _PARSER, _PARSER_CONFIG
+    if _PARSER is not None and _PARSER_CONFIG == str(config):
+        return _PARSER
+    _close_parser()
+    import atexit
+    from glmocr import GlmOcr
+    _PARSER = GlmOcr(config_path=str(config))
+    _PARSER_CONFIG = str(config)
+    atexit.register(_close_parser)
+    return _PARSER
+
+
+def warm_parser():
+    """[faktura-patch] Прогрев воркера: загрузить layout-модель заранее (не бросает исключений)."""
+    try:
+        _get_parser(config_path())
+    except Exception as e:  # noqa: BLE001
+        print(f"[!] прогрев glmocr не удался: {type(e).__name__}: {e}", flush=True)
+
+
 def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) -> dict:
     """Прогоняет PDF через весь конвейер. Бросает исключение при фатальной ошибке
     (PDF не найден, glmocr не установлен/не создал md).
@@ -303,19 +340,21 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
 
     # ---------- 1. glmocr: PDF -> markdown ----------
     try:
-        from glmocr import GlmOcr
+        import glmocr  # noqa: F401
     except ImportError as e:
         raise PipelineError("ml_error", "glmocr не установлен в образе (pip install 'glmocr[selfhosted]')") from e
 
     print(f"[1/3] glmocr: {pdf.name} -> markdown (config={config})", flush=True)
     t0 = time.time()
     try:
-        with GlmOcr(config_path=str(config)) as parser:
-            result = parser.parse(str(pdf))
-            result.save(output_dir=str(work))
+        parser = _get_parser(config)  # [faktura-patch] переиспользуем прогретый парсер
+        result = parser.parse(str(pdf))
+        result.save(output_dir=str(work))
     except PipelineError:
         raise
     except Exception as e:
+        if _PARSER is not None and not _is_connection_error(e):
+            _close_parser()  # неизвестный сбой — пересоздадим парсер на следующей статье
         if _is_connection_error(e):
             raise PipelineError("ocr_unavailable", f"OCR-сервер недоступен: {e}", retryable=True) from e
         raise PipelineError("ml_error", f"glmocr: {type(e).__name__}: {e}") from e
@@ -357,6 +396,7 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
     extract_failed = None
     failed_tables = []
     from extract_dataset import extract, LLMError
+    _t_llm = time.time()
     try:
         res = extract(clean_md,
                       publication_id=pub_id,
@@ -370,6 +410,8 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
         failed_tables = ["<all>"]
         print(f"[!] извлечение прервано: {e}", flush=True)
 
+    llm_wall = round(time.time() - _t_llm, 2)
+    _t_snap = time.time()
     snap_stats = None
     if dataset_out.exists():
         try:
@@ -377,6 +419,8 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
             print(f"      цитаты: {snap_stats}", flush=True)
         except Exception as e:  # цитаты — улучшение, не роняем прогон
             print(f"[!] подтяжка цитат не удалась: {e}", flush=True)
+
+    snap_seconds = round(time.time() - _t_snap, 2)
 
     # ---------- метаданные прогона поверх extract-meta ----------
     pages = None
@@ -406,6 +450,8 @@ def run_pipeline(pdf, *, out_dir="/out", publication_id=None, no_strip=False) ->
         "strip_tail": strip_info,
         "quote_snap": snap_stats,
         "total_seconds": round(time.time() - _t_start, 2),
+        "timings": {"ocr": ocr_seconds, "llm_wall": llm_wall, "snap": snap_seconds,
+                    "total": round(time.time() - _t_start, 2)},  # [faktura-patch]
         "failed_tables": meta.get("failed_tables", failed_tables),
         "extract_error": extract_failed,
         "outputs": {

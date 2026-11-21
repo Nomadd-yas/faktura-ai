@@ -85,3 +85,50 @@ def test_check_dataset_valid_and_invalid():
     assert ed.check_dataset(ds) == []
     ds["materials"][0]["material_class"] = "bogus"
     assert any("material_class" in p for p in ed.check_dataset(ds))
+
+
+# ---------- [faktura-patch] порядок шагов извлечения (фейковый call_llm) ----------
+def _run_extract(monkeypatch, tmp_path, in_scope=True, delays=None):
+    import json
+    import threading
+    import time
+    calls, lock = [], threading.Lock()
+    delays = delays or {}
+
+    def fake(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None,
+             retry=True, reasoning_tokens=None):
+        step = label
+        with lock:
+            calls.append({"step": step, "t0": time.time(), "retry": retry, "rt": reasoning_tokens,
+                          "mt": max_tokens})
+        time.sleep(delays.get(step, 0.02))
+        rows = [{"in_scope": in_scope}] if step == "publications" else []
+        with lock:
+            calls[[c["step"] for c in calls].index(step)]["t1"] = time.time()
+        return {step: rows}
+
+    monkeypatch.setattr(ed, "call_llm", fake)
+    monkeypatch.setattr(ed, "OpenAI", lambda **kw: object())
+    md = tmp_path / "a.md"
+    md.write_text("text", encoding="utf-8")
+    ed.extract(md, publication_id="P1", out=str(tmp_path / "o.json"), api_key="k")
+    return {c["step"]: c for c in calls}, [c["step"] for c in calls]
+
+
+def test_layers_does_not_block_results(monkeypatch, tmp_path):
+    c, order = _run_extract(monkeypatch, tmp_path, delays={"layers": 0.5})
+    assert c["results"]["t0"] < c["layers"]["t1"]  # results стартует, пока layers ещё идёт
+    assert c["issues"]["t0"] >= c["layers"]["t1"]  # issues ждёт layers
+    assert c["devices"]["t0"] >= c["publications"]["t1"]
+    assert c["results"]["t0"] >= c["measurements"]["t1"]
+
+
+def test_out_of_scope_stops(monkeypatch, tmp_path):
+    _, order = _run_extract(monkeypatch, tmp_path, in_scope=False)
+    assert sorted(order) == ["materials", "publications"]
+
+
+def test_issues_light_no_retry(monkeypatch, tmp_path):
+    c, order = _run_extract(monkeypatch, tmp_path)
+    assert order.count("issues") == 1
+    assert c["issues"]["retry"] is False and c["issues"]["rt"] == 2000 and c["issues"]["mt"] == 6144

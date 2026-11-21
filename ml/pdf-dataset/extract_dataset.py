@@ -417,8 +417,8 @@ check_name — ровно одно из:
 }
 
 STEP_ORDER = ["publications", "materials", "devices", "layers", "measurements", "results"]
-# [faktura-patch] шаги внутри группы не зависят друг от друга и идут параллельно
-STEP_GROUPS = [["publications"], ["materials"], ["devices"], ["layers", "measurements"], ["results"]]
+# [faktura-patch] порядок зависимостей (вместо STEP_GROUPS), см. extract():
+#   publications || materials -> devices -> (layers в фоне) || (measurements -> results) -> issues
 
 
 def fix_result_origin(rows):
@@ -575,14 +575,19 @@ REASONING_TOKENS = int(os.environ.get("ROUTERAI_REASONING_TOKENS", "6000"))
 SEED = int(os.environ.get("ROUTERAI_SEED", "42"))
 
 
-def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None):
+def call_llm(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report=None,
+             retry=True, reasoning_tokens=None):
     """[faktura-patch] Вызов с повтором: модель рассуждает и иногда тратит весь лимит на рассуждение
     (finish_reason=length, пустой ответ). Рассуждение ограничено (reasoning.max_tokens), при пустом/обрезанном
-    ответе — один повтор с меньшим бюджетом рассуждения и большим общим лимитом."""
+    ответе — один повтор с меньшим бюджетом рассуждения и большим общим лимитом.
+    [faktura-patch] retry=False — без повтора; reasoning_tokens — свой бюджет рассуждения (вместо REASONING_TOKENS)."""
+    budget = REASONING_TOKENS if reasoning_tokens is None else reasoning_tokens
     try:
         return _call_llm_once(client, args, messages, schema_name, schema, max_tokens, label, raw_path, report,
-                              reasoning_tokens=min(REASONING_TOKENS, max_tokens // 2))
+                              reasoning_tokens=min(budget, max_tokens // 2))
     except LLMError as e:
+        if not retry:
+            raise
         print(f"[{label}] повтор после сбоя: {e}", flush=True)
         return _call_llm_once(client, args, messages, schema_name, schema, max_tokens * 2, label + ":retry",
                               raw_path, report, reasoning_tokens=max(1024, REASONING_TOKENS // 3))
@@ -653,7 +658,7 @@ def _call_llm_once(client, args, messages, schema_name, schema, max_tokens, labe
 
 def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
             provider="wafer", no_strict=False, max_chars=200000,
-            max_tokens=24576, issues_max_tokens=12288, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
+            max_tokens=24576, issues_max_tokens=6144, no_issues=False,  # [faktura-patch] модель рассуждает: 2048 не хватало
             issues_with_text=False, meta_path=None, api_key=None) -> dict:
     """Извлекает датасет из markdown-статьи.
 
@@ -703,25 +708,35 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
         except LLMError as e:
             return step, None, e
 
-    # [faktura-patch] независимые шаги — параллельно: layers и measurements опираются только на devices
+    # [faktura-patch] критический путь: publications || materials -> devices -> (layers в фоне) || measurements -> results
     from concurrent.futures import ThreadPoolExecutor
-    for group in STEP_GROUPS:
-        if group[0] != "publications" and state["publications"] and state["publications"][0].get("in_scope") is False:
-            print(f"[i] статья вне области (in_scope=false) — пропускаю {group[0]} и дальше", flush=True)
-            break
-        if len(group) == 1:
-            outs = [run_step(group[0])]
+
+    def apply(step, rows, err):
+        if err is not None:
+            print(f"[!] {err}; таблица {step} будет пустой, продолжаю.", flush=True)
+            failed.append(step)
         else:
-            with ThreadPoolExecutor(max_workers=len(group)) as ex:
-                outs = list(ex.map(run_step, group))
-        for step, rows, err in outs:
-            if err is not None:
-                print(f"[!] {err}; таблица {step} будет пустой, продолжаю.", flush=True)
-                failed.append(step)
-            else:
-                if step == "results":
-                    fix_result_origin(rows)
-                state[step] = rows
+            if step == "results":
+                fix_result_origin(rows)
+            state[step] = rows
+
+    def out_of_scope():
+        return bool(state["publications"]) and state["publications"][0].get("in_scope") is False
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_pub = ex.submit(run_step, "publications")
+        f_mat = ex.submit(run_step, "materials")
+        apply(*f_pub.result())
+        mat = f_mat.result()  # дожидаемся, чтобы не оставлять поток висеть
+        if out_of_scope():
+            print("[i] статья вне области (in_scope=false) — пропускаю materials и дальше", flush=True)
+        else:
+            apply(*mat)
+            apply(*run_step("devices"))
+            f_lay = ex.submit(run_step, "layers")  # layers нужен только issues; results его не использует
+            apply(*run_step("measurements"))
+            apply(*run_step("results"))
+            apply(*f_lay.result())
 
     if not no_issues and (not state["publications"] or state["publications"][0].get("in_scope") is not False):
         issues_user = (f"publication_id = {pub_id}\n\n"
@@ -734,7 +749,8 @@ def extract(md_path, *, publication_id=None, out=None, model=DEFAULT_MODEL,
         try:
             result = nullify_empties(call_llm(client, args, messages, "table_issues",
                                               table_schema("issues"), issues_max_tokens,
-                                              "issues", raw_path, report))
+                                              "issues", raw_path, report,
+                                              retry=False, reasoning_tokens=2000))  # [faktura-patch] лёгкий проход
             issues = result.get("issues", []) if isinstance(result, dict) else []
             for r in issues:
                 r.setdefault("publication_id", pub_id)
@@ -792,7 +808,7 @@ def main() -> int:
     ap.add_argument("--no-strict", action="store_true")
     ap.add_argument("--max-chars", type=int, default=200000, help="обрезать вход")
     ap.add_argument("--max-tokens", type=int, default=16384, help="лимит на один main-вызов")
-    ap.add_argument("--issues-max-tokens", type=int, default=12288)
+    ap.add_argument("--issues-max-tokens", type=int, default=6144)
     ap.add_argument("--no-issues", action="store_true")
     ap.add_argument("--issues-with-text", action="store_true",
                     help="к issues-проходу добавить текст статьи (дороже)")

@@ -48,16 +48,65 @@ def _child_run(pdf_path, out_dir, pub_id, no_strip):
         return {"err": f"{type(e).__name__}: {e}"}
 
 
+# [faktura-patch] прогретые воркеры: один пул на сервис, парсер glmocr грузится один раз на воркер;
+# воркер перезапускается каждые ML_TASKS_PER_CHILD статей (утечки памяти torch на CPU).
+_POOL = None
+_POOL_LOCK = threading.Lock()
+
+
+def _worker_init():
+    from pipeline import warm_parser
+    warm_parser()
+
+
+def _get_pool():
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            import multiprocessing as mp
+            from concurrent.futures import ProcessPoolExecutor
+            _POOL = ProcessPoolExecutor(
+                max_workers=max(1, int(os.environ.get("ML_CONCURRENCY", "1"))),
+                mp_context=mp.get_context("spawn"),
+                max_tasks_per_child=max(1, int(os.environ.get("ML_TASKS_PER_CHILD", "8"))),
+                initializer=_worker_init)
+        return _POOL
+
+
+def _reset_pool(broken):
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is broken:
+            _POOL = None
+    try:
+        broken.shutdown(wait=False, cancel_futures=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _run_isolated(pdf_path, out_dir, pub_id, no_strip):
-    import multiprocessing as mp
-    from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
-    with ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as ex:
+    pool = _get_pool()
+    try:
+        return pool.submit(_child_run, str(pdf_path), str(out_dir), pub_id, no_strip).result()
+    except BrokenProcessPool:  # процесс убит (OOM по лимиту контейнера) — пул пересоздаётся для следующего запроса
+        _reset_pool(pool)
+        return {"perr": {"code": "ml_error", "retryable": False, "status": 500,
+                         "message": "разбор прерван: процесс извлечения завершён (вероятно, не хватило памяти)"}}
+
+
+@app.on_event("startup")
+def _warm_pool():
+    """[faktura-patch] Прогрев в фоне: по no-op на воркер, чтобы initializer загрузил layout-модель; /health не блокируется."""
+    def go():
         try:
-            return ex.submit(_child_run, str(pdf_path), str(out_dir), pub_id, no_strip).result()
-        except BrokenProcessPool:  # процесс убит (OOM по лимиту контейнера)
-            return {"perr": {"code": "ml_error", "retryable": False, "status": 500,
-                             "message": "разбор прерван: процесс извлечения завершён (вероятно, не хватило памяти)"}}
+            pool = _get_pool()
+            n = max(1, int(os.environ.get("ML_CONCURRENCY", "1")))
+            for f in [pool.submit(int, 0) for _ in range(n)]:
+                f.result()
+        except Exception:  # noqa: BLE001
+            pass
+    threading.Thread(target=go, daemon=True).start()
 
 
 def _error(status, code, message, *, retryable=False, headers=None):
