@@ -21,7 +21,7 @@ POLL_S = 2.0
 PING_S = 15.0
 FINAL_RUN = ("done", "error")
 FINAL_FILE = ("done", "out", "nodata", "ocr", "error")
-FILE_KEYS = ("id", "name", "status", "status_label", "stage", "progress", "eta_seconds", "pages", "started_at",
+FILE_KEYS = ("id", "name", "title", "status", "status_label", "stage", "progress", "eta_seconds", "pages", "started_at",
              "has_data", "results", "issues", "reason")
 RUN_KEYS = ("id", "status", "progress", "eta_seconds", "started_at", "updated_at", "counts", "results", "issues")
 HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive",

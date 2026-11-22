@@ -101,7 +101,9 @@ Refresh-токен — в `httpOnly` cookie (запросы с `credentials: "in
 ```json
 { "data": [ Run, … ], "total": 23, "next_cursor": null }
 ```
-В списке `files` короткие: `id, name, status, has_data, results, issues, open_issue_count, reason, stage, progress, eta_seconds, pages, started_at`.
+В списке `files` короткие: `id, name, title, status, has_data, results, issues, open_issue_count, reason, stage, progress, eta_seconds, pages, started_at`.
+
+**`RunFile.title`** (строка или `null`) — название статьи из `publications.title` после разбора; в очереди, в работе и при `error` — `null`, для `out` — если модель его достала. Есть в `GET /runs/{id}` (полный `files`), `GET /runs` (короткий `files`), ответах `POST /runs`, `POST /runs/{id}/files`, `POST /runs/{id}/rerun-as` и в событиях SSE `file.progress` / `file.done`. Читается одним запросом на разбор: отдельный `GET /papers/{domain}/{pid}` ради названия не нужен.
 
 ### `GET /runs/{id}` — разбор целиком, `files` полные. `404 not_found`.
 

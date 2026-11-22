@@ -313,6 +313,17 @@ class SubRowsRepo(_Repo):
                 for p, d in self.c.execute(sa.select(t.c.paper_id, t.c.data)
                                            .where(t.c.corpus_id == corpus_id, t.c.table_name == "publications"))}
 
+    def publication_titles(self, corpus_id: str) -> dict[str, str]:
+        """paper_id -> publications.title (непустые) - для поля title у файлов разбора."""
+        t = S.sub_rows
+        out: dict[str, str] = {}
+        for p, d in self.c.execute(sa.select(t.c.paper_id, t.c.data)
+                                   .where(t.c.corpus_id == corpus_id, t.c.table_name == "publications")):
+            title = " ".join(_s((d or {}).get("title")).split())
+            if title:
+                out[p] = title
+        return out
+
     def issue_ids_by_paper(self, corpus_id: str, paper_ids: Sequence[str]) -> dict[str, set[str]]:
         """paper_id -> issue_id замечаний статей (для счётчиков открытых замечаний v2)."""
         t = S.sub_rows

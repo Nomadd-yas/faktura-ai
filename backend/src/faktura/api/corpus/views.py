@@ -23,7 +23,7 @@ _LABELS = {"queued": "в очереди", "running": "разбор", "done": "г
            "error": "ошибка", "ocr": "скан, распознано OCR"}
 RAG_TOP_METRICS = 20  # coverage сводки rag: топ метрик по числу статей
 _IN_PROGRESS = (RunStatus.queued, RunStatus.running, RunStatus.cancelling)
-SHORT_FILE_KEYS = ("id", "name", "status", "has_data", "results", "issues", "open_issue_count", "reason", "stage", "progress",
+SHORT_FILE_KEYS = ("id", "name", "title", "status", "has_data", "results", "issues", "open_issue_count", "reason", "stage", "progress",
                    "eta_seconds", "pages", "started_at")
 
 
@@ -89,6 +89,7 @@ class RunData:
         self.results_n: dict[str, int] = counts["results"]
         self.issues_n: dict[str, int] = counts["issues"]
         self.pub: dict[str, tuple[str, str]] = uow.sub.publication_scopes(corpus.id)
+        self.titles: dict[str, str] = uow.sub.publication_titles(corpus.id)
         # v2: открытые замечания с учётом состояний и пересчёта (3 запроса на весь разбор, не на статью)
         from ...review.runs_v2 import open_counts
         self.open_n: dict[str, int] = open_counts(
@@ -105,8 +106,13 @@ class RunData:
         label = reason if status == "out" and reason else _LABELS.get(status, status)
         if status == "out" and not reason:
             label = "не по теме"
+        # название статьи (publications.title) - после разбора; в очереди, в работе и при ошибке - null
+        title = None
+        if status not in ("queued", "running", "error"):
+            title = self.titles.get(f.paper_id or "") or (paper.title if paper is not None else None) or None
         return {
-            "id": self.file_ids[f.id], "name": f.source or f.name, "status": status, "status_label": label,
+            "id": self.file_ids[f.id], "name": f.source or f.name, "title": title, "status": status,
+            "status_label": label,
             "stage": (f.stage or "Извлечение") if status == "running" else None,
             "progress": _progress(f, status), "eta_seconds": None, "pages": f.page_count,
             "started_at": iso(f.started_at),
