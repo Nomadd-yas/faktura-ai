@@ -91,6 +91,7 @@ def collect_tables(uow, corpora: list, partial: bool = False) -> Collected:
                 col.tables[t].extend(rows)
     canon_results(col.tables.get("results") or [])
     consistent_duplicates(col.tables.get("results") or [])
+    consistent_duplicates(col.tables.get("results") or [])  # поле основной строки мог дописать её поздний повтор
     canon_results(col.tables.get("results") or [])  # повтор мог получить metric_unit основной строки
     canon_ints(col.tables)
     safe_publication_ids(col)
