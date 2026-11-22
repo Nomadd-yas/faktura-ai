@@ -222,6 +222,19 @@ def canon_results(rows: list[dict]) -> list[dict]:
             if ref not in note:
                 r["note"] = f"{note}; метод: {ref}".strip("; ") if note else f"метод: {ref}"
             r["cited_publication_id"] = ""
+        if "metric_name" in r and not str(r.get("metric_name") or "").strip():  # RAG: «metric_name is empty»
+            r["metric_name"] = "unspecified"
+            note = str(r.get("note") or "").strip()
+            r["note"] = f"{note}; метрика в статье не названа" if note else "метрика в статье не названа"
+        if r.get("extraction_status") == "extracted" and "raw_value" in r and not str(r.get("raw_value") or "").strip():
+            # «extracted result without raw_value»: запись статьи = значение метрики; числа нет - не извлекаемо
+            val = str(r.get("metric_value") or r.get("normalized_value") or "").strip()
+            if val:
+                r["raw_value"] = val
+                if not str(r.get("raw_unit") or "").strip():
+                    r["raw_unit"] = str(r.get("metric_unit") or r.get("normalized_unit") or "").strip()
+            else:
+                r["extraction_status"] = "present_not_extractable"
         nv = str(r.get("normalized_value") or "").strip()
         if not nv:
             continue

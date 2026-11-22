@@ -73,3 +73,16 @@ def test_test_run_failures_dup_unit_cited_without_source_fractional_top_k():
     cfg = [{"top_k": "5.0000014217773625", "note": ""}, {"top_k": "2.5", "note": ""}, {"top_k": "10", "note": ""}]
     canon_ints({"configurations": cfg})
     assert [c["top_k"] for c in cfg] == ["5", "", "10"] and "2.5" in cfg[1]["note"]
+
+
+def test_rag_empty_metric_name_and_extracted_without_raw():
+    rows = canon_results([
+        {"metric_name": "", "metric_value": "60.46", "metric_unit": "%", "raw_value": "60.46%", "note": "",
+         "extraction_status": "extracted", "normalized_value": "60.46", "normalized_unit": "%"},
+        {"metric_name": "F1", "metric_value": "", "raw_value": "", "raw_unit": "", "extraction_status": "extracted",
+         "normalized_value": "", "note": ""},
+        {"metric_name": "F1", "metric_value": "0.5", "metric_unit": "", "raw_value": "", "raw_unit": "",
+         "extraction_status": "extracted", "normalized_value": "", "note": ""}])
+    assert rows[0]["metric_name"] == "unspecified" and "не названа" in rows[0]["note"]
+    assert rows[1]["extraction_status"] == "present_not_extractable"
+    assert rows[2]["raw_value"] == "0.5" and rows[2]["extraction_status"] == "extracted"
