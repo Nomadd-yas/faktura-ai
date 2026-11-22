@@ -91,8 +91,38 @@ def collect_tables(uow, corpora: list, partial: bool = False) -> Collected:
                 col.tables[t].extend(rows)
     canon_results(col.tables.get("results") or [])
     consistent_duplicates(col.tables.get("results") or [])
+    canon_results(col.tables.get("results") or [])  # повтор мог получить metric_unit основной строки
+    canon_ints(col.tables)
     safe_publication_ids(col)
     return col
+
+
+# целые поля check_submission (RAG: year, source_page >= 1; top_k, metric_k >= 0): «5.0000014» с графика -> «5»
+INT_FIELDS = {"year": 1, "source_page": 1, "top_k": 0, "metric_k": 0}
+
+
+def canon_ints(tables: dict[str, list[dict]]) -> None:
+    """Почти целое -> целое; дробное, отрицательное или не число - ячейка очищается, исходное значение - в note."""
+    for rows in tables.values():
+        for r in rows:
+            for f, low in INT_FIELDS.items():
+                v = str(r.get(f) or "").strip()
+                if not v or re.fullmatch(r"[0-9]+", v) and int(v) >= low:
+                    continue
+                try:
+                    x = float(v)
+                    n = round(x)
+                    ok = math.isfinite(x) and abs(x - n) <= 1e-3 * max(1.0, abs(x)) and n >= low
+                except (ValueError, OverflowError):
+                    ok = False
+                if ok:
+                    r[f] = str(n)
+                    continue
+                r[f] = ""
+                if "note" in r:
+                    note = str(r.get("note") or "").strip()
+                    mark = f"{f}: «{v}» не целое"
+                    r["note"] = f"{note}; {mark}" if note else mark
 
 
 # поля, по которым повтор обязан совпадать с основной строкой (check_submission RAG: «duplicate_of differs in …»);
@@ -181,6 +211,11 @@ def canon_results(rows: list[dict]) -> list[dict]:
     for r in rows:
         # primary = получено в этой работе: ссылка у такой строки - на метод (бейзлайн «CLIP (Radford et al., 2021)»),
         # а не на источник числа; cited_publication_id бывает только у cited (check_submission RAG)
+        if r.get("result_origin") == "cited" and not str(r.get("cited_publication_id") or "").strip():
+            # cited без источника не проходит проверку; в эталоне строки бейзлайнов из таблиц статьи - primary
+            r["result_origin"] = "primary"
+            note = str(r.get("note") or "").strip()
+            r["note"] = f"{note}; cited без указания источника" if note else "cited без указания источника"
         if r.get("result_origin") == "primary" and str(r.get("cited_publication_id") or "").strip():
             ref = str(r["cited_publication_id"]).strip()
             note = str(r.get("note") or "").strip()

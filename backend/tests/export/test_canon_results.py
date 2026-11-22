@@ -55,3 +55,21 @@ def test_duplicates_take_missing_fields_from_main_or_lose_link_on_conflict():
     consistent_duplicates([main, dup, other])
     assert dup["duplicate_of"] == "R1" and dup["sample_size"] == "500"
     assert other["duplicate_of"] == "" and "не повтор R1: различается sample_size" in other["note"]
+
+
+def test_test_run_failures_dup_unit_cited_without_source_fractional_top_k():
+    from faktura.api.corpus.exports import canon_ints, consistent_duplicates
+
+    rows = [{"publication_id": "P004", "result_id": "R151", "metric_value": "63.8", "metric_unit": "%",
+             "normalized_value": "63.8", "normalized_unit": "%", "result_origin": "primary", "note": ""},
+            {"publication_id": "P004", "result_id": "R389", "metric_value": "63.8", "metric_unit": "",
+             "normalized_value": "63.8", "normalized_unit": "", "duplicate_of": "R151", "result_origin": "primary",
+             "note": ""},
+            {"publication_id": "P010", "result_id": "R071", "metric_value": "5.87", "result_origin": "cited",
+             "cited_publication_id": "", "note": "ADAPT baseline row"}]
+    canon_results(consistent_duplicates(canon_results(rows)))
+    assert rows[1]["metric_unit"] == rows[1]["normalized_unit"] == "%" and rows[1]["duplicate_of"] == "R151"
+    assert rows[2]["result_origin"] == "primary" and "cited" in rows[2]["note"]
+    cfg = [{"top_k": "5.0000014217773625", "note": ""}, {"top_k": "2.5", "note": ""}, {"top_k": "10", "note": ""}]
+    canon_ints({"configurations": cfg})
+    assert [c["top_k"] for c in cfg] == ["5", "", "10"] and "2.5" in cfg[1]["note"]
