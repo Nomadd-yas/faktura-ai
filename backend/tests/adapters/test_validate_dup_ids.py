@@ -26,3 +26,13 @@ def test_repeated_device_id_still_fails():
                     devices=[Device(publication_id=p, device_id="DV1"), Device(publication_id=p, device_id="DV1")])
     with pytest.raises(Exception, match="повторяется идентификатор DV1"):
         validate_bundle(b, [])
+
+
+def test_rag_repeated_issue_id_is_renumbered():
+    from faktura.domain.registry import get_domain
+    from faktura.pipeline.generic import validate_tables
+
+    raw = {"publications": [{"title": "T", "in_scope": "true"}],
+           "issues": [{"issue_id": "I1", "check_name": "ambiguity"}, {"issue_id": "I1", "check_name": "ambiguity"}]}
+    tables, warnings = validate_tables(get_domain("rag"), raw, "P089")
+    assert [r["issue_id"] for r in tables["issues"]] == ["I1", "I2"] and any("повтор" in w for w in warnings)

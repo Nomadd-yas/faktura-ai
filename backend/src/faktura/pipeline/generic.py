@@ -121,6 +121,10 @@ def validate_tables(spec: DomainSpec, raw_tables: dict[str, list[dict[str, Any]]
                     continue
                 n_empty += 1
             elif v in seen:
+                if name == "issues":  # на issue_id никто не ссылается: повтор перенумеровывается ниже
+                    r[key] = ""
+                    warnings.append(f"issues.issue_id: повтор «{v}» - id присвоит бэк")
+                    continue
                 if v not in dup:
                     dup.append(v)
             seen.add(v)
